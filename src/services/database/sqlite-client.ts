@@ -19,10 +19,12 @@ class SQLiteClient {
   private db: Database.Database;
   private config: SQLiteConfig;
   private readonly readOnly: boolean;
+  private readonly embeddingsDisabled: boolean;
 
   private constructor() {
     this.config = this.getSQLiteConfig();
     this.readOnly = process.env.SQLITE_READONLY === 'true';
+    this.embeddingsDisabled = process.env.DISABLE_EMBEDDINGS === 'true';
     
     // Initialize database connection
     const dbDirectory = path.dirname(this.config.dbPath);
@@ -33,13 +35,15 @@ class SQLiteClient {
       ? new Database(this.config.dbPath, { readonly: true, fileMustExist: true })
       : new Database(this.config.dbPath);
     
-    // Load sqlite-vec extension
-    try {
-      this.db.loadExtension(this.config.vecExtensionPath);
-      console.log('SQLite vector extension loaded successfully');
-    } catch (error) {
-      // Do not fail hard — allow the app to run without vector features
-      console.error('Warning: Failed to load vector extension:', error);
+    // Load sqlite-vec extension (skip entirely if embeddings are disabled)
+    if (!this.embeddingsDisabled) {
+      try {
+        this.db.loadExtension(this.config.vecExtensionPath);
+        console.log('SQLite vector extension loaded successfully');
+      } catch (error) {
+        // Do not fail hard — allow the app to run without vector features
+        console.error('Warning: Failed to load vector extension:', error);
+      }
     }
 
     // Configure SQLite settings
@@ -57,9 +61,11 @@ class SQLiteClient {
       this.db.pragma('temp_store = memory');
       this.db.pragma('busy_timeout = 5000');
 
-      // Ensure vector virtual tables are present and healthy
-      this.ensureVectorTables();
-      this.healVectorTablesIfCorrupt();
+      // Ensure vector virtual tables are present and healthy (skip if disabled)
+      if (!this.embeddingsDisabled) {
+        this.ensureVectorTables();
+        this.healVectorTablesIfCorrupt();
+      }
 
       // Ensure logging schema (rename memory->logs if needed, create triggers/views)
       this.ensureLoggingAndMemorySchema();
@@ -134,7 +140,9 @@ class SQLiteClient {
       } as DatabaseError;
     }
     // Proactively validate/repair vec vtables before any write transaction
-    this.healVectorTablesIfCorrupt();
+    if (!this.embeddingsDisabled) {
+      this.healVectorTablesIfCorrupt();
+    }
     const txn = this.db.transaction(callback);
     try {
       return txn();
@@ -154,6 +162,9 @@ class SQLiteClient {
   }
 
   public async checkVectorExtension(): Promise<boolean> {
+    if (this.embeddingsDisabled) {
+      return false;
+    }
     try {
       const result = this.query('SELECT vec_version() as version');
       return result.rows.length > 0;

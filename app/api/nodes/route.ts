@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
       metadata: body.metadata || {}
     });
 
-    if (chunkStatus === 'not_chunked' && node.id) {
+    if (chunkStatus === 'not_chunked' && node.id && process.env.DISABLE_EMBEDDINGS !== 'true') {
       autoEmbedQueue.enqueue(node.id, { reason: 'node_created' });
     }
 

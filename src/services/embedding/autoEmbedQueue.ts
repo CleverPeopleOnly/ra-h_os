@@ -16,8 +16,12 @@ export class AutoEmbedQueue {
   private readonly lastRunAt = new Map<number, number>();
   private readonly maxConcurrent = 1;
   private readonly cooldownMs = DEFAULT_COOLDOWN_MS;
+  private readonly embeddingsDisabled = process.env.DISABLE_EMBEDDINGS === 'true';
 
   enqueue(nodeId: number, task: Omit<AutoEmbedTask, 'nodeId'> = {}): boolean {
+    if (this.embeddingsDisabled && !task.force) {
+      return false;
+    }
     const existing = this.pendingTasks.get(nodeId);
     if (!existing) {
       this.pendingTasks.set(nodeId, { nodeId, ...task });
@@ -73,6 +77,9 @@ export class AutoEmbedQueue {
   }
 
   private async executeTask(task: AutoEmbedTask) {
+    if (this.embeddingsDisabled && !task.force) {
+      return;
+    }
     const node = await nodeService.getNodeById(task.nodeId);
     if (!node) {
       console.warn('[AutoEmbedQueue] Node missing, skipping', task.nodeId);
