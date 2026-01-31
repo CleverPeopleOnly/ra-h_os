@@ -1,5 +1,14 @@
 # RA-OS
 
+```
+ ██████╗  █████╗       ██╗  ██╗
+ ██╔══██╗██╔══██╗      ██║  ██║
+ ██████╔╝███████║█████╗███████║
+ ██╔══██╗██╔══██║╚════╝██╔══██║
+ ██║  ██║██║  ██║      ██║  ██║
+ ╚═╝  ╚═╝╚═╝  ╚═╝      ╚═╝  ╚═╝
+```
+
 A lightweight local knowledge graph UI with MCP server. Connect your AI coding agents to a personal knowledge base. BYO API keys, no cloud dependencies.
 
 ## What is RA-OS?
