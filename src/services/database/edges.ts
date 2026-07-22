@@ -5,6 +5,7 @@ import { nodeService } from './nodes';
 import { z } from 'zod';
 import { validateEdgeExplanation } from './quality';
 import { generateUtilityText } from '@/services/llm/provider';
+import { recomputeNodeBelief } from '@/services/belief/beliefService';
 
 const inferredEdgeContextSchema = z.object({
   type: z.enum(['created_by', 'part_of', 'source_of', 'related_to']),
@@ -272,23 +273,36 @@ export class EdgeService {
       created_via: createdVia,
     };
 
+    // Whether this edge carries belief-engine evidence for the target node.
+    // Evidence lives in dedicated columns; the context JSON stays app-owned.
+    const hasEvidenceFields = edgeData.evidence_relation != null;
+
     const result = sqlite.prepare(`
-      INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
+                         evidence_relation, evidence_strength, evidence_independence_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       finalFromId,
       finalToId,
       JSON.stringify(context),
       edgeData.source,
       now,
-      explanation
+      explanation,
+      edgeData.evidence_relation ?? null,
+      edgeData.evidence_strength ?? null,
+      edgeData.evidence_independence_key ?? null
     );
 
     const edgeId = Number(result.lastInsertRowid);
     const newEdge = await this.getEdgeById(edgeId);
-    
+
     if (!newEdge) {
       throw new Error('Failed to create edge');
+    }
+
+    // Evidence hook: a new evidence edge must regrade the node it points at.
+    if (hasEvidenceFields) {
+      await recomputeNodeBelief(finalToId);
     }
 
     // Broadcast edge creation event (use final IDs from the saved edge)

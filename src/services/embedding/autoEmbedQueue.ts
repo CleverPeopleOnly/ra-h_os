@@ -1,6 +1,7 @@
 import { embedNodeContent } from '@/services/embedding/ingestion';
 import { nodeService } from '@/services/database';
 import { getSQLiteClient } from '@/services/database/sqlite-client';
+import { recomputeNodeBelief } from '@/services/belief/beliefService';
 
 interface AutoEmbedTask {
   nodeId: number;
@@ -122,6 +123,15 @@ export class AutoEmbedQueue {
     const result = await embedNodeContent(task.nodeId);
     if (!result.success) {
       console.error('[AutoEmbedQueue] Embedding failed', task.nodeId, result.error);
+      return;
+    }
+
+    // Belief hook: a freshly embedded node gets its belief regraded. A
+    // recompute failure must never mark the embed task itself as failed.
+    try {
+      await recomputeNodeBelief(task.nodeId);
+    } catch (beliefError) {
+      console.warn('[AutoEmbedQueue] Belief recompute failed after embed', task.nodeId, beliefError);
     }
   }
 }
