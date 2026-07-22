@@ -3,7 +3,7 @@
  *
  * Pins that SQLite client bootstrap gives a database:
  *  - nodes.belief_value / nodes.belief_computed_at
- *  - edges.evidence_relation / evidence_strength / evidence_independence_key /
+ *  - edges.evidence_direction / evidence_strength / evidence_independence_key /
  *    evidence_effective_contribution
  *  - source_trust and belief_movements tables
  * on BOTH a fresh database and a pre-existing legacy database file created
@@ -72,6 +72,25 @@ function createLegacyDatabaseWithoutBeliefColumns(dbPath: string): void {
   legacyDb.close();
 }
 
+// Lay down a database from the brief evidence_relation era (MR-A vocabulary):
+// evidence columns exist under the old name with supports/contradicts values,
+// so client init must RENAME the column and MAP the stored values.
+function createDatabaseWithLegacyEvidenceRelationColumn(dbPath: string): void {
+  createLegacyDatabaseWithoutBeliefColumns(dbPath);
+  const oldVocabularyDb = new Database(dbPath);
+  oldVocabularyDb.exec(`
+    ALTER TABLE edges ADD COLUMN evidence_relation TEXT;
+    ALTER TABLE edges ADD COLUMN evidence_strength REAL;
+    ALTER TABLE edges ADD COLUMN evidence_independence_key TEXT;
+    ALTER TABLE edges ADD COLUMN evidence_effective_contribution REAL;
+    INSERT INTO nodes (id, title) VALUES (1, 'claim'), (2, 'source');
+    INSERT INTO edges (from_node_id, to_node_id, source, explanation, evidence_relation, evidence_strength, evidence_independence_key)
+    VALUES (2, 1, 'user', 'old-vocabulary supporting edge', 'supports', 0.7, 'origin-a'),
+           (2, 1, 'user', 'old-vocabulary contradicting edge', 'contradicts', 0.4, 'origin-b');
+  `);
+  oldVocabularyDb.close();
+}
+
 describe('belief engine schema', () => {
   // Guard test demanded by the safety rule: if the client under test ever
   // resolves its database file to anywhere outside the OS temp directory,
@@ -107,7 +126,7 @@ describe('belief engine schema', () => {
     db = await openTempBeliefDatabase();
     const edgeColumns = db.readTableColumns('edges');
     const expectedEvidenceColumnTypes: Record<string, string> = {
-      evidence_relation: 'TEXT',
+      evidence_direction: 'TEXT',
       evidence_strength: 'REAL',
       evidence_independence_key: 'TEXT',
       evidence_effective_contribution: 'REAL',
@@ -152,10 +171,28 @@ describe('belief engine schema', () => {
     const edgeColumnNames = db.readTableColumns('edges').map(column => column.name);
     expect(nodeColumnNames).toContain('belief_value');
     expect(nodeColumnNames).toContain('belief_computed_at');
-    expect(edgeColumnNames).toContain('evidence_relation');
+    expect(edgeColumnNames).toContain('evidence_direction');
     expect(edgeColumnNames).toContain('evidence_strength');
     expect(edgeColumnNames).toContain('evidence_independence_key');
     expect(edgeColumnNames).toContain('evidence_effective_contribution');
+  });
+
+  // Vocabulary migration: the field shipped briefly as evidence_relation with
+  // supports/contradicts values; client init must rename the column to
+  // evidence_direction and map the stored values to for/against.
+  it('legacy evidence_relation column is renamed to evidence_direction with values mapped to for/against', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseWithLegacyEvidenceRelationColumn,
+    });
+
+    const edgeColumnNames = db.readTableColumns('edges').map(col => col.name);
+    expect(edgeColumnNames).toContain('evidence_direction');
+    expect(edgeColumnNames).not.toContain('evidence_relation');
+
+    const migratedDirections = db.sqlite
+      .prepare('SELECT evidence_direction FROM edges ORDER BY id ASC')
+      .all() as Array<{ evidence_direction: string }>;
+    expect(migratedDirections.map(row => row.evidence_direction)).toEqual(['for', 'against']);
   });
 
   it('legacy database file gains the source_trust and belief_movements tables after client init', async () => {

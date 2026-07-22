@@ -416,7 +416,7 @@ class SQLiteClient {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         context TEXT,
         explanation TEXT,
-        evidence_relation TEXT,
+        evidence_direction TEXT,
         evidence_strength REAL,
         evidence_independence_key TEXT,
         evidence_effective_contribution REAL,
@@ -511,6 +511,21 @@ class SQLiteClient {
 
     // edges: the four evidence columns the belief engine reads and stamps.
     try {
+      // Vocabulary migration: databases created while the field was named
+      // evidence_relation (with values supports/contradicts) get the column
+      // renamed to evidence_direction and the values mapped to for/against.
+      const preMigrationEdgeCols = this.db.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
+      if (preMigrationEdgeCols.some(col => col.name === 'evidence_relation')) {
+        try {
+          this.db.exec('ALTER TABLE edges RENAME COLUMN evidence_relation TO evidence_direction;');
+          this.db.exec(
+            "UPDATE edges SET evidence_direction = CASE evidence_direction WHEN 'supports' THEN 'for' WHEN 'contradicts' THEN 'against' ELSE evidence_direction END WHERE evidence_direction IS NOT NULL;"
+          );
+        } catch (renameErr) {
+          console.warn('Failed to migrate edges.evidence_relation to evidence_direction:', renameErr);
+        }
+      }
+
       const edgeCols = this.db.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
       // Adds one missing evidence column to edges; no-op when it already exists.
       const ensureEdgeEvidenceCol = (name: string, ddl: string) => {
@@ -522,7 +537,7 @@ class SQLiteClient {
           }
         }
       };
-      ensureEdgeEvidenceCol('evidence_relation', 'ALTER TABLE edges ADD COLUMN evidence_relation TEXT;');
+      ensureEdgeEvidenceCol('evidence_direction', 'ALTER TABLE edges ADD COLUMN evidence_direction TEXT;');
       ensureEdgeEvidenceCol('evidence_strength', 'ALTER TABLE edges ADD COLUMN evidence_strength REAL;');
       ensureEdgeEvidenceCol('evidence_independence_key', 'ALTER TABLE edges ADD COLUMN evidence_independence_key TEXT;');
       ensureEdgeEvidenceCol('evidence_effective_contribution', 'ALTER TABLE edges ADD COLUMN evidence_effective_contribution REAL;');

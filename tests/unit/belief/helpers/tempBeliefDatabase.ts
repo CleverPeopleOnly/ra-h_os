@@ -75,7 +75,7 @@ export interface TempBeliefDatabase {
   insertEvidenceEdgeFixture(options: {
     fromNodeId: number;
     toNodeId: number;
-    relation: 'supports' | 'contradicts';
+    direction: 'for' | 'against';
     strength: number;
     independenceKey: string | null;
   }): number;
@@ -157,15 +157,15 @@ export async function openTempBeliefDatabase(
       return Number(result.lastInsertRowid);
     },
 
-    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, relation, strength, independenceKey }) {
+    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, direction, strength, independenceKey }) {
       const result = sqlite
         .prepare(
           `INSERT INTO edges
              (from_node_id, to_node_id, source, explanation,
-              evidence_relation, evidence_strength, evidence_independence_key)
+              evidence_direction, evidence_strength, evidence_independence_key)
            VALUES (?, ?, 'user', 'evidence edge fixture', ?, ?, ?)`
         )
-        .run(fromNodeId, toNodeId, relation, strength, independenceKey);
+        .run(fromNodeId, toNodeId, direction, strength, independenceKey);
       return Number(result.lastInsertRowid);
     },
 

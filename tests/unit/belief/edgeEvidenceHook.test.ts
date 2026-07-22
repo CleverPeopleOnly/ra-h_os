@@ -2,7 +2,7 @@
  * Tests for the EdgeService evidence hook (MR-A).
  *
  * Pins that EdgeService.createEdge:
- *  - stores the new optional evidence fields (evidence_relation,
+ *  - stores the new optional evidence fields (evidence_direction,
  *    evidence_strength, evidence_independence_key) in the new edge columns,
  *  - triggers recomputeNodeBelief(to_node_id) so the target node's
  *    belief_value becomes non-NULL WITHOUT any explicit belief call,
@@ -25,7 +25,7 @@ import {
 // to EdgeData) so the tests compile before EdgeData itself gains the fields;
 // once MR-A extends EdgeData this alias becomes redundant but stays valid.
 type EvidenceEdgeInput = EdgeData & {
-  evidence_relation: 'supports' | 'contradicts';
+  evidence_direction: 'for' | 'against';
   evidence_strength: number;
   evidence_independence_key: string | null;
 };
@@ -40,7 +40,7 @@ afterEach(() => {
 
 // One edges row as read back by these tests.
 interface EvidenceEdgeRow {
-  evidence_relation: string | null;
+  evidence_direction: string | null;
   evidence_strength: number | null;
   evidence_independence_key: string | null;
 }
@@ -49,7 +49,7 @@ interface EvidenceEdgeRow {
 function readEvidenceColumns(context: TempBeliefDatabase, edgeId: number): EvidenceEdgeRow {
   return context.sqlite
     .prepare(
-      `SELECT evidence_relation, evidence_strength, evidence_independence_key
+      `SELECT evidence_direction, evidence_strength, evidence_independence_key
        FROM edges WHERE id = ?`
     )
     .get(edgeId) as EvidenceEdgeRow;
@@ -71,14 +71,14 @@ describe('EdgeService evidence hook', () => {
       created_via: 'workflow',
       source: 'user',
       skip_inference: true,
-      evidence_relation: 'supports',
+      evidence_direction: 'for',
       evidence_strength: 0.8,
       evidence_independence_key: 'origin-hook-test',
     };
     const createdEdge = await edgeService.createEdge(evidenceInput);
 
     const storedEvidence = readEvidenceColumns(db, createdEdge.id);
-    expect(storedEvidence.evidence_relation).toBe('supports');
+    expect(storedEvidence.evidence_direction).toBe('for');
     expect(Number(storedEvidence.evidence_strength)).toBeCloseTo(0.8, 10);
     expect(storedEvidence.evidence_independence_key).toBe('origin-hook-test');
   });
@@ -98,7 +98,7 @@ describe('EdgeService evidence hook', () => {
       created_via: 'workflow',
       source: 'user',
       skip_inference: true,
-      evidence_relation: 'supports',
+      evidence_direction: 'for',
       evidence_strength: 0.8,
       evidence_independence_key: 'origin-hook-test',
     };
@@ -137,7 +137,7 @@ describe('EdgeService evidence hook', () => {
 
     expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
     const storedEvidence = readEvidenceColumns(db, createdEdge.id);
-    expect(storedEvidence.evidence_relation).toBeNull();
+    expect(storedEvidence.evidence_direction).toBeNull();
     expect(storedEvidence.evidence_strength).toBeNull();
     expect(storedEvidence.evidence_independence_key).toBeNull();
   });

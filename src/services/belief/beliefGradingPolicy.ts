@@ -27,7 +27,7 @@ export const SATURATION_RATE = 1.0;
 export interface EvidenceContribution {
   // Edge the contribution came from, so callers can trace results back.
   edgeId: number;
-  // strength × trustWeight; negative when the edge relation is 'contradicts'.
+  // strength × trustWeight; negative when the edge direction is 'against'.
   signedContribution: number;
   // Edges sharing a non-null key are treated as non-independent (POLICY V1
   // collapses them); null means the contribution stands alone.
