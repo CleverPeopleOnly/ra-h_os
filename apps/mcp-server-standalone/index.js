@@ -1,16 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
-// Check Node version early — better-sqlite3 native bindings don't support bleeding-edge Node
-const nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
-if (nodeVersion >= 24) {
-  console.error(`[ra-h-mcp-server] ERROR: Node.js v${process.versions.node} is not supported.`);
-  console.error('[ra-h-mcp-server] better-sqlite3 requires Node 18-22 LTS. Install Node 22:');
-  console.error('[ra-h-mcp-server]   nvm install 22 && nvm use 22');
-  console.error('[ra-h-mcp-server]   or: brew install node@22');
-  process.exit(1);
-}
-
+// Node-version support is determined by whether better-sqlite3's native
+// bindings actually load (checked in the try/catch below), not by a version
+// number gate: the installed better-sqlite3 ships bindings for current Node
+// majors, and a pre-emptive gate goes stale as new majors gain support.
 let Database;
 try {
   Database = require('better-sqlite3');

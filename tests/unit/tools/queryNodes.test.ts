@@ -47,7 +47,7 @@ describe('queryNodesTool', () => {
     expect(result.data?.count).toBe(0);
   });
 
-  it('respects limit and reports total count', async () => {
+  it('respects limit and reports the returned (post-limit) count', async () => {
     vi.mocked(nodeService.getNodes).mockResolvedValueOnce([
       { id: 1, title: 'A', created_at: '', updated_at: '' },
       { id: 2, title: 'B', created_at: '', updated_at: '' },
@@ -59,6 +59,8 @@ describe('queryNodesTool', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.nodes).toHaveLength(1);
-    expect(result.data?.count).toBe(2);
+    // count reports how many nodes were returned after the limit was applied
+    // (directNodeLookup returns count = nodes.length), not the pre-limit total.
+    expect(result.data?.count).toBe(1);
   });
 });

@@ -30,6 +30,7 @@ describe('createEdgeTool', () => {
       from_node_id: 0,
       to_node_id: 2,
       source: 'ai',
+      confirmed_by_user: true,
     });
 
     expect(result.success).toBe(false);
@@ -50,6 +51,7 @@ describe('createEdgeTool', () => {
       to_node_id: 2,
       explanation: 'Source node references the target node directly.',
       source: 'ai',
+      confirmed_by_user: true,
     });
 
     expect(result.success).toBe(false);
@@ -78,6 +80,7 @@ describe('createEdgeTool', () => {
       to_node_id: 2,
       explanation: 'Episode belongs to the podcast represented by the target node.',
       source: 'ai',
+      confirmed_by_user: true,
     });
 
     expect(result.success).toBe(true);
