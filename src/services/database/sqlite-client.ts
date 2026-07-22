@@ -116,6 +116,8 @@ class SQLiteClient {
 
       this.withStartupWriteLock(() => {
         this.ensureCoreSchema();
+        // Add the belief-engine columns to legacy databases created before MR-A.
+        this.ensureBeliefSchemaLocked();
         // Ensure vector virtual tables are present. Repair/rebuild is maintenance-only.
         this.ensureVectorTables();
         this.healVectorTablesIfCorrupt();
@@ -401,7 +403,9 @@ class SQLiteClient {
         embedding BLOB,
         embedding_updated_at TEXT,
         embedding_text TEXT,
-        chunk_status TEXT DEFAULT 'not_chunked'
+        chunk_status TEXT DEFAULT 'not_chunked',
+        belief_value REAL,
+        belief_computed_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS edges (
@@ -412,8 +416,27 @@ class SQLiteClient {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         context TEXT,
         explanation TEXT,
+        evidence_relation TEXT,
+        evidence_strength REAL,
+        evidence_independence_key TEXT,
+        evidence_effective_contribution REAL,
         FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
         FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS source_trust (
+        origin_key TEXT PRIMARY KEY,
+        score REAL NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS belief_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id INTEGER NOT NULL,
+        from_value REAL,
+        to_value REAL NOT NULL,
+        "trigger" TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS chunks (
@@ -458,6 +481,54 @@ class SQLiteClient {
       CREATE INDEX IF NOT EXISTS idx_chunks_node_id ON chunks(node_id);
       CREATE INDEX IF NOT EXISTS idx_chats_thread ON chats(thread_id);
     `);
+  }
+
+  // Belief-engine migration (MR-A): legacy databases were created before the
+  // belief columns existed, and CREATE TABLE IF NOT EXISTS never alters an
+  // existing table — so mirror the ensureNodeCol pattern and ALTER the
+  // missing columns in. The source_trust / belief_movements tables are
+  // already covered by CREATE TABLE IF NOT EXISTS in ensureCoreSchema.
+  // Must run inside the startup write lock.
+  private ensureBeliefSchemaLocked(): void {
+    // nodes: graded belief value (NULL = ungraded) + when it was computed.
+    try {
+      const nodeCols = this.db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>;
+      // Adds one missing belief column to nodes; no-op when it already exists.
+      const ensureNodeBeliefCol = (name: string, ddl: string) => {
+        if (!nodeCols.some(col => col.name === name)) {
+          try {
+            this.db.exec(ddl);
+          } catch (colErr) {
+            console.warn(`Failed to add nodes.${name}`, colErr);
+          }
+        }
+      };
+      ensureNodeBeliefCol('belief_value', 'ALTER TABLE nodes ADD COLUMN belief_value REAL;');
+      ensureNodeBeliefCol('belief_computed_at', 'ALTER TABLE nodes ADD COLUMN belief_computed_at TEXT;');
+    } catch (nodeErr) {
+      console.warn('Failed to ensure nodes belief columns:', nodeErr);
+    }
+
+    // edges: the four evidence columns the belief engine reads and stamps.
+    try {
+      const edgeCols = this.db.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
+      // Adds one missing evidence column to edges; no-op when it already exists.
+      const ensureEdgeEvidenceCol = (name: string, ddl: string) => {
+        if (!edgeCols.some(col => col.name === name)) {
+          try {
+            this.db.exec(ddl);
+          } catch (colErr) {
+            console.warn(`Failed to add edges.${name}`, colErr);
+          }
+        }
+      };
+      ensureEdgeEvidenceCol('evidence_relation', 'ALTER TABLE edges ADD COLUMN evidence_relation TEXT;');
+      ensureEdgeEvidenceCol('evidence_strength', 'ALTER TABLE edges ADD COLUMN evidence_strength REAL;');
+      ensureEdgeEvidenceCol('evidence_independence_key', 'ALTER TABLE edges ADD COLUMN evidence_independence_key TEXT;');
+      ensureEdgeEvidenceCol('evidence_effective_contribution', 'ALTER TABLE edges ADD COLUMN evidence_effective_contribution REAL;');
+    } catch (edgeErr) {
+      console.warn('Failed to ensure edges evidence columns:', edgeErr);
+    }
   }
 
   private ensureLoggingAndMemorySchema(): void {
