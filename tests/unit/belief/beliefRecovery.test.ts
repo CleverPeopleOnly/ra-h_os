@@ -4,7 +4,7 @@
  *
  * The sweep exists for one scenario: the standalone MCP server wrote
  * evidence edges while the app was closed. Those edges carry a NULL
- * evidence_effective_contribution (the standalone server never grades), so
+ * belief_evidence_contribution (the standalone server never grades), so
  * at app startup the sweep must find every node with such ungraded evidence
  * and regrade it — and must leave fully-stamped and evidence-free nodes
  * alone.
@@ -44,13 +44,13 @@ describe('belief recovery sweep (MR-B)', () => {
     const evidenceNodeId = db.insertNodeFixture({ title: 'offline evidence origin node' });
     const claimNodeId = db.insertNodeFixture({ title: 'claim node with offline evidence' });
     // Simulates a standalone write while the app was closed: evidence fields
-    // set, evidence_effective_contribution left NULL (never graded).
+    // set, belief_evidence_contribution left NULL (never graded).
     const ungradedEdgeId = db.insertEvidenceEdgeFixture({
       fromNodeId: evidenceNodeId,
       toNodeId: claimNodeId,
       direction: 'for',
       strength: 0.8,
-      evidenceOriginKey: 'origin:offline-write',
+      beliefEvidenceOriginKey: 'origin:offline-write',
     });
 
     const { recoverUngradedEvidence } = await importBeliefRecoveryService();
@@ -85,7 +85,7 @@ describe('belief recovery sweep (MR-B)', () => {
       toNodeId: claimNodeId,
       direction: 'for',
       strength: 0.6,
-      evidenceOriginKey: 'origin:already-graded',
+      beliefEvidenceOriginKey: 'origin:already-graded',
     });
 
     // Grade the node for real first, so its evidence carries stamps.

@@ -1,7 +1,7 @@
 /**
  * MR-B test for the /api/edges POST route: a request body carrying the three
- * writable evidence fields (evidence_direction, evidence_strength,
- * evidence_origin_key) must reach edgeService.createEdge with those
+ * writable evidence fields (belief_evidence_direction, belief_evidence_strength,
+ * belief_evidence_origin_key) must reach edgeService.createEdge with those
  * fields intact — today the route rebuilds the createEdge argument from an
  * explicit field list and silently drops them.
  *
@@ -69,13 +69,13 @@ beforeEach(() => {
 describe('/api/edges POST evidence forwarding (MR-B)', () => {
   // The pinned behavior: the three evidence fields in the request body must
   // survive the route's argument rebuild and arrive at createEdge intact.
-  it('forwards evidence_direction, evidence_strength, and evidence_origin_key to edgeService.createEdge', async () => {
+  it('forwards belief_evidence_direction, belief_evidence_strength, and belief_evidence_origin_key to edgeService.createEdge', async () => {
     const response = await POST(
       buildEdgesPostRequest({
         ...confirmedMcpEdgeBody,
-        evidence_direction: 'for',
-        evidence_strength: 0.8,
-        evidence_origin_key: 'origin:route-evidence-test',
+        belief_evidence_direction: 'for',
+        belief_evidence_strength: 0.8,
+        belief_evidence_origin_key: 'origin:route-evidence-test',
       })
     );
 
@@ -90,9 +90,9 @@ describe('/api/edges POST evidence forwarding (MR-B)', () => {
       explanation: 'Reports a measured result that supports the claim node.',
     });
     // The evidence fields must survive the route intact.
-    expect(createEdgeArgument.evidence_direction).toBe('for');
-    expect(createEdgeArgument.evidence_strength).toBeCloseTo(0.8, 10);
-    expect(createEdgeArgument.evidence_origin_key).toBe('origin:route-evidence-test');
+    expect(createEdgeArgument.belief_evidence_direction).toBe('for');
+    expect(createEdgeArgument.belief_evidence_strength).toBeCloseTo(0.8, 10);
+    expect(createEdgeArgument.belief_evidence_origin_key).toBe('origin:route-evidence-test');
   });
 
   // GUARD (deliberately green today): an evidence-free body must keep
@@ -105,8 +105,8 @@ describe('/api/edges POST evidence forwarding (MR-B)', () => {
     expect(vi.mocked(edgeService.createEdge)).toHaveBeenCalledTimes(1);
 
     const createEdgeArgument = vi.mocked(edgeService.createEdge).mock.calls[0][0];
-    expect(createEdgeArgument.evidence_direction ?? null).toBeNull();
-    expect(createEdgeArgument.evidence_strength ?? null).toBeNull();
-    expect(createEdgeArgument.evidence_origin_key ?? null).toBeNull();
+    expect(createEdgeArgument.belief_evidence_direction ?? null).toBeNull();
+    expect(createEdgeArgument.belief_evidence_strength ?? null).toBeNull();
+    expect(createEdgeArgument.belief_evidence_origin_key ?? null).toBeNull();
   });
 });
