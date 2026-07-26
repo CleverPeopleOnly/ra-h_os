@@ -16,6 +16,8 @@ Everything the belief system adds to this codebase must be recognisable as belie
 
 Rationale: our columns are guests in upstream territory — the prefix flags ours in any diff or merge conflict, and no future upstream name can collide with it. Renaming after the MCP surface ships would break callers, so names must be right before a surface goes live.
 
+CI (.github/workflows/ci.yml) gates every push/PR on the full test suite, full typecheck, and `npm run lint:belief-surface` — everything the belief system owns must lint clean. Upstream's pre-existing lint debt is out of scope and not gated; new belief-owned files must be added to the `lint:belief-surface` script.
+
 ## Core Stack
 - Next.js 15 + TypeScript + Tailwind
 - SQLite + sqlite-vec
