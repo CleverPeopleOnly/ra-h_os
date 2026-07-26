@@ -6,7 +6,7 @@
  *    (evidence_effective_contribution stays NULL — grading is app-owned),
  *  - getNodesById exposes belief_value / belief_computed_at,
  *  - new setSourceTrust / getSourceTrust tools upsert and read source_trust,
- *  - createEdge rejects malformed evidence (relation without strength,
+ *  - createEdge rejects malformed evidence (direction without strength,
  *    strength outside [0,1]) with a tool error and writes no row.
  *
  * SAFETY: every database in this file is a fresh temp file under os.tmpdir()
@@ -74,9 +74,9 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       context TEXT,
       explanation TEXT,
-      evidence_relation TEXT,
+      evidence_direction TEXT,
       evidence_strength REAL,
-      evidence_independence_key TEXT,
+      evidence_origin_key TEXT,
       evidence_effective_contribution REAL
     );
 
@@ -91,7 +91,7 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
     );
 
     CREATE TABLE source_trust (
-      origin_key TEXT PRIMARY KEY,
+      trust_origin_key TEXT PRIMARY KEY,
       score REAL NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -170,9 +170,9 @@ function getStructured<T>(result: unknown): T {
 
 // The four evidence columns of one edge row, as read back directly via SQL.
 interface EdgeEvidenceRow {
-  evidence_relation: string | null;
+  evidence_direction: string | null;
   evidence_strength: number | null;
-  evidence_independence_key: string | null;
+  evidence_origin_key: string | null;
   evidence_effective_contribution: number | null;
 }
 
@@ -183,7 +183,7 @@ function readEdgeEvidenceRow(edgeId: number): EdgeEvidenceRow | undefined {
   try {
     return directDb
       .prepare(
-        `SELECT evidence_relation, evidence_strength, evidence_independence_key,
+        `SELECT evidence_direction, evidence_strength, evidence_origin_key,
                 evidence_effective_contribution
          FROM edges WHERE id = ?`
       )
@@ -207,12 +207,12 @@ function countEdgesBetween(fromNodeId: number, toNodeId: number): number {
 }
 
 // Read one source_trust row straight from the temp database file.
-function readSourceTrustRow(originKey: string): { origin_key: string; score: number } | undefined {
+function readSourceTrustRow(trustOriginKey: string): { trust_origin_key: string; score: number } | undefined {
   const directDb = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
     return directDb
-      .prepare('SELECT origin_key, score FROM source_trust WHERE origin_key = ?')
-      .get(originKey) as { origin_key: string; score: number } | undefined;
+      .prepare('SELECT trust_origin_key, score FROM source_trust WHERE trust_origin_key = ?')
+      .get(trustOriginKey) as { trust_origin_key: string; score: number } | undefined;
   } finally {
     directDb.close();
   }
@@ -269,9 +269,9 @@ describe('standalone MCP server belief surface (MR-B)', () => {
 
         expect(nodeColumnNames).toContain('belief_value');
         expect(nodeColumnNames).toContain('belief_computed_at');
-        expect(edgeColumnNames).toContain('evidence_relation');
+        expect(edgeColumnNames).toContain('evidence_direction');
         expect(edgeColumnNames).toContain('evidence_strength');
-        expect(edgeColumnNames).toContain('evidence_independence_key');
+        expect(edgeColumnNames).toContain('evidence_origin_key');
         expect(edgeColumnNames).toContain('evidence_effective_contribution');
         expect(tableNames).toContain('source_trust');
         expect(tableNames).toContain('belief_movements');
@@ -287,7 +287,7 @@ describe('standalone MCP server belief surface (MR-B)', () => {
   // fields and persist them in the dedicated evidence columns, while the
   // grading stamp (evidence_effective_contribution) stays NULL because the
   // standalone server never grades — grading is app-owned.
-  it('createEdge stores evidence_relation, evidence_strength, and evidence_independence_key; contribution stays NULL', async () => {
+  it('createEdge stores evidence_direction, evidence_strength, and evidence_origin_key; contribution stays NULL', async () => {
     await withStandaloneClient(async (client) => {
       const result = await client.callTool({
         name: 'createEdge',
@@ -296,9 +296,9 @@ describe('standalone MCP server belief surface (MR-B)', () => {
           targetId: 1,
           explanation: 'Reports a measured result that supports the claim node.',
           confirmed_by_user: true,
-          evidence_relation: 'supports',
+          evidence_direction: 'for',
           evidence_strength: 0.8,
-          evidence_independence_key: 'origin:standalone-belief-test',
+          evidence_origin_key: 'origin:standalone-belief-test',
         },
       });
 
@@ -307,9 +307,9 @@ describe('standalone MCP server belief surface (MR-B)', () => {
 
       const evidenceRow = readEdgeEvidenceRow(structured.edgeId);
       expect(evidenceRow).toBeDefined();
-      expect(evidenceRow?.evidence_relation).toBe('supports');
+      expect(evidenceRow?.evidence_direction).toBe('for');
       expect(evidenceRow?.evidence_strength).toBeCloseTo(0.8, 10);
-      expect(evidenceRow?.evidence_independence_key).toBe('origin:standalone-belief-test');
+      expect(evidenceRow?.evidence_origin_key).toBe('origin:standalone-belief-test');
       expect(evidenceRow?.evidence_effective_contribution).toBeNull();
     });
   });
@@ -334,9 +334,9 @@ describe('standalone MCP server belief surface (MR-B)', () => {
 
       const evidenceRow = readEdgeEvidenceRow(structured.edgeId);
       expect(evidenceRow).toBeDefined();
-      expect(evidenceRow?.evidence_relation).toBeNull();
+      expect(evidenceRow?.evidence_direction).toBeNull();
       expect(evidenceRow?.evidence_strength).toBeNull();
-      expect(evidenceRow?.evidence_independence_key).toBeNull();
+      expect(evidenceRow?.evidence_origin_key).toBeNull();
       expect(evidenceRow?.evidence_effective_contribution).toBeNull();
     });
   });
@@ -375,7 +375,7 @@ describe('standalone MCP server belief surface (MR-B)', () => {
     await withStandaloneClient(async (client) => {
       await client.callTool({
         name: 'setSourceTrust',
-        arguments: { origin_key: 'agent:alpha', score: 0.8 },
+        arguments: { trust_origin_key: 'agent:alpha', score: 0.8 },
       });
 
       const firstWrite = readSourceTrustRow('agent:alpha');
@@ -385,7 +385,7 @@ describe('standalone MCP server belief surface (MR-B)', () => {
       // Second call for the same key updates in place — still one row.
       await client.callTool({
         name: 'setSourceTrust',
-        arguments: { origin_key: 'agent:alpha', score: 0.3 },
+        arguments: { trust_origin_key: 'agent:alpha', score: 0.3 },
       });
 
       const secondWrite = readSourceTrustRow('agent:alpha');
@@ -393,17 +393,17 @@ describe('standalone MCP server belief surface (MR-B)', () => {
 
       const directDb = new Database(dbPath, { readonly: true, fileMustExist: true });
       const rowCount = directDb
-        .prepare('SELECT COUNT(*) AS count FROM source_trust WHERE origin_key = ?')
+        .prepare('SELECT COUNT(*) AS count FROM source_trust WHERE trust_origin_key = ?')
         .get('agent:alpha') as { count: number };
       directDb.close();
       expect(rowCount.count).toBe(1);
 
       const readResult = await client.callTool({
         name: 'getSourceTrust',
-        arguments: { origin_key: 'agent:alpha' },
+        arguments: { trust_origin_key: 'agent:alpha' },
       });
       const readStructured = getStructured<{
-        origin_key: string;
+        trust_origin_key: string;
         trust: { score: number } | null;
       }>(readResult);
       expect(readStructured.trust).not.toBeNull();
@@ -417,18 +417,18 @@ describe('standalone MCP server belief surface (MR-B)', () => {
     await withStandaloneClient(async (client) => {
       const result = await client.callTool({
         name: 'getSourceTrust',
-        arguments: { origin_key: 'agent:never-seen' },
+        arguments: { trust_origin_key: 'agent:never-seen' },
       });
-      const structured = getStructured<{ origin_key: string; trust: { score: number } | null }>(
+      const structured = getStructured<{ trust_origin_key: string; trust: { score: number } | null }>(
         result
       );
       expect(structured.trust).toBeNull();
     });
   });
 
-  // Malformed evidence must be a tool error with NO row written: a relation
+  // Malformed evidence must be a tool error with NO row written: a direction
   // without a strength is ungradeable evidence and must never reach the DB.
-  it('createEdge rejects evidence_relation without evidence_strength and writes no edge row', async () => {
+  it('createEdge rejects evidence_direction without evidence_strength and writes no edge row', async () => {
     await withStandaloneClient(async (client) => {
       const edgesBefore = countEdgesBetween(2, 1);
 
@@ -439,7 +439,7 @@ describe('standalone MCP server belief surface (MR-B)', () => {
           targetId: 1,
           explanation: 'Reports a measured result that supports the claim node.',
           confirmed_by_user: true,
-          evidence_relation: 'supports',
+          evidence_direction: 'for',
           // evidence_strength deliberately missing
         },
       });
@@ -461,9 +461,9 @@ describe('standalone MCP server belief surface (MR-B)', () => {
           targetId: 1,
           explanation: 'Reports a measured result that supports the claim node.',
           confirmed_by_user: true,
-          evidence_relation: 'supports',
+          evidence_direction: 'for',
           evidence_strength: 1.5,
-          evidence_independence_key: 'origin:standalone-belief-test',
+          evidence_origin_key: 'origin:standalone-belief-test',
         },
       });
 

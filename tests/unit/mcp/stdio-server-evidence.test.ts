@@ -118,7 +118,7 @@ describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
   // The pinned behavior: evidence arguments given to the tool must appear in
   // the POST body the proxy sends to /api/edges (today the zod schema strips
   // them, so the app never sees the evidence).
-  it('includes evidence_relation, evidence_strength, and evidence_independence_key in the POST body to /api/edges', async () => {
+  it('includes evidence_direction, evidence_strength, and evidence_origin_key in the POST body to /api/edges', async () => {
     await withMcpClient(async (client) => {
       await client.callTool({
         name: 'rah_create_edge',
@@ -127,9 +127,9 @@ describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
           targetId: 1,
           explanation: 'Reports a measured result that supports the claim node.',
           confirmed_by_user: true,
-          evidence_relation: 'supports',
+          evidence_direction: 'for',
           evidence_strength: 0.9,
-          evidence_independence_key: 'origin:stdio-evidence-test',
+          evidence_origin_key: 'origin:stdio-evidence-test',
         },
       });
 
@@ -148,9 +148,9 @@ describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
       });
       // The evidence fields must survive the tool schema and reach the app.
       expect(createEdgeRequest?.body).toMatchObject({
-        evidence_relation: 'supports',
+        evidence_direction: 'for',
         evidence_strength: 0.9,
-        evidence_independence_key: 'origin:stdio-evidence-test',
+        evidence_origin_key: 'origin:stdio-evidence-test',
       });
     });
   });
@@ -164,9 +164,9 @@ describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
       expect(createEdgeTool).toBeDefined();
 
       const inputSchemaJson = JSON.stringify(createEdgeTool?.inputSchema);
-      expect(inputSchemaJson).toContain('evidence_relation');
+      expect(inputSchemaJson).toContain('evidence_direction');
       expect(inputSchemaJson).toContain('evidence_strength');
-      expect(inputSchemaJson).toContain('evidence_independence_key');
+      expect(inputSchemaJson).toContain('evidence_origin_key');
     });
   });
 });

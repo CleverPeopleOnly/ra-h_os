@@ -48,9 +48,9 @@ describe('belief recovery sweep (MR-B)', () => {
     const ungradedEdgeId = db.insertEvidenceEdgeFixture({
       fromNodeId: evidenceNodeId,
       toNodeId: claimNodeId,
-      relation: 'supports',
+      direction: 'for',
       strength: 0.8,
-      independenceKey: 'origin:offline-write',
+      evidenceOriginKey: 'origin:offline-write',
     });
 
     const { recoverUngradedEvidence } = await importBeliefRecoveryService();
@@ -83,9 +83,9 @@ describe('belief recovery sweep (MR-B)', () => {
     db.insertEvidenceEdgeFixture({
       fromNodeId: evidenceNodeId,
       toNodeId: claimNodeId,
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin:already-graded',
+      evidenceOriginKey: 'origin:already-graded',
     });
 
     // Grade the node for real first, so its evidence carries stamps.

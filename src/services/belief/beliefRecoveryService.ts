@@ -20,7 +20,7 @@ export interface BeliefRecoveryResult {
 }
 
 // Find every node with ungraded evidence (incoming edges whose
-// evidence_relation is set but evidence_effective_contribution is NULL) and
+// evidence_direction is set but evidence_effective_contribution is NULL) and
 // recompute its belief. Fully-stamped nodes and nodes without evidence edges
 // must be left untouched.
 export async function recoverUngradedEvidence(): Promise<BeliefRecoveryResult> {
