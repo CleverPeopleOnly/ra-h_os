@@ -165,6 +165,56 @@ function ensureMinimumSchema(db) {
       content_rowid='id'
     );
   `);
+
+  ensureBeliefSchema(db);
+}
+
+/**
+ * Belief-engine schema (fork addition): make init-db create the same belief
+ * columns and tables the app's belief engine expects, so evidence written
+ * through the standalone server has the app-parity schema to land in.
+ */
+function ensureBeliefSchema(db) {
+  // Belief columns added to the upstream-owned nodes/edges tables. ALTER TABLE
+  // has no IF NOT EXISTS, so each column is added only when missing.
+  const beliefColumnAdditions = [
+    ['nodes', 'belief_value', 'REAL'],
+    ['nodes', 'belief_computed_at', 'TEXT'],
+    ['edges', 'belief_evidence_direction', 'TEXT'],
+    ['edges', 'belief_evidence_strength', 'REAL'],
+    ['edges', 'belief_evidence_origin_key', 'TEXT'],
+    ['edges', 'belief_evidence_contribution', 'REAL'],
+  ];
+
+  for (const [tableName, columnName, columnType] of beliefColumnAdditions) {
+    // Column names already present on this table, per PRAGMA table_info.
+    const existingColumnNames = db
+      .prepare(`PRAGMA table_info(${tableName})`)
+      .all()
+      .map((column) => column.name);
+    if (!existingColumnNames.includes(columnName)) {
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType};`);
+    }
+  }
+
+  // Belief tables: per-origin trust scores and the belief movement audit log.
+  // "trigger" stays double-quoted — it is a SQLite reserved word.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS belief_source_trust (
+      trust_origin_key TEXT PRIMARY KEY,
+      score REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS belief_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      node_id INTEGER NOT NULL,
+      from_value REAL,
+      to_value REAL NOT NULL,
+      "trigger" TEXT NOT NULL,
+      occurred_at TEXT NOT NULL
+    );
+  `);
 }
 
 function initDb(dbPath) {

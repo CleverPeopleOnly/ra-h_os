@@ -133,7 +133,13 @@ const createEdgeInputSchema = {
   sourceId: z.number().int().positive().describe("The 'subject' node (reads: source [explanation] target)"),
   targetId: z.number().int().positive().describe('Target node ID'),
   explanation: z.string().min(1).describe("Human-readable explanation. Should read as a sentence: 'Alice invented this technique'"),
-  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.')
+  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.'),
+  // Belief evidence fields (fork addition): optional, stored verbatim in the
+  // dedicated belief_ edge columns. This server never grades — the RA-H app
+  // owns grading (belief_evidence_contribution stays NULL here).
+  belief_evidence_direction: z.enum(['for', 'against']).optional().describe("Evidence direction: whether the source node argues 'for' or 'against' the target node. Requires belief_evidence_strength."),
+  belief_evidence_strength: z.number().optional().describe('Evidence weight in [0, 1].'),
+  belief_evidence_origin_key: z.string().nullable().optional().describe('Origin key of this evidence; evidence sharing a key is treated as non-independent by the app-owned grading policy.')
 };
 
 const updateEdgeInputSchema = {
@@ -164,6 +170,17 @@ const searchContentInputSchema = {
   query: z.string().min(1).max(400).describe('Search text'),
   node_id: z.number().int().positive().optional().describe('Scope to a specific node\'s chunks'),
   limit: z.number().min(1).max(20).optional().describe('Max results (default 5)')
+};
+
+// setBeliefSourceTrust schema (fork addition): upsert one origin's trust score.
+const setBeliefSourceTrustInputSchema = {
+  trust_origin_key: z.string().min(1).describe('Origin key whose trust score to set (e.g. "agent:alpha")'),
+  score: z.number().describe('Trust score for this origin, used by the app-owned grading policy')
+};
+
+// getBeliefSourceTrust schema (fork addition): read one origin's trust row.
+const getBeliefSourceTrustInputSchema = {
+  trust_origin_key: z.string().min(1).describe('Origin key to look up in belief_source_trust')
 };
 
 const sqliteQueryInputSchema = {
@@ -407,6 +424,9 @@ async function main() {
         if (node) {
           const rawSource = node.source ?? null;
           const sourceTruncated = rawSource ? rawSource.length > CHUNK_LIMIT : false;
+          // Persisted belief state of this node, as graded by the app-owned
+          // belief engine (NULL values when the node is ungraded).
+          const nodeBeliefState = nodeService.getNodeBeliefState(id);
 
           nodes.push({
             id: node.id,
@@ -420,7 +440,9 @@ async function main() {
             metadata: node.metadata ?? null,
             created_at: node.created_at,
             updated_at: node.updated_at,
-            event_date: node.event_date ?? null
+            event_date: node.event_date ?? null,
+            belief_value: nodeBeliefState.belief_value ?? null,
+            belief_computed_at: nodeBeliefState.belief_computed_at ?? null
           });
         }
       }
@@ -487,16 +509,28 @@ async function main() {
       description: 'Connect two nodes with an edge only after the user has explicitly confirmed the proposed relationship. Edges are the most valuable part of the graph — they represent understanding, not proximity. Direction matters: reads as sourceId → [explanation] → targetId. The explanation should read as a sentence (e.g. "invented this technique", "contradicts the claim in"). Call queryEdge first to check if a connection already exists between the two nodes.',
       inputSchema: createEdgeInputSchema
     },
-    async ({ sourceId, targetId, explanation, confirmed_by_user }) => {
+    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key }) => {
       if (!confirmed_by_user) {
         throw new Error('createEdge requires explicit user confirmation before writing the relationship.');
+      }
+
+      // Malformed evidence must never reach the database: a direction without
+      // a strength is ungradeable, and a strength outside [0, 1] is invalid.
+      if (belief_evidence_direction !== undefined && belief_evidence_strength === undefined) {
+        throw new Error('belief_evidence_direction requires belief_evidence_strength — evidence without a weight cannot be graded.');
+      }
+      if (belief_evidence_strength !== undefined && (belief_evidence_strength < 0 || belief_evidence_strength > 1)) {
+        throw new Error('belief_evidence_strength must be within [0, 1].');
       }
 
       const edge = edgeService.createEdge({
         from_node_id: sourceId,
         to_node_id: targetId,
         explanation: explanation.trim(),
-        source: 'mcp'
+        source: 'mcp',
+        belief_evidence_direction,
+        belief_evidence_strength,
+        belief_evidence_origin_key
       });
 
       return {
@@ -559,6 +593,66 @@ async function main() {
             type: e.context?.type ?? null,
             explanation: e.explanation ?? e.context?.explanation ?? null
           }))
+        }
+      };
+    }
+  );
+
+  // ========== BELIEF SOURCE TRUST TOOLS (fork addition) ==========
+
+  registerToolWithAliases(
+    'setBeliefSourceTrust',
+    {
+      title: 'Set RA-H belief source trust',
+      description: 'Set (upsert) the trust score for one evidence origin in belief_source_trust. The app-owned belief engine weights evidence by this score when grading node beliefs.',
+      inputSchema: setBeliefSourceTrustInputSchema
+    },
+    async ({ trust_origin_key, score }) => {
+      // Upsert: one row per origin key, updated in place on repeat calls.
+      query(
+        `INSERT INTO belief_source_trust (trust_origin_key, score, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(trust_origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`,
+        [trust_origin_key, score, new Date().toISOString()]
+      );
+
+      const summary = `Set trust for ${trust_origin_key} to ${score}.`;
+      return {
+        content: [{ type: 'text', text: summary }],
+        structuredContent: {
+          success: true,
+          trust_origin_key,
+          score,
+          message: summary
+        }
+      };
+    }
+  );
+
+  registerToolWithAliases(
+    'getBeliefSourceTrust',
+    {
+      title: 'Get RA-H belief source trust',
+      description: 'Read the trust row for one evidence origin from belief_source_trust. Returns null trust when no row exists — the app-owned engine applies its own default in that case.',
+      inputSchema: getBeliefSourceTrustInputSchema
+    },
+    async ({ trust_origin_key }) => {
+      // The stored trust row for this origin, if any (never invent a default
+      // here — the DEFAULT_ORIGIN_TRUST fallback is app-engine-owned).
+      const trustRows = query(
+        'SELECT trust_origin_key, score, updated_at FROM belief_source_trust WHERE trust_origin_key = ?',
+        [trust_origin_key]
+      );
+      const trustRow = trustRows.length > 0 ? trustRows[0] : null;
+
+      const summary = trustRow
+        ? `Trust for ${trust_origin_key}: ${trustRow.score}.`
+        : `No trust row for ${trust_origin_key}.`;
+      return {
+        content: [{ type: 'text', text: summary }],
+        structuredContent: {
+          trust_origin_key,
+          trust: trustRow ? { score: trustRow.score, updated_at: trustRow.updated_at } : null
         }
       };
     }
