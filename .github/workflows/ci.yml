@@ -25,6 +25,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The repo vendors only vec0.dylib (macOS); Linux CI has no sqlite-vec
+      # binary, so the SQLite client's vec0 virtual-table bootstrap would hard
+      # fail. Fetch the matching-version Linux loadable extension into the path
+      # the runtime resolver already looks up (vendor/sqlite-extensions/vec0.so).
+      # Version MUST match the vendored dylib (see vec_version string in it).
+      - name: Fetch sqlite-vec Linux extension
+        env:
+          SQLITE_VEC_VERSION: v0.1.7-alpha.2
+        run: |
+          mkdir -p vendor/sqlite-extensions
+          curl -fSL -o /tmp/sqlite-vec.tar.gz \
+            "https://github.com/asg017/sqlite-vec/releases/download/${SQLITE_VEC_VERSION}/sqlite-vec-${SQLITE_VEC_VERSION#v}-loadable-linux-x86_64.tar.gz"
+          tar -xzf /tmp/sqlite-vec.tar.gz -C vendor/sqlite-extensions
+          test -f vendor/sqlite-extensions/vec0.so
+
       - name: Test (full suite)
         run: npm test
 
