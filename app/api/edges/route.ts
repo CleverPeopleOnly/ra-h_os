@@ -111,7 +111,13 @@ export async function POST(request: NextRequest) {
       explanation,
       created_via: createdVia,
       source: body.source,
-      skip_inference: skipInference
+      skip_inference: skipInference,
+      // Belief evidence pass-through (MR-B): the three writable evidence
+      // fields must reach edgeService intact; plain edge bodies carry none,
+      // so these stay undefined and no evidence values are invented.
+      belief_evidence_direction: body.belief_evidence_direction,
+      belief_evidence_strength: body.belief_evidence_strength,
+      belief_evidence_origin_key: body.belief_evidence_origin_key
     });
 
     return NextResponse.json({

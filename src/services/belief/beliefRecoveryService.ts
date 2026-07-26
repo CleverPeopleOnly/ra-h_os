@@ -1,16 +1,15 @@
 /**
- * Belief recovery sweep (MR-B stub — NOT IMPLEMENTED YET).
+ * Belief recovery sweep (MR-B).
  *
  * Purpose: evidence edges written by the standalone MCP server while the app
  * was closed carry NULL belief_evidence_contribution (the standalone
  * server never grades — grading is app-owned). At app startup this sweep
  * finds every node with such ungraded evidence and regrades it via
  * recomputeNodeBelief, so belief values catch up with offline writes.
- *
- * The tests in tests/unit/belief/beliefRecovery.test.ts pin the contract;
- * this stub exists so the test suite compiles and fails RED for the intended
- * reason (missing behavior), not for a missing module.
  */
+
+import { getSQLiteClient } from '@/services/database/sqlite-client';
+import { recomputeNodeBelief } from '@/services/belief/beliefService';
 
 // Outcome of one recovery sweep: which nodes were regraded.
 export interface BeliefRecoveryResult {
@@ -22,9 +21,29 @@ export interface BeliefRecoveryResult {
 // Find every node with ungraded evidence (incoming edges whose
 // belief_evidence_direction is set but belief_evidence_contribution is NULL) and
 // recompute its belief. Fully-stamped nodes and nodes without evidence edges
-// must be left untouched.
+// must be left untouched, which makes the sweep idempotent: regrading stamps
+// every evidence edge, so a rerun finds nothing left to do.
 export async function recoverUngradedEvidence(): Promise<BeliefRecoveryResult> {
-  throw new Error(
-    'recoverUngradedEvidence is not implemented yet (MR-B belief recovery sweep pending).'
-  );
+  const sqlite = getSQLiteClient();
+
+  // Distinct target nodes carrying at least one evidence edge that was never
+  // graded (direction set, contribution stamp NULL) — i.e. offline writes.
+  const ungradedEvidenceNodeRows = sqlite
+    .prepare(
+      `SELECT DISTINCT to_node_id AS node_id
+       FROM edges
+       WHERE belief_evidence_direction IS NOT NULL
+         AND belief_evidence_contribution IS NULL
+       ORDER BY to_node_id ASC`
+    )
+    .all() as Array<{ node_id: number }>;
+
+  // Every node the sweep actually regraded, in the order it processed them.
+  const regradedNodeIds: number[] = [];
+  for (const ungradedEvidenceNodeRow of ungradedEvidenceNodeRows) {
+    await recomputeNodeBelief(ungradedEvidenceNodeRow.node_id);
+    regradedNodeIds.push(ungradedEvidenceNodeRow.node_id);
+  }
+
+  return { regradedNodeIds };
 }

@@ -40,7 +40,18 @@ function getEdgeById(id) {
  * The main app handles edge type inference.
  */
 function createEdge(edgeData) {
-  const { from_node_id, to_node_id, explanation, source = 'mcp' } = edgeData;
+  const {
+    from_node_id,
+    to_node_id,
+    explanation,
+    source = 'mcp',
+    // Belief evidence fields (fork addition): stored verbatim in the
+    // dedicated belief_ edge columns. The standalone server stores evidence
+    // but NEVER grades — belief_evidence_contribution is never written here.
+    belief_evidence_direction,
+    belief_evidence_strength,
+    belief_evidence_origin_key
+  } = edgeData;
   const now = new Date().toISOString();
   const db = getDb();
 
@@ -64,19 +75,45 @@ function createEdge(edgeData) {
     created_via: 'mcp'
   };
 
-  const stmt = db.prepare(`
-    INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
+  // True when the caller supplied any belief evidence field; only then does
+  // the INSERT name the belief columns, so plain relationship edges keep
+  // working against databases that predate the belief schema.
+  const hasBeliefEvidenceFields =
+    belief_evidence_direction !== undefined ||
+    belief_evidence_strength !== undefined ||
+    belief_evidence_origin_key !== undefined;
 
-  const result = runWithBusyRetry(() => stmt.run(
-      from_node_id,
-      to_node_id,
-      JSON.stringify(context),
-      source,
-      now,
-      cleanExplanation
-    ),
+  const stmt = hasBeliefEvidenceFields
+    ? db.prepare(`
+        INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
+                           belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+    : db.prepare(`
+        INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+
+  const result = runWithBusyRetry(() => hasBeliefEvidenceFields
+      ? stmt.run(
+          from_node_id,
+          to_node_id,
+          JSON.stringify(context),
+          source,
+          now,
+          cleanExplanation,
+          belief_evidence_direction ?? null,
+          belief_evidence_strength ?? null,
+          belief_evidence_origin_key ?? null
+        )
+      : stmt.run(
+          from_node_id,
+          to_node_id,
+          JSON.stringify(context),
+          source,
+          now,
+          cleanExplanation
+        ),
     'createEdge'
   );
 

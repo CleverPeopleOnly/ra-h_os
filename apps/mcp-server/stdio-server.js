@@ -166,7 +166,12 @@ const createEdgeInputSchema = {
   sourceId: z.number().int().positive().describe('Source node ID'),
   targetId: z.number().int().positive().describe('Target node ID'),
   explanation: z.string().min(1).describe('REQUIRED: Why does this connection exist? Be specific.'),
-  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.')
+  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.'),
+  // Belief evidence fields (fork addition): optional, forwarded verbatim to
+  // the app's /api/edges — the app-owned belief engine does the grading.
+  belief_evidence_direction: z.enum(['for', 'against']).optional().describe("Evidence direction: whether the source node argues 'for' or 'against' the target node. Requires belief_evidence_strength."),
+  belief_evidence_strength: z.number().min(0).max(1).optional().describe('Evidence weight in [0, 1].'),
+  belief_evidence_origin_key: z.string().nullable().optional().describe('Origin key of this evidence; evidence sharing a key is treated as non-independent by the grading policy.')
 };
 
 const createEdgeOutputSchema = {
@@ -543,7 +548,7 @@ server.registerTool(
     inputSchema: createEdgeInputSchema,
     outputSchema: createEdgeOutputSchema
   },
-  async ({ sourceId, targetId, explanation, confirmed_by_user }) => {
+  async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key }) => {
     if (!confirmed_by_user) {
       throw new Error('rah_create_edge requires explicit user confirmation before writing the relationship.');
     }
@@ -556,6 +561,13 @@ server.registerTool(
       created_via: 'mcp',
       confirmed_by_user: true
     };
+
+    // Belief evidence pass-through (fork addition): include each evidence
+    // field only when the caller supplied it, so plain relationship edges
+    // keep an evidence-free payload.
+    if (belief_evidence_direction !== undefined) payload.belief_evidence_direction = belief_evidence_direction;
+    if (belief_evidence_strength !== undefined) payload.belief_evidence_strength = belief_evidence_strength;
+    if (belief_evidence_origin_key !== undefined) payload.belief_evidence_origin_key = belief_evidence_origin_key;
 
     const result = await callRaHApi('/api/edges', {
       method: 'POST',
