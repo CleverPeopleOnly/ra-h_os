@@ -77,9 +77,9 @@ export interface TempBeliefDatabase {
     toNodeId: number;
     direction: 'for' | 'against';
     strength: number;
-    evidenceOriginKey: string | null;
+    beliefEvidenceOriginKey: string | null;
   }): number;
-  // Seed or overwrite a source_trust row directly via SQL.
+  // Seed or overwrite a belief_source_trust row directly via SQL.
   seedSourceTrustRow(trustOriginKey: string, score: number): void;
   // Read a node's persisted belief state.
   readNodeBelief(nodeId: number): { belief_value: number | null; belief_computed_at: string | null };
@@ -157,22 +157,22 @@ export async function openTempBeliefDatabase(
       return Number(result.lastInsertRowid);
     },
 
-    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, direction, strength, evidenceOriginKey }) {
+    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, direction, strength, beliefEvidenceOriginKey }) {
       const result = sqlite
         .prepare(
           `INSERT INTO edges
              (from_node_id, to_node_id, source, explanation,
-              evidence_direction, evidence_strength, evidence_origin_key)
+              belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key)
            VALUES (?, ?, 'user', 'evidence edge fixture', ?, ?, ?)`
         )
-        .run(fromNodeId, toNodeId, direction, strength, evidenceOriginKey);
+        .run(fromNodeId, toNodeId, direction, strength, beliefEvidenceOriginKey);
       return Number(result.lastInsertRowid);
     },
 
     seedSourceTrustRow(trustOriginKey, score) {
       sqlite
         .prepare(
-          `INSERT INTO source_trust (trust_origin_key, score, updated_at)
+          `INSERT INTO belief_source_trust (trust_origin_key, score, updated_at)
            VALUES (?, ?, datetime('now'))
            ON CONFLICT(trust_origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`
         )
@@ -196,9 +196,9 @@ export async function openTempBeliefDatabase(
 
     readEvidenceStamp(edgeId) {
       const row = sqlite
-        .prepare('SELECT evidence_effective_contribution FROM edges WHERE id = ?')
-        .get(edgeId) as { evidence_effective_contribution: number | null } | undefined;
-      return row?.evidence_effective_contribution ?? null;
+        .prepare('SELECT belief_evidence_contribution FROM edges WHERE id = ?')
+        .get(edgeId) as { belief_evidence_contribution: number | null } | undefined;
+      return row?.belief_evidence_contribution ?? null;
     },
 
     readTableColumns(tableName) {

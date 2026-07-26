@@ -2,7 +2,7 @@
  * Belief service — recomputes a node's belief value from its incoming
  * evidence edges, persists the result (nodes.belief_value +
  * belief_computed_at), stamps each evidence edge's
- * evidence_effective_contribution, and appends a belief_movements row
+ * belief_evidence_contribution, and appends a belief_movements row
  * whenever the value actually changed.
  */
 
@@ -10,7 +10,7 @@ import { getSQLiteClient } from '@/services/database/sqlite-client';
 import {
   DEFAULT_ORIGIN_TRUST,
   beliefGradingPolicyV1,
-  type EvidenceContribution,
+  type BeliefEvidenceContribution,
 } from '@/services/belief/beliefGradingPolicy';
 import { getTrustScore } from '@/services/belief/sourceTrustService';
 
@@ -47,9 +47,9 @@ export interface BeliefRecomputeResult {
 // from-node's metadata JSON (where trustOriginKey lives).
 interface EvidenceEdgeRow {
   id: number;
-  evidence_direction: string;
-  evidence_strength: number;
-  evidence_origin_key: string | null;
+  belief_evidence_direction: string;
+  belief_evidence_strength: number;
+  belief_evidence_origin_key: string | null;
   from_node_metadata: string | null;
 }
 
@@ -74,12 +74,12 @@ function readTrustOriginKeyFromMetadata(metadataJson: string | null): string | n
 }
 
 // Recompute and persist the belief value for one node:
-//  - loads its incoming evidence edges (evidence_direction IS NOT NULL),
+//  - loads its incoming evidence edges (belief_evidence_direction IS NOT NULL),
 //  - weights each by the from-node origin's trust score (DEFAULT_ORIGIN_TRUST
 //    when the origin is unknown),
 //  - grades via beliefGradingPolicyV1 and persists nodes.belief_value +
 //    belief_computed_at,
-//  - stamps each edge's evidence_effective_contribution,
+//  - stamps each edge's belief_evidence_contribution,
 //  - appends a belief_movements row iff the value actually changed.
 // A node with zero evidence edges stays/becomes ungraded (belief_value NULL)
 // with no movement row and no stamps.
@@ -90,11 +90,11 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
   // so the origin's trust weight can be resolved.
   const evidenceEdges = sqlite
     .prepare(
-      `SELECT e.id, e.evidence_direction, e.evidence_strength, e.evidence_origin_key,
+      `SELECT e.id, e.belief_evidence_direction, e.belief_evidence_strength, e.belief_evidence_origin_key,
               n.metadata AS from_node_metadata
        FROM edges e
        JOIN nodes n ON n.id = e.from_node_id
-       WHERE e.to_node_id = ? AND e.evidence_direction IS NOT NULL`
+       WHERE e.to_node_id = ? AND e.belief_evidence_direction IS NOT NULL`
     )
     .all(nodeId) as EvidenceEdgeRow[];
 
@@ -118,20 +118,20 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
   // negative for 'against' evidence.
   const contributions: BeliefEdgeContribution[] = [];
   // Same contributions in the shape the grading policy consumes.
-  const policyContributions: EvidenceContribution[] = [];
+  const policyContributions: BeliefEvidenceContribution[] = [];
   for (const evidenceEdge of evidenceEdges) {
     const trustOriginKey = readTrustOriginKeyFromMetadata(evidenceEdge.from_node_metadata);
-    // Origin trust weight: source_trust score when known, else the default.
+    // Origin trust weight: belief_source_trust score when known, else the default.
     const trustWeight =
       (trustOriginKey !== null ? await getTrustScore(trustOriginKey) : null) ??
       DEFAULT_ORIGIN_TRUST;
-    const directionSign = evidenceEdge.evidence_direction === 'against' ? -1 : 1;
-    const effectiveContribution = directionSign * evidenceEdge.evidence_strength * trustWeight;
+    const directionSign = evidenceEdge.belief_evidence_direction === 'against' ? -1 : 1;
+    const effectiveContribution = directionSign * evidenceEdge.belief_evidence_strength * trustWeight;
     contributions.push({ edgeId: evidenceEdge.id, effectiveContribution });
     policyContributions.push({
       edgeId: evidenceEdge.id,
       signedContribution: effectiveContribution,
-      evidenceOriginKey: evidenceEdge.evidence_origin_key,
+      beliefEvidenceOriginKey: evidenceEdge.belief_evidence_origin_key,
     });
   }
 
@@ -146,7 +146,7 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
 
   // Stamp each evidence edge with its signed effective contribution.
   const stampEvidenceEdge = sqlite.prepare(
-    'UPDATE edges SET evidence_effective_contribution = ? WHERE id = ?'
+    'UPDATE edges SET belief_evidence_contribution = ? WHERE id = ?'
   );
   for (const contribution of contributions) {
     stampEvidenceEdge.run(contribution.effectiveContribution, contribution.edgeId);

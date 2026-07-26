@@ -275,11 +275,11 @@ export class EdgeService {
 
     // Whether this edge carries belief-engine evidence for the target node.
     // Evidence lives in dedicated columns; the context JSON stays app-owned.
-    const hasEvidenceFields = edgeData.evidence_direction != null;
+    const hasBeliefEvidenceFields = edgeData.belief_evidence_direction != null;
 
     const result = sqlite.prepare(`
       INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
-                         evidence_direction, evidence_strength, evidence_origin_key)
+                         belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       finalFromId,
@@ -288,9 +288,9 @@ export class EdgeService {
       edgeData.source,
       now,
       explanation,
-      edgeData.evidence_direction ?? null,
-      edgeData.evidence_strength ?? null,
-      edgeData.evidence_origin_key ?? null
+      edgeData.belief_evidence_direction ?? null,
+      edgeData.belief_evidence_strength ?? null,
+      edgeData.belief_evidence_origin_key ?? null
     );
 
     const edgeId = Number(result.lastInsertRowid);
@@ -301,7 +301,7 @@ export class EdgeService {
     }
 
     // Evidence hook: a new evidence edge must regrade the node it points at.
-    if (hasEvidenceFields) {
+    if (hasBeliefEvidenceFields) {
       await recomputeNodeBelief(finalToId);
     }
 

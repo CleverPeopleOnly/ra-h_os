@@ -17,7 +17,7 @@ import {
   PRIOR_BELIEF,
   SATURATION_RATE,
   beliefGradingPolicyV1,
-  type EvidenceContribution,
+  type BeliefEvidenceContribution,
 } from '@/services/belief/beliefGradingPolicy';
 
 // Expected belief for a support mass S and contradiction mass C under the
@@ -34,9 +34,9 @@ function expectedBelief(supportSum: number, contradictionSum: number): number {
 function contribution(
   edgeId: number,
   signedContribution: number,
-  evidenceOriginKey: string | null
-): EvidenceContribution {
-  return { edgeId, signedContribution, evidenceOriginKey };
+  beliefEvidenceOriginKey: string | null
+): BeliefEvidenceContribution {
+  return { edgeId, signedContribution, beliefEvidenceOriginKey };
 }
 
 describe('beliefGradingPolicyV1', () => {

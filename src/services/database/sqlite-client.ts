@@ -416,15 +416,15 @@ class SQLiteClient {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         context TEXT,
         explanation TEXT,
-        evidence_direction TEXT,
-        evidence_strength REAL,
-        evidence_origin_key TEXT,
-        evidence_effective_contribution REAL,
+        belief_evidence_direction TEXT,
+        belief_evidence_strength REAL,
+        belief_evidence_origin_key TEXT,
+        belief_evidence_contribution REAL,
         FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
         FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
       );
 
-      CREATE TABLE IF NOT EXISTS source_trust (
+      CREATE TABLE IF NOT EXISTS belief_source_trust (
         trust_origin_key TEXT PRIMARY KEY,
         score REAL NOT NULL,
         updated_at TEXT NOT NULL
@@ -486,7 +486,7 @@ class SQLiteClient {
   // Belief-engine migration (MR-A): legacy databases were created before the
   // belief columns existed, and CREATE TABLE IF NOT EXISTS never alters an
   // existing table — so mirror the ensureNodeCol pattern and ALTER the
-  // missing columns in. The source_trust / belief_movements tables are
+  // missing columns in. The belief_source_trust / belief_movements tables are
   // already covered by CREATE TABLE IF NOT EXISTS in ensureCoreSchema.
   // Must run inside the startup write lock.
   private ensureBeliefSchemaLocked(): void {
@@ -513,27 +513,47 @@ class SQLiteClient {
     try {
       // Vocabulary migration: databases created while the field was named
       // evidence_relation (with values supports/contradicts) get the column
-      // renamed to evidence_direction and the values mapped to for/against.
+      // renamed to belief_evidence_direction and the values mapped to for/against.
       const preMigrationEdgeCols = this.db.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
       if (preMigrationEdgeCols.some(col => col.name === 'evidence_relation')) {
         try {
-          this.db.exec('ALTER TABLE edges RENAME COLUMN evidence_relation TO evidence_direction;');
+          this.db.exec('ALTER TABLE edges RENAME COLUMN evidence_relation TO belief_evidence_direction;');
           this.db.exec(
-            "UPDATE edges SET evidence_direction = CASE evidence_direction WHEN 'supports' THEN 'for' WHEN 'contradicts' THEN 'against' ELSE evidence_direction END WHERE evidence_direction IS NOT NULL;"
+            "UPDATE edges SET belief_evidence_direction = CASE belief_evidence_direction WHEN 'supports' THEN 'for' WHEN 'contradicts' THEN 'against' ELSE belief_evidence_direction END WHERE belief_evidence_direction IS NOT NULL;"
           );
         } catch (renameErr) {
-          console.warn('Failed to migrate edges.evidence_relation to evidence_direction:', renameErr);
+          console.warn('Failed to migrate edges.evidence_relation to belief_evidence_direction:', renameErr);
         }
       }
 
       // Vocabulary migration: the key identifying the origin artifact of a
       // piece of evidence shipped briefly as evidence_independence_key; it is
-      // now evidence_origin_key (data carries over unchanged).
+      // now belief_evidence_origin_key (data carries over unchanged).
       if (preMigrationEdgeCols.some(col => col.name === 'evidence_independence_key')) {
         try {
-          this.db.exec('ALTER TABLE edges RENAME COLUMN evidence_independence_key TO evidence_origin_key;');
+          this.db.exec('ALTER TABLE edges RENAME COLUMN evidence_independence_key TO belief_evidence_origin_key;');
         } catch (renameErr) {
-          console.warn('Failed to migrate edges.evidence_independence_key to evidence_origin_key:', renameErr);
+          console.warn('Failed to migrate edges.evidence_independence_key to belief_evidence_origin_key:', renameErr);
+        }
+      }
+
+      // Vocabulary migration: the evidence columns shipped briefly without the
+      // belief_ prefix; every belief-system column now carries it so belief
+      // code is recognisable on sight anywhere in the codebase. Data carries
+      // over unchanged.
+      const unprefixedEvidenceRenames: Array<[string, string]> = [
+        ['evidence_direction', 'belief_evidence_direction'],
+        ['evidence_strength', 'belief_evidence_strength'],
+        ['evidence_origin_key', 'belief_evidence_origin_key'],
+        ['evidence_effective_contribution', 'belief_evidence_contribution'],
+      ];
+      for (const [oldName, newName] of unprefixedEvidenceRenames) {
+        if (preMigrationEdgeCols.some(col => col.name === oldName)) {
+          try {
+            this.db.exec(`ALTER TABLE edges RENAME COLUMN ${oldName} TO ${newName};`);
+          } catch (renameErr) {
+            console.warn(`Failed to migrate edges.${oldName} to ${newName}:`, renameErr);
+          }
         }
       }
 
@@ -548,25 +568,41 @@ class SQLiteClient {
           }
         }
       };
-      ensureEdgeEvidenceCol('evidence_direction', 'ALTER TABLE edges ADD COLUMN evidence_direction TEXT;');
-      ensureEdgeEvidenceCol('evidence_strength', 'ALTER TABLE edges ADD COLUMN evidence_strength REAL;');
-      ensureEdgeEvidenceCol('evidence_origin_key', 'ALTER TABLE edges ADD COLUMN evidence_origin_key TEXT;');
-      ensureEdgeEvidenceCol('evidence_effective_contribution', 'ALTER TABLE edges ADD COLUMN evidence_effective_contribution REAL;');
+      ensureEdgeEvidenceCol('belief_evidence_direction', 'ALTER TABLE edges ADD COLUMN belief_evidence_direction TEXT;');
+      ensureEdgeEvidenceCol('belief_evidence_strength', 'ALTER TABLE edges ADD COLUMN belief_evidence_strength REAL;');
+      ensureEdgeEvidenceCol('belief_evidence_origin_key', 'ALTER TABLE edges ADD COLUMN belief_evidence_origin_key TEXT;');
+      ensureEdgeEvidenceCol('belief_evidence_contribution', 'ALTER TABLE edges ADD COLUMN belief_evidence_contribution REAL;');
     } catch (edgeErr) {
       console.warn('Failed to ensure edges evidence columns:', edgeErr);
     }
 
-    // source_trust: the key naming WHO is trusted (author/domain) shipped
-    // briefly as origin_key; it is now trust_origin_key so it can never be
-    // confused with edges.evidence_origin_key (which names the origin
-    // artifact of one piece of evidence). Data carries over unchanged.
+    // Trust-table migration: the table shipped briefly as source_trust (keyed
+    // first by origin_key, then trust_origin_key); it is now
+    // belief_source_trust so belief code is recognisable on sight. By this
+    // point ensureCoreSchema has already created a fresh empty
+    // belief_source_trust, so a legacy table's rows are copied across and the
+    // legacy table dropped.
     try {
-      const sourceTrustCols = this.db.prepare('PRAGMA table_info(source_trust)').all() as Array<{ name: string }>;
-      if (sourceTrustCols.some(col => col.name === 'origin_key')) {
-        this.db.exec('ALTER TABLE source_trust RENAME COLUMN origin_key TO trust_origin_key;');
+      const hasLegacySourceTrust = this.db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='source_trust'")
+        .get();
+      if (hasLegacySourceTrust) {
+        const legacyTrustCols = this.db.prepare('PRAGMA table_info(source_trust)').all() as Array<{ name: string }>;
+        // The key naming WHO is trusted (author/domain) shipped briefly as
+        // origin_key; normalise to trust_origin_key before copying so it can
+        // never be confused with edges.belief_evidence_origin_key (which
+        // names the origin artifact of one piece of evidence).
+        if (legacyTrustCols.some(col => col.name === 'origin_key')) {
+          this.db.exec('ALTER TABLE source_trust RENAME COLUMN origin_key TO trust_origin_key;');
+        }
+        this.db.exec(
+          `INSERT OR IGNORE INTO belief_source_trust (trust_origin_key, score, updated_at)
+           SELECT trust_origin_key, score, updated_at FROM source_trust;`
+        );
+        this.db.exec('DROP TABLE source_trust;');
       }
     } catch (trustRenameErr) {
-      console.warn('Failed to migrate source_trust.origin_key to trust_origin_key:', trustRenameErr);
+      console.warn('Failed to migrate source_trust to belief_source_trust:', trustRenameErr);
     }
   }
 
