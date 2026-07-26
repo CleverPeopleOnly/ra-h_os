@@ -1,5 +1,5 @@
 /**
- * Tests for sourceTrustService — the read/write API over the source_trust
+ * Tests for sourceTrustService — the read/write API over the belief_source_trust
  * table (trust_origin_key -> trust score). Runs against a fresh temp-file database
  * per test (see tempBeliefDatabase.ts for the safety seam).
  */
@@ -33,7 +33,7 @@ describe('sourceTrustService', () => {
   // Unknown origins are a real state: the lookup must report null, not a
   // default — the DEFAULT_ORIGIN_TRUST fallback belongs to the belief
   // engine, not to this service.
-  it('returns null for an origin key with no source_trust row', async () => {
+  it('returns null for an origin key with no belief_source_trust row', async () => {
     db = await openTempBeliefDatabase();
     const { getTrustScore } = await db.importSourceTrustService();
 
@@ -51,7 +51,7 @@ describe('sourceTrustService', () => {
 
     expect(await getTrustScore('origin-updated')).toBeCloseTo(0.9, 10);
     const rowCount = db.sqlite
-      .prepare('SELECT COUNT(*) AS count FROM source_trust WHERE trust_origin_key = ?')
+      .prepare('SELECT COUNT(*) AS count FROM belief_source_trust WHERE trust_origin_key = ?')
       .get('origin-updated') as { count: number };
     expect(rowCount.count).toBe(1);
   });

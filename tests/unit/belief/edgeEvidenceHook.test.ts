@@ -2,8 +2,8 @@
  * Tests for the EdgeService evidence hook (MR-A).
  *
  * Pins that EdgeService.createEdge:
- *  - stores the new optional evidence fields (evidence_direction,
- *    evidence_strength, evidence_origin_key) in the new edge columns,
+ *  - stores the new optional evidence fields (belief_evidence_direction,
+ *    belief_evidence_strength, belief_evidence_origin_key) in the new edge columns,
  *  - triggers recomputeNodeBelief(to_node_id) so the target node's
  *    belief_value becomes non-NULL WITHOUT any explicit belief call,
  *  - leaves belief_value NULL and the evidence columns NULL when called
@@ -25,9 +25,9 @@ import {
 // to EdgeData) so the tests compile before EdgeData itself gains the fields;
 // once MR-A extends EdgeData this alias becomes redundant but stays valid.
 type EvidenceEdgeInput = EdgeData & {
-  evidence_direction: 'for' | 'against';
-  evidence_strength: number;
-  evidence_origin_key: string | null;
+  belief_evidence_direction: 'for' | 'against';
+  belief_evidence_strength: number;
+  belief_evidence_origin_key: string | null;
 };
 
 // The database context under test; opened per test, closed after each.
@@ -40,16 +40,16 @@ afterEach(() => {
 
 // One edges row as read back by these tests.
 interface EvidenceEdgeRow {
-  evidence_direction: string | null;
-  evidence_strength: number | null;
-  evidence_origin_key: string | null;
+  belief_evidence_direction: string | null;
+  belief_evidence_strength: number | null;
+  belief_evidence_origin_key: string | null;
 }
 
 // Read the evidence columns of one edge straight from SQLite.
 function readEvidenceColumns(context: TempBeliefDatabase, edgeId: number): EvidenceEdgeRow {
   return context.sqlite
     .prepare(
-      `SELECT evidence_direction, evidence_strength, evidence_origin_key
+      `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key
        FROM edges WHERE id = ?`
     )
     .get(edgeId) as EvidenceEdgeRow;
@@ -71,16 +71,16 @@ describe('EdgeService evidence hook', () => {
       created_via: 'workflow',
       source: 'user',
       skip_inference: true,
-      evidence_direction: 'for',
-      evidence_strength: 0.8,
-      evidence_origin_key: 'origin-hook-test',
+      belief_evidence_direction: 'for',
+      belief_evidence_strength: 0.8,
+      belief_evidence_origin_key: 'origin-hook-test',
     };
     const createdEdge = await edgeService.createEdge(evidenceInput);
 
     const storedEvidence = readEvidenceColumns(db, createdEdge.id);
-    expect(storedEvidence.evidence_direction).toBe('for');
-    expect(Number(storedEvidence.evidence_strength)).toBeCloseTo(0.8, 10);
-    expect(storedEvidence.evidence_origin_key).toBe('origin-hook-test');
+    expect(storedEvidence.belief_evidence_direction).toBe('for');
+    expect(Number(storedEvidence.belief_evidence_strength)).toBeCloseTo(0.8, 10);
+    expect(storedEvidence.belief_evidence_origin_key).toBe('origin-hook-test');
   });
 
   // Creating an evidence edge must, by itself, grade the target node: its
@@ -98,9 +98,9 @@ describe('EdgeService evidence hook', () => {
       created_via: 'workflow',
       source: 'user',
       skip_inference: true,
-      evidence_direction: 'for',
-      evidence_strength: 0.8,
-      evidence_origin_key: 'origin-hook-test',
+      belief_evidence_direction: 'for',
+      belief_evidence_strength: 0.8,
+      belief_evidence_origin_key: 'origin-hook-test',
     };
     await edgeService.createEdge(evidenceInput);
 
@@ -137,8 +137,8 @@ describe('EdgeService evidence hook', () => {
 
     expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
     const storedEvidence = readEvidenceColumns(db, createdEdge.id);
-    expect(storedEvidence.evidence_direction).toBeNull();
-    expect(storedEvidence.evidence_strength).toBeNull();
-    expect(storedEvidence.evidence_origin_key).toBeNull();
+    expect(storedEvidence.belief_evidence_direction).toBeNull();
+    expect(storedEvidence.belief_evidence_strength).toBeNull();
+    expect(storedEvidence.belief_evidence_origin_key).toBeNull();
   });
 });

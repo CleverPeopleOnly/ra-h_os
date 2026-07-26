@@ -3,6 +3,19 @@
 ## What This Is
 Open-source, local-first knowledge graph app with MCP integration.
 
+This fork (CleverPeopleOnly/ra-h_os) adds a native belief engine on top of upstream RA-OS.
+
+## Fork rule: belief-system naming (mandatory)
+
+Everything the belief system adds to this codebase must be recognisable as belief-system code on sight, wherever it appears:
+
+- **Every database table or column we add carries the `belief_` prefix** — e.g. `nodes.belief_value`, `edges.belief_evidence_strength`, `belief_source_trust`, `belief_movements`. This matters most on upstream-owned tables (`nodes`, `edges`), where our columns sit beside Brad's.
+- **Every identifier we add to an upstream-owned file says belief** — e.g. `hasBeliefEvidenceFields` in `edges.ts`, `recomputeNodeBelief` in `autoEmbedQueue.ts`.
+- **Every exported symbol of a belief module contains `belief`/`Belief`** — e.g. `BeliefEvidenceContribution`, `beliefGradingPolicyV1`. Module-internal locals inside `src/services/belief/` are already scoped by their path.
+- **MCP tool parameters and API fields follow the column names exactly** (`belief_evidence_direction`, `trust_origin_key` inside `belief_source_trust`, …).
+
+Rationale: our columns are guests in upstream territory — the prefix flags ours in any diff or merge conflict, and no future upstream name can collide with it. Renaming after the MCP surface ships would break callers, so names must be right before a surface goes live.
+
 ## Core Stack
 - Next.js 15 + TypeScript + Tailwind
 - SQLite + sqlite-vec

@@ -3,7 +3,7 @@
  * contributions into a single belief value for a node.
  *
  * POLICY V1 (PROVISIONAL): the treatment of repeated / derivative evidence
- * (contributions that share an evidence_origin_key) is deliberately
+ * (contributions that share an belief_evidence_origin_key) is deliberately
  * unsettled. V1 collapses same-key contributions to the single contribution
  * with the largest absolute value. Formula:
  *   S = sum of positive collapsed contributions
@@ -16,7 +16,7 @@
 export const PRIOR_BELIEF = 0.5;
 
 // Trust weight applied to evidence whose origin is unknown (the from-node has
-// no trustOriginKey in its metadata, or the key has no source_trust row).
+// no trustOriginKey in its metadata, or the key has no belief_source_trust row).
 export const DEFAULT_ORIGIN_TRUST = 0.3;
 
 // Rate of the exponential saturation applied to accumulated support and
@@ -24,46 +24,46 @@ export const DEFAULT_ORIGIN_TRUST = 0.3;
 export const SATURATION_RATE = 1.0;
 
 // One evidence edge's signed input to the grading formula.
-export interface EvidenceContribution {
+export interface BeliefEvidenceContribution {
   // Edge the contribution came from, so callers can trace results back.
   edgeId: number;
   // strength × trustWeight; negative when the edge direction is 'against'.
   signedContribution: number;
   // Edges sharing a non-null key are treated as non-independent (POLICY V1
   // collapses them); null means the contribution stands alone.
-  evidenceOriginKey: string | null;
+  beliefEvidenceOriginKey: string | null;
 }
 
 // Contract for a belief grading policy version.
 export interface BeliefGradingPolicy {
   // Reduce a node's evidence contributions to one belief value in (0, 1).
-  gradeBelief(contributions: EvidenceContribution[]): number;
+  gradeBelief(contributions: BeliefEvidenceContribution[]): number;
 }
 
 // PROVISIONAL POLICY V1 collapse rule, deliberately isolated here so a future
 // policy can replace it without touching the aggregation formula below:
-// contributions sharing a non-null evidenceOriginKey are NOT additive — they
+// contributions sharing a non-null beliefEvidenceOriginKey are NOT additive — they
 // collapse to the single contribution with the largest absolute value (ten
 // articles citing one study count as that study once, at its strongest
 // reading). Null-key contributions each stand alone.
 function collapseContributionsByEvidenceOriginKey(
-  contributions: EvidenceContribution[]
-): EvidenceContribution[] {
+  contributions: BeliefEvidenceContribution[]
+): BeliefEvidenceContribution[] {
   // Strongest-|value| contribution seen so far for each non-null key.
-  const strongestByEvidenceOriginKey = new Map<string, EvidenceContribution>();
+  const strongestByEvidenceOriginKey = new Map<string, BeliefEvidenceContribution>();
   // Contributions with no independence key — always independent, never collapsed.
-  const standaloneContributions: EvidenceContribution[] = [];
+  const standaloneContributions: BeliefEvidenceContribution[] = [];
   for (const contribution of contributions) {
-    if (contribution.evidenceOriginKey === null) {
+    if (contribution.beliefEvidenceOriginKey === null) {
       standaloneContributions.push(contribution);
       continue;
     }
-    const currentStrongest = strongestByEvidenceOriginKey.get(contribution.evidenceOriginKey);
+    const currentStrongest = strongestByEvidenceOriginKey.get(contribution.beliefEvidenceOriginKey);
     if (
       currentStrongest === undefined ||
       Math.abs(contribution.signedContribution) > Math.abs(currentStrongest.signedContribution)
     ) {
-      strongestByEvidenceOriginKey.set(contribution.evidenceOriginKey, contribution);
+      strongestByEvidenceOriginKey.set(contribution.beliefEvidenceOriginKey, contribution);
     }
   }
   return [...standaloneContributions, ...strongestByEvidenceOriginKey.values()];
@@ -74,7 +74,7 @@ function collapseContributionsByEvidenceOriginKey(
 // where S is the summed positive mass and C the summed |negative| mass.
 // Saturating in both directions, so the value stays strictly inside (0, 1).
 export const beliefGradingPolicyV1: BeliefGradingPolicy = {
-  gradeBelief(contributions: EvidenceContribution[]): number {
+  gradeBelief(contributions: BeliefEvidenceContribution[]): number {
     const collapsedContributions = collapseContributionsByEvidenceOriginKey(contributions);
     // Total supporting mass (S in the formula).
     let supportMass = 0;
