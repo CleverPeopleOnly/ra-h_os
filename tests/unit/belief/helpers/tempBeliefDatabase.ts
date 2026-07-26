@@ -75,12 +75,12 @@ export interface TempBeliefDatabase {
   insertEvidenceEdgeFixture(options: {
     fromNodeId: number;
     toNodeId: number;
-    relation: 'supports' | 'contradicts';
+    direction: 'for' | 'against';
     strength: number;
-    independenceKey: string | null;
+    evidenceOriginKey: string | null;
   }): number;
   // Seed or overwrite a source_trust row directly via SQL.
-  seedSourceTrustRow(originKey: string, score: number): void;
+  seedSourceTrustRow(trustOriginKey: string, score: number): void;
   // Read a node's persisted belief state.
   readNodeBelief(nodeId: number): { belief_value: number | null; belief_computed_at: string | null };
   // Read a node's belief movement rows, oldest first.
@@ -157,26 +157,26 @@ export async function openTempBeliefDatabase(
       return Number(result.lastInsertRowid);
     },
 
-    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, relation, strength, independenceKey }) {
+    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, direction, strength, evidenceOriginKey }) {
       const result = sqlite
         .prepare(
           `INSERT INTO edges
              (from_node_id, to_node_id, source, explanation,
-              evidence_relation, evidence_strength, evidence_independence_key)
+              evidence_direction, evidence_strength, evidence_origin_key)
            VALUES (?, ?, 'user', 'evidence edge fixture', ?, ?, ?)`
         )
-        .run(fromNodeId, toNodeId, relation, strength, independenceKey);
+        .run(fromNodeId, toNodeId, direction, strength, evidenceOriginKey);
       return Number(result.lastInsertRowid);
     },
 
-    seedSourceTrustRow(originKey, score) {
+    seedSourceTrustRow(trustOriginKey, score) {
       sqlite
         .prepare(
-          `INSERT INTO source_trust (origin_key, score, updated_at)
+          `INSERT INTO source_trust (trust_origin_key, score, updated_at)
            VALUES (?, ?, datetime('now'))
-           ON CONFLICT(origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`
+           ON CONFLICT(trust_origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`
         )
-        .run(originKey, score);
+        .run(trustOriginKey, score);
     },
 
     readNodeBelief(nodeId) {

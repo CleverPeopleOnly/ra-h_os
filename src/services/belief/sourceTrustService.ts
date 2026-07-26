@@ -8,21 +8,21 @@ import { getSQLiteClient } from '@/services/database/sqlite-client';
 
 // Look up the trust score for an origin key; null when no row exists.
 // (The DEFAULT_ORIGIN_TRUST fallback belongs to the belief engine, not here.)
-export async function getTrustScore(originKey: string): Promise<number | null> {
+export async function getTrustScore(trustOriginKey: string): Promise<number | null> {
   // Single-row lookup by primary key; undefined when the origin is unknown.
   const trustRow = getSQLiteClient()
-    .prepare('SELECT score FROM source_trust WHERE origin_key = ?')
-    .get(originKey) as { score: number } | undefined;
+    .prepare('SELECT score FROM source_trust WHERE trust_origin_key = ?')
+    .get(trustOriginKey) as { score: number } | undefined;
   return trustRow ? trustRow.score : null;
 }
 
 // Insert or update the trust score for an origin key (single row per key).
-export async function upsertTrustScore(originKey: string, score: number): Promise<void> {
+export async function upsertTrustScore(trustOriginKey: string, score: number): Promise<void> {
   getSQLiteClient()
     .prepare(
-      `INSERT INTO source_trust (origin_key, score, updated_at)
+      `INSERT INTO source_trust (trust_origin_key, score, updated_at)
        VALUES (?, ?, ?)
-       ON CONFLICT(origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`
+       ON CONFLICT(trust_origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`
     )
-    .run(originKey, score, new Date().toISOString());
+    .run(trustOriginKey, score, new Date().toISOString());
 }

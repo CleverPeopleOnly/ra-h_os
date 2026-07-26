@@ -49,16 +49,16 @@ function expectedBelief(supportSum: number, contradictionSum: number): number {
 function seedClaimWithOneEvidenceEdge(
   context: TempBeliefDatabase,
   options: {
-    relation: 'supports' | 'contradicts';
+    direction: 'for' | 'against';
     strength: number;
-    independenceKey: string;
+    evidenceOriginKey: string;
     trustOriginKey?: string;
     trustScore?: number;
   }
 ): { claimNodeId: number; sourceNodeId: number; edgeId: number } {
   const claimNodeId = context.insertNodeFixture({ title: 'claim under test' });
   const sourceNodeId = context.insertNodeFixture({
-    title: `evidence source ${options.independenceKey}`,
+    title: `evidence source ${options.evidenceOriginKey}`,
     trustOriginKey: options.trustOriginKey,
   });
   if (options.trustOriginKey && options.trustScore !== undefined) {
@@ -67,9 +67,9 @@ function seedClaimWithOneEvidenceEdge(
   const edgeId = context.insertEvidenceEdgeFixture({
     fromNodeId: sourceNodeId,
     toNodeId: claimNodeId,
-    relation: options.relation,
+    direction: options.direction,
     strength: options.strength,
-    independenceKey: options.independenceKey,
+    evidenceOriginKey: options.evidenceOriginKey,
   });
   return { claimNodeId, sourceNodeId, edgeId };
 }
@@ -80,15 +80,15 @@ function addEvidenceEdge(
   context: TempBeliefDatabase,
   claimNodeId: number,
   options: {
-    relation: 'supports' | 'contradicts';
+    direction: 'for' | 'against';
     strength: number;
-    independenceKey: string;
+    evidenceOriginKey: string;
     trustOriginKey?: string;
     trustScore?: number;
   }
 ): number {
   const sourceNodeId = context.insertNodeFixture({
-    title: `extra evidence source ${options.independenceKey}-${options.strength}`,
+    title: `extra evidence source ${options.evidenceOriginKey}-${options.strength}`,
     trustOriginKey: options.trustOriginKey,
   });
   if (options.trustOriginKey && options.trustScore !== undefined) {
@@ -97,9 +97,9 @@ function addEvidenceEdge(
   return context.insertEvidenceEdgeFixture({
     fromNodeId: sourceNodeId,
     toNodeId: claimNodeId,
-    relation: options.relation,
+    direction: options.direction,
     strength: options.strength,
-    independenceKey: options.independenceKey,
+    evidenceOriginKey: options.evidenceOriginKey,
   });
 }
 
@@ -123,9 +123,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('grades a node with a single supporting edge above the prior', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-support',
+      evidenceOriginKey: 'origin-support',
       trustOriginKey: 'origin-support',
       trustScore: 1.0,
     });
@@ -140,9 +140,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('grades a node with a single contradicting edge below the prior', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'contradicts',
+      direction: 'against',
       strength: 0.6,
-      independenceKey: 'origin-contra',
+      evidenceOriginKey: 'origin-contra',
       trustOriginKey: 'origin-contra',
       trustScore: 1.0,
     });
@@ -159,9 +159,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('grades one full-strength, fully-trusted support to the exact formula anchor', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-anchor',
+      evidenceOriginKey: 'origin-anchor',
       trustOriginKey: 'origin-anchor',
       trustScore: 1.0,
     });
@@ -180,9 +180,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('raises belief when a second independent support is added', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-first',
+      evidenceOriginKey: 'origin-first',
       trustOriginKey: 'origin-first',
       trustScore: 1.0,
     });
@@ -191,9 +191,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     const valueAfterFirstSupport = db.readNodeBelief(claimNodeId).belief_value;
 
     addEvidenceEdge(db, claimNodeId, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-second',
+      evidenceOriginKey: 'origin-second',
       trustOriginKey: 'origin-second',
       trustScore: 1.0,
     });
@@ -208,9 +208,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('gives the second independent support a smaller increment than the first (saturation)', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-first',
+      evidenceOriginKey: 'origin-first',
       trustOriginKey: 'origin-first',
       trustScore: 1.0,
     });
@@ -219,9 +219,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     const valueAfterFirstSupport = Number(db.readNodeBelief(claimNodeId).belief_value);
 
     addEvidenceEdge(db, claimNodeId, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-second',
+      evidenceOriginKey: 'origin-second',
       trustOriginKey: 'origin-second',
       trustScore: 1.0,
     });
@@ -240,9 +240,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     const claimNodeId = db.insertNodeFixture({ title: 'heavily supported claim' });
     for (let supportIndex = 0; supportIndex < 10; supportIndex += 1) {
       addEvidenceEdge(db, claimNodeId, {
-        relation: 'supports',
+        direction: 'for',
         strength: 1.0,
-        independenceKey: `origin-support-${supportIndex}`,
+        evidenceOriginKey: `origin-support-${supportIndex}`,
         trustOriginKey: `origin-support-${supportIndex}`,
         trustScore: 1.0,
       });
@@ -262,9 +262,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     const claimNodeId = db.insertNodeFixture({ title: 'heavily contradicted claim' });
     for (let contradictionIndex = 0; contradictionIndex < 10; contradictionIndex += 1) {
       addEvidenceEdge(db, claimNodeId, {
-        relation: 'contradicts',
+        direction: 'against',
         strength: 1.0,
-        independenceKey: `origin-contra-${contradictionIndex}`,
+        evidenceOriginKey: `origin-contra-${contradictionIndex}`,
         trustOriginKey: `origin-contra-${contradictionIndex}`,
         trustScore: 1.0,
       });
@@ -283,9 +283,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('POLICY V1: an equal-strength repeat sharing the independence key leaves belief unchanged', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.7,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -294,9 +294,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     const valueBeforeRepeat = Number(db.readNodeBelief(claimNodeId).belief_value);
 
     addEvidenceEdge(db, claimNodeId, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.7,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -312,9 +312,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('POLICY V1: a stronger same-key contribution replaces the weaker one entirely', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.7,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -322,9 +322,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
 
     addEvidenceEdge(db, claimNodeId, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.9,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -342,18 +342,18 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('moves belief further for a 0.9-trust origin than for an origin with no trust row', async () => {
     db = await openTempBeliefDatabase();
     const trustedClaim = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-trusted',
+      evidenceOriginKey: 'origin-trusted',
       trustOriginKey: 'origin-trusted',
       trustScore: 0.9,
     });
     // Second claim: its source node carries a trustOriginKey that has no
     // source_trust row, so it must fall back to DEFAULT_ORIGIN_TRUST.
     const unknownClaim = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-unknown',
+      evidenceOriginKey: 'origin-unknown',
       trustOriginKey: 'origin-unknown',
       // no trustScore: deliberately unseeded
     });
@@ -377,9 +377,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     db.insertEvidenceEdgeFixture({
       fromNodeId: anonymousSourceNodeId,
       toNodeId: claimNodeId,
-      relation: 'supports',
+      direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-anonymous',
+      evidenceOriginKey: 'origin-anonymous',
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
 
@@ -396,9 +396,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('lowers belief below the support-only level when a contradiction is added', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.8,
-      independenceKey: 'origin-support',
+      evidenceOriginKey: 'origin-support',
       trustOriginKey: 'origin-support',
       trustScore: 1.0,
     });
@@ -407,9 +407,9 @@ describe('recomputeNodeBelief grading behavior', () => {
     const supportOnlyValue = Number(db.readNodeBelief(claimNodeId).belief_value);
 
     addEvidenceEdge(db, claimNodeId, {
-      relation: 'contradicts',
+      direction: 'against',
       strength: 0.5,
-      independenceKey: 'origin-contra',
+      evidenceOriginKey: 'origin-contra',
       trustOriginKey: 'origin-contra',
       trustScore: 1.0,
     });
@@ -425,9 +425,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('appends one movement row with NULL from_value on first grading', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-a',
+      evidenceOriginKey: 'origin-a',
       trustOriginKey: 'origin-a',
       trustScore: 1.0,
     });
@@ -451,9 +451,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('appends no movement row when a recompute produces an unchanged value', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-a',
+      evidenceOriginKey: 'origin-a',
       trustOriginKey: 'origin-a',
       trustScore: 1.0,
     });
@@ -472,17 +472,17 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('stamps each evidence edge with its signed strength × trustWeight contribution', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId, edgeId: supportEdgeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 0.8,
-      independenceKey: 'origin-trusted',
+      evidenceOriginKey: 'origin-trusted',
       trustOriginKey: 'origin-trusted',
       trustScore: 0.9,
     });
     // Contradicting edge from an unknown origin: weight DEFAULT_ORIGIN_TRUST.
     const contradictionEdgeId = addEvidenceEdge(db, claimNodeId, {
-      relation: 'contradicts',
+      direction: 'against',
       strength: 0.5,
-      independenceKey: 'origin-unknown',
+      evidenceOriginKey: 'origin-unknown',
       trustOriginKey: 'origin-unknown',
       // no trustScore: deliberately unseeded
     });
@@ -518,9 +518,9 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('raises belief and appends a movement when the origin trust score increases', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      relation: 'supports',
+      direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-growing',
+      evidenceOriginKey: 'origin-growing',
       trustOriginKey: 'origin-growing',
       trustScore: 0.2,
     });

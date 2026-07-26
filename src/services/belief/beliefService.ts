@@ -19,7 +19,7 @@ import { getTrustScore } from '@/services/belief/sourceTrustService';
 export interface BeliefEdgeContribution {
   // The evidence edge this contribution belongs to.
   edgeId: number;
-  // strength × trustWeight, negative for 'contradicts' edges.
+  // strength × trustWeight, negative for 'against' evidence edges.
   effectiveContribution: number;
 }
 
@@ -47,9 +47,9 @@ export interface BeliefRecomputeResult {
 // from-node's metadata JSON (where trustOriginKey lives).
 interface EvidenceEdgeRow {
   id: number;
-  evidence_relation: string;
+  evidence_direction: string;
   evidence_strength: number;
-  evidence_independence_key: string | null;
+  evidence_origin_key: string | null;
   from_node_metadata: string | null;
 }
 
@@ -74,7 +74,7 @@ function readTrustOriginKeyFromMetadata(metadataJson: string | null): string | n
 }
 
 // Recompute and persist the belief value for one node:
-//  - loads its incoming evidence edges (evidence_relation IS NOT NULL),
+//  - loads its incoming evidence edges (evidence_direction IS NOT NULL),
 //  - weights each by the from-node origin's trust score (DEFAULT_ORIGIN_TRUST
 //    when the origin is unknown),
 //  - grades via beliefGradingPolicyV1 and persists nodes.belief_value +
@@ -90,11 +90,11 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
   // so the origin's trust weight can be resolved.
   const evidenceEdges = sqlite
     .prepare(
-      `SELECT e.id, e.evidence_relation, e.evidence_strength, e.evidence_independence_key,
+      `SELECT e.id, e.evidence_direction, e.evidence_strength, e.evidence_origin_key,
               n.metadata AS from_node_metadata
        FROM edges e
        JOIN nodes n ON n.id = e.from_node_id
-       WHERE e.to_node_id = ? AND e.evidence_relation IS NOT NULL`
+       WHERE e.to_node_id = ? AND e.evidence_direction IS NOT NULL`
     )
     .all(nodeId) as EvidenceEdgeRow[];
 
@@ -115,7 +115,7 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
   }
 
   // Signed effective contribution per edge: strength × origin trust weight,
-  // negative for 'contradicts' relations.
+  // negative for 'against' evidence.
   const contributions: BeliefEdgeContribution[] = [];
   // Same contributions in the shape the grading policy consumes.
   const policyContributions: EvidenceContribution[] = [];
@@ -125,13 +125,13 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     const trustWeight =
       (trustOriginKey !== null ? await getTrustScore(trustOriginKey) : null) ??
       DEFAULT_ORIGIN_TRUST;
-    const relationSign = evidenceEdge.evidence_relation === 'contradicts' ? -1 : 1;
-    const effectiveContribution = relationSign * evidenceEdge.evidence_strength * trustWeight;
+    const directionSign = evidenceEdge.evidence_direction === 'against' ? -1 : 1;
+    const effectiveContribution = directionSign * evidenceEdge.evidence_strength * trustWeight;
     contributions.push({ edgeId: evidenceEdge.id, effectiveContribution });
     policyContributions.push({
       edgeId: evidenceEdge.id,
       signedContribution: effectiveContribution,
-      independenceKey: evidenceEdge.evidence_independence_key,
+      evidenceOriginKey: evidenceEdge.evidence_origin_key,
     });
   }
 
