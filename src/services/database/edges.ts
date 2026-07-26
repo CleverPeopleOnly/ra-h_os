@@ -279,7 +279,7 @@ export class EdgeService {
 
     const result = sqlite.prepare(`
       INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
-                         evidence_direction, evidence_strength, evidence_independence_key)
+                         evidence_direction, evidence_strength, evidence_origin_key)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       finalFromId,
@@ -290,7 +290,7 @@ export class EdgeService {
       explanation,
       edgeData.evidence_direction ?? null,
       edgeData.evidence_strength ?? null,
-      edgeData.evidence_independence_key ?? null
+      edgeData.evidence_origin_key ?? null
     );
 
     const edgeId = Number(result.lastInsertRowid);

@@ -3,7 +3,7 @@
  * contributions into a single belief value for a node.
  *
  * POLICY V1 (PROVISIONAL): the treatment of repeated / derivative evidence
- * (contributions that share an evidence_independence_key) is deliberately
+ * (contributions that share an evidence_origin_key) is deliberately
  * unsettled. V1 collapses same-key contributions to the single contribution
  * with the largest absolute value. Formula:
  *   S = sum of positive collapsed contributions
@@ -31,7 +31,7 @@ export interface EvidenceContribution {
   signedContribution: number;
   // Edges sharing a non-null key are treated as non-independent (POLICY V1
   // collapses them); null means the contribution stands alone.
-  independenceKey: string | null;
+  evidenceOriginKey: string | null;
 }
 
 // Contract for a belief grading policy version.
@@ -42,31 +42,31 @@ export interface BeliefGradingPolicy {
 
 // PROVISIONAL POLICY V1 collapse rule, deliberately isolated here so a future
 // policy can replace it without touching the aggregation formula below:
-// contributions sharing a non-null independenceKey are NOT additive — they
+// contributions sharing a non-null evidenceOriginKey are NOT additive — they
 // collapse to the single contribution with the largest absolute value (ten
 // articles citing one study count as that study once, at its strongest
 // reading). Null-key contributions each stand alone.
-function collapseContributionsByIndependenceKey(
+function collapseContributionsByEvidenceOriginKey(
   contributions: EvidenceContribution[]
 ): EvidenceContribution[] {
   // Strongest-|value| contribution seen so far for each non-null key.
-  const strongestByIndependenceKey = new Map<string, EvidenceContribution>();
+  const strongestByEvidenceOriginKey = new Map<string, EvidenceContribution>();
   // Contributions with no independence key — always independent, never collapsed.
   const standaloneContributions: EvidenceContribution[] = [];
   for (const contribution of contributions) {
-    if (contribution.independenceKey === null) {
+    if (contribution.evidenceOriginKey === null) {
       standaloneContributions.push(contribution);
       continue;
     }
-    const currentStrongest = strongestByIndependenceKey.get(contribution.independenceKey);
+    const currentStrongest = strongestByEvidenceOriginKey.get(contribution.evidenceOriginKey);
     if (
       currentStrongest === undefined ||
       Math.abs(contribution.signedContribution) > Math.abs(currentStrongest.signedContribution)
     ) {
-      strongestByIndependenceKey.set(contribution.independenceKey, contribution);
+      strongestByEvidenceOriginKey.set(contribution.evidenceOriginKey, contribution);
     }
   }
-  return [...standaloneContributions, ...strongestByIndependenceKey.values()];
+  return [...standaloneContributions, ...strongestByEvidenceOriginKey.values()];
 }
 
 // V1 policy: collapse same-key evidence, then apply the saturating formula
@@ -75,7 +75,7 @@ function collapseContributionsByIndependenceKey(
 // Saturating in both directions, so the value stays strictly inside (0, 1).
 export const beliefGradingPolicyV1: BeliefGradingPolicy = {
   gradeBelief(contributions: EvidenceContribution[]): number {
-    const collapsedContributions = collapseContributionsByIndependenceKey(contributions);
+    const collapsedContributions = collapseContributionsByEvidenceOriginKey(contributions);
     // Total supporting mass (S in the formula).
     let supportMass = 0;
     // Total contradicting mass (C in the formula), kept as a positive number.

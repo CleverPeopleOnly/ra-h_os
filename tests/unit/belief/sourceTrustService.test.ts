@@ -1,6 +1,6 @@
 /**
  * Tests for sourceTrustService — the read/write API over the source_trust
- * table (origin_key -> trust score). Runs against a fresh temp-file database
+ * table (trust_origin_key -> trust score). Runs against a fresh temp-file database
  * per test (see tempBeliefDatabase.ts for the safety seam).
  */
 
@@ -51,7 +51,7 @@ describe('sourceTrustService', () => {
 
     expect(await getTrustScore('origin-updated')).toBeCloseTo(0.9, 10);
     const rowCount = db.sqlite
-      .prepare('SELECT COUNT(*) AS count FROM source_trust WHERE origin_key = ?')
+      .prepare('SELECT COUNT(*) AS count FROM source_trust WHERE trust_origin_key = ?')
       .get('origin-updated') as { count: number };
     expect(rowCount.count).toBe(1);
   });

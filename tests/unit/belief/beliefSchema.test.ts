@@ -3,9 +3,9 @@
  *
  * Pins that SQLite client bootstrap gives a database:
  *  - nodes.belief_value / nodes.belief_computed_at
- *  - edges.evidence_direction / evidence_strength / evidence_independence_key /
+ *  - edges.evidence_direction / evidence_strength / evidence_origin_key /
  *    evidence_effective_contribution
- *  - source_trust and belief_movements tables
+ *  - source_trust (keyed by trust_origin_key) and belief_movements tables
  * on BOTH a fresh database and a pre-existing legacy database file created
  * without those columns (the ensure-column migration path).
  *
@@ -72,10 +72,11 @@ function createLegacyDatabaseWithoutBeliefColumns(dbPath: string): void {
   legacyDb.close();
 }
 
-// Lay down a database from the brief evidence_relation era (MR-A vocabulary):
-// evidence columns exist under the old name with supports/contradicts values,
-// so client init must RENAME the column and MAP the stored values.
-function createDatabaseWithLegacyEvidenceRelationColumn(dbPath: string): void {
+// Lay down a database from the brief MR-A vocabulary era: evidence columns
+// exist as evidence_relation (supports/contradicts values) and
+// evidence_independence_key, and source_trust is keyed by origin_key — so
+// client init must RENAME all three and MAP the stored relation values.
+function createDatabaseWithMrAVocabulary(dbPath: string): void {
   createLegacyDatabaseWithoutBeliefColumns(dbPath);
   const oldVocabularyDb = new Database(dbPath);
   oldVocabularyDb.exec(`
@@ -83,10 +84,17 @@ function createDatabaseWithLegacyEvidenceRelationColumn(dbPath: string): void {
     ALTER TABLE edges ADD COLUMN evidence_strength REAL;
     ALTER TABLE edges ADD COLUMN evidence_independence_key TEXT;
     ALTER TABLE edges ADD COLUMN evidence_effective_contribution REAL;
+    CREATE TABLE source_trust (
+      origin_key TEXT PRIMARY KEY,
+      score REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     INSERT INTO nodes (id, title) VALUES (1, 'claim'), (2, 'source');
     INSERT INTO edges (from_node_id, to_node_id, source, explanation, evidence_relation, evidence_strength, evidence_independence_key)
     VALUES (2, 1, 'user', 'old-vocabulary supporting edge', 'supports', 0.7, 'origin-a'),
            (2, 1, 'user', 'old-vocabulary contradicting edge', 'contradicts', 0.4, 'origin-b');
+    INSERT INTO source_trust (origin_key, score, updated_at)
+    VALUES ('marelie', 0.9, '2026-07-22T00:00:00.000Z');
   `);
   oldVocabularyDb.close();
 }
@@ -128,7 +136,7 @@ describe('belief engine schema', () => {
     const expectedEvidenceColumnTypes: Record<string, string> = {
       evidence_direction: 'TEXT',
       evidence_strength: 'REAL',
-      evidence_independence_key: 'TEXT',
+      evidence_origin_key: 'TEXT',
       evidence_effective_contribution: 'REAL',
     };
     for (const [columnName, expectedType] of Object.entries(expectedEvidenceColumnTypes)) {
@@ -138,14 +146,14 @@ describe('belief engine schema', () => {
     }
   });
 
-  it('fresh database: source_trust table exists with origin_key PK, NOT NULL score and updated_at', async () => {
+  it('fresh database: source_trust table exists with trust_origin_key PK, NOT NULL score and updated_at', async () => {
     db = await openTempBeliefDatabase();
     const sourceTrustColumns = db.readTableColumns('source_trust');
     expect(sourceTrustColumns.length, 'source_trust table should exist').toBeGreaterThan(0);
-    const originKeyColumn = findColumn(sourceTrustColumns, 'origin_key');
+    const trustOriginKeyColumn = findColumn(sourceTrustColumns, 'trust_origin_key');
     const scoreColumn = findColumn(sourceTrustColumns, 'score');
     const updatedAtColumn = findColumn(sourceTrustColumns, 'updated_at');
-    expect(originKeyColumn?.pk, 'origin_key is the primary key').toBe(1);
+    expect(trustOriginKeyColumn?.pk, 'trust_origin_key is the primary key').toBe(1);
     expect(scoreColumn?.notnull, 'score is NOT NULL').toBe(1);
     expect(scoreColumn?.type.toUpperCase()).toBe('REAL');
     expect(updatedAtColumn?.notnull, 'updated_at is NOT NULL').toBe(1);
@@ -173,7 +181,7 @@ describe('belief engine schema', () => {
     expect(nodeColumnNames).toContain('belief_computed_at');
     expect(edgeColumnNames).toContain('evidence_direction');
     expect(edgeColumnNames).toContain('evidence_strength');
-    expect(edgeColumnNames).toContain('evidence_independence_key');
+    expect(edgeColumnNames).toContain('evidence_origin_key');
     expect(edgeColumnNames).toContain('evidence_effective_contribution');
   });
 
@@ -182,7 +190,7 @@ describe('belief engine schema', () => {
   // evidence_direction and map the stored values to for/against.
   it('legacy evidence_relation column is renamed to evidence_direction with values mapped to for/against', async () => {
     db = await openTempBeliefDatabase({
-      prepareExistingDbFile: createDatabaseWithLegacyEvidenceRelationColumn,
+      prepareExistingDbFile: createDatabaseWithMrAVocabulary,
     });
 
     const edgeColumnNames = db.readTableColumns('edges').map(col => col.name);
@@ -193,6 +201,43 @@ describe('belief engine schema', () => {
       .prepare('SELECT evidence_direction FROM edges ORDER BY id ASC')
       .all() as Array<{ evidence_direction: string }>;
     expect(migratedDirections.map(row => row.evidence_direction)).toEqual(['for', 'against']);
+  });
+
+  // Vocabulary migration: the origin-artifact key shipped briefly as
+  // evidence_independence_key; client init must rename the column to
+  // evidence_origin_key with the stored keys carried over unchanged.
+  it('legacy evidence_independence_key column is renamed to evidence_origin_key with values preserved', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseWithMrAVocabulary,
+    });
+
+    const edgeColumnNames = db.readTableColumns('edges').map(col => col.name);
+    expect(edgeColumnNames).toContain('evidence_origin_key');
+    expect(edgeColumnNames).not.toContain('evidence_independence_key');
+
+    const migratedOriginKeys = db.sqlite
+      .prepare('SELECT evidence_origin_key FROM edges ORDER BY id ASC')
+      .all() as Array<{ evidence_origin_key: string }>;
+    expect(migratedOriginKeys.map(row => row.evidence_origin_key)).toEqual(['origin-a', 'origin-b']);
+  });
+
+  // Vocabulary migration: source_trust shipped briefly keyed by origin_key;
+  // client init must rename the column to trust_origin_key with the stored
+  // rows carried over unchanged.
+  it('legacy source_trust.origin_key column is renamed to trust_origin_key with rows preserved', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseWithMrAVocabulary,
+    });
+
+    const sourceTrustColumns = db.readTableColumns('source_trust');
+    expect(findColumn(sourceTrustColumns, 'trust_origin_key')?.pk, 'trust_origin_key is the primary key').toBe(1);
+    expect(findColumn(sourceTrustColumns, 'origin_key')).toBeUndefined();
+
+    const migratedTrustRow = db.sqlite
+      .prepare('SELECT trust_origin_key, score FROM source_trust')
+      .get() as { trust_origin_key: string; score: number };
+    expect(migratedTrustRow.trust_origin_key).toBe('marelie');
+    expect(migratedTrustRow.score).toBeCloseTo(0.9, 10);
   });
 
   it('legacy database file gains the source_trust and belief_movements tables after client init', async () => {

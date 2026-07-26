@@ -34,9 +34,9 @@ function expectedBelief(supportSum: number, contradictionSum: number): number {
 function contribution(
   edgeId: number,
   signedContribution: number,
-  independenceKey: string | null
+  evidenceOriginKey: string | null
 ): EvidenceContribution {
-  return { edgeId, signedContribution, independenceKey };
+  return { edgeId, signedContribution, evidenceOriginKey };
 }
 
 describe('beliefGradingPolicyV1', () => {

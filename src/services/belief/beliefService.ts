@@ -49,7 +49,7 @@ interface EvidenceEdgeRow {
   id: number;
   evidence_direction: string;
   evidence_strength: number;
-  evidence_independence_key: string | null;
+  evidence_origin_key: string | null;
   from_node_metadata: string | null;
 }
 
@@ -90,7 +90,7 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
   // so the origin's trust weight can be resolved.
   const evidenceEdges = sqlite
     .prepare(
-      `SELECT e.id, e.evidence_direction, e.evidence_strength, e.evidence_independence_key,
+      `SELECT e.id, e.evidence_direction, e.evidence_strength, e.evidence_origin_key,
               n.metadata AS from_node_metadata
        FROM edges e
        JOIN nodes n ON n.id = e.from_node_id
@@ -131,7 +131,7 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     policyContributions.push({
       edgeId: evidenceEdge.id,
       signedContribution: effectiveContribution,
-      independenceKey: evidenceEdge.evidence_independence_key,
+      evidenceOriginKey: evidenceEdge.evidence_origin_key,
     });
   }
 

@@ -51,14 +51,14 @@ function seedClaimWithOneEvidenceEdge(
   options: {
     direction: 'for' | 'against';
     strength: number;
-    independenceKey: string;
+    evidenceOriginKey: string;
     trustOriginKey?: string;
     trustScore?: number;
   }
 ): { claimNodeId: number; sourceNodeId: number; edgeId: number } {
   const claimNodeId = context.insertNodeFixture({ title: 'claim under test' });
   const sourceNodeId = context.insertNodeFixture({
-    title: `evidence source ${options.independenceKey}`,
+    title: `evidence source ${options.evidenceOriginKey}`,
     trustOriginKey: options.trustOriginKey,
   });
   if (options.trustOriginKey && options.trustScore !== undefined) {
@@ -69,7 +69,7 @@ function seedClaimWithOneEvidenceEdge(
     toNodeId: claimNodeId,
     direction: options.direction,
     strength: options.strength,
-    independenceKey: options.independenceKey,
+    evidenceOriginKey: options.evidenceOriginKey,
   });
   return { claimNodeId, sourceNodeId, edgeId };
 }
@@ -82,13 +82,13 @@ function addEvidenceEdge(
   options: {
     direction: 'for' | 'against';
     strength: number;
-    independenceKey: string;
+    evidenceOriginKey: string;
     trustOriginKey?: string;
     trustScore?: number;
   }
 ): number {
   const sourceNodeId = context.insertNodeFixture({
-    title: `extra evidence source ${options.independenceKey}-${options.strength}`,
+    title: `extra evidence source ${options.evidenceOriginKey}-${options.strength}`,
     trustOriginKey: options.trustOriginKey,
   });
   if (options.trustOriginKey && options.trustScore !== undefined) {
@@ -99,7 +99,7 @@ function addEvidenceEdge(
     toNodeId: claimNodeId,
     direction: options.direction,
     strength: options.strength,
-    independenceKey: options.independenceKey,
+    evidenceOriginKey: options.evidenceOriginKey,
   });
 }
 
@@ -125,7 +125,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-support',
+      evidenceOriginKey: 'origin-support',
       trustOriginKey: 'origin-support',
       trustScore: 1.0,
     });
@@ -142,7 +142,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'against',
       strength: 0.6,
-      independenceKey: 'origin-contra',
+      evidenceOriginKey: 'origin-contra',
       trustOriginKey: 'origin-contra',
       trustScore: 1.0,
     });
@@ -161,7 +161,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-anchor',
+      evidenceOriginKey: 'origin-anchor',
       trustOriginKey: 'origin-anchor',
       trustScore: 1.0,
     });
@@ -182,7 +182,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-first',
+      evidenceOriginKey: 'origin-first',
       trustOriginKey: 'origin-first',
       trustScore: 1.0,
     });
@@ -193,7 +193,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     addEvidenceEdge(db, claimNodeId, {
       direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-second',
+      evidenceOriginKey: 'origin-second',
       trustOriginKey: 'origin-second',
       trustScore: 1.0,
     });
@@ -210,7 +210,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-first',
+      evidenceOriginKey: 'origin-first',
       trustOriginKey: 'origin-first',
       trustScore: 1.0,
     });
@@ -221,7 +221,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     addEvidenceEdge(db, claimNodeId, {
       direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-second',
+      evidenceOriginKey: 'origin-second',
       trustOriginKey: 'origin-second',
       trustScore: 1.0,
     });
@@ -242,7 +242,7 @@ describe('recomputeNodeBelief grading behavior', () => {
       addEvidenceEdge(db, claimNodeId, {
         direction: 'for',
         strength: 1.0,
-        independenceKey: `origin-support-${supportIndex}`,
+        evidenceOriginKey: `origin-support-${supportIndex}`,
         trustOriginKey: `origin-support-${supportIndex}`,
         trustScore: 1.0,
       });
@@ -264,7 +264,7 @@ describe('recomputeNodeBelief grading behavior', () => {
       addEvidenceEdge(db, claimNodeId, {
         direction: 'against',
         strength: 1.0,
-        independenceKey: `origin-contra-${contradictionIndex}`,
+        evidenceOriginKey: `origin-contra-${contradictionIndex}`,
         trustOriginKey: `origin-contra-${contradictionIndex}`,
         trustScore: 1.0,
       });
@@ -285,7 +285,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.7,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -296,7 +296,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     addEvidenceEdge(db, claimNodeId, {
       direction: 'for',
       strength: 0.7,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -314,7 +314,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.7,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -324,7 +324,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     addEvidenceEdge(db, claimNodeId, {
       direction: 'for',
       strength: 0.9,
-      independenceKey: 'shared-key',
+      evidenceOriginKey: 'shared-key',
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -344,7 +344,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const trustedClaim = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-trusted',
+      evidenceOriginKey: 'origin-trusted',
       trustOriginKey: 'origin-trusted',
       trustScore: 0.9,
     });
@@ -353,7 +353,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const unknownClaim = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-unknown',
+      evidenceOriginKey: 'origin-unknown',
       trustOriginKey: 'origin-unknown',
       // no trustScore: deliberately unseeded
     });
@@ -379,7 +379,7 @@ describe('recomputeNodeBelief grading behavior', () => {
       toNodeId: claimNodeId,
       direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-anonymous',
+      evidenceOriginKey: 'origin-anonymous',
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
 
@@ -398,7 +398,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.8,
-      independenceKey: 'origin-support',
+      evidenceOriginKey: 'origin-support',
       trustOriginKey: 'origin-support',
       trustScore: 1.0,
     });
@@ -409,7 +409,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     addEvidenceEdge(db, claimNodeId, {
       direction: 'against',
       strength: 0.5,
-      independenceKey: 'origin-contra',
+      evidenceOriginKey: 'origin-contra',
       trustOriginKey: 'origin-contra',
       trustScore: 1.0,
     });
@@ -427,7 +427,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-a',
+      evidenceOriginKey: 'origin-a',
       trustOriginKey: 'origin-a',
       trustScore: 1.0,
     });
@@ -453,7 +453,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.6,
-      independenceKey: 'origin-a',
+      evidenceOriginKey: 'origin-a',
       trustOriginKey: 'origin-a',
       trustScore: 1.0,
     });
@@ -474,7 +474,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId, edgeId: supportEdgeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 0.8,
-      independenceKey: 'origin-trusted',
+      evidenceOriginKey: 'origin-trusted',
       trustOriginKey: 'origin-trusted',
       trustScore: 0.9,
     });
@@ -482,7 +482,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const contradictionEdgeId = addEvidenceEdge(db, claimNodeId, {
       direction: 'against',
       strength: 0.5,
-      independenceKey: 'origin-unknown',
+      evidenceOriginKey: 'origin-unknown',
       trustOriginKey: 'origin-unknown',
       // no trustScore: deliberately unseeded
     });
@@ -520,7 +520,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 1.0,
-      independenceKey: 'origin-growing',
+      evidenceOriginKey: 'origin-growing',
       trustOriginKey: 'origin-growing',
       trustScore: 0.2,
     });
