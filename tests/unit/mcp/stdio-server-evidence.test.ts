@@ -1,8 +1,12 @@
 /**
- * MR-B test for the app-MCP proxy (apps/mcp-server/stdio-server.js): the
- * rah_create_edge tool must accept the three writable evidence fields and
- * include them in the POST body it sends to /api/edges — today its zod
- * input schema silently strips them before the payload is built.
+ * Tests for the app-MCP proxy (apps/mcp-server/stdio-server.js): the
+ * rah_create_edge tool must accept the two writable evidence fields and
+ * include them in the POST body it sends to /api/edges.
+ *
+ * belief_evidence_origin_key is REMOVED: the tool must no longer advertise it
+ * on its input schema and must never forward it. A stale client that still
+ * passes it must still get a successful edge creation — the field is dropped
+ * by the schema, not rejected.
  *
  * Seam (same as tests/unit/mcp/stdio-server.test.ts): the spawned proxy is
  * pointed at a local in-process HTTP stub via RAH_MCP_TARGET_URL, and the
@@ -114,13 +118,14 @@ beforeEach(() => {
   recordedApiRequests = [];
 });
 
-describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
-  // The pinned behavior: evidence arguments given to the tool must appear in
-  // the POST body the proxy sends to /api/edges (today the zod schema strips
-  // them, so the app never sees the evidence).
-  it('includes belief_evidence_direction, belief_evidence_strength, and belief_evidence_origin_key in the POST body to /api/edges', async () => {
+describe('app-MCP proxy rah_create_edge evidence forwarding', () => {
+  // EDITED from the three-field forwarding case: the two surviving evidence
+  // arguments must still appear in the POST body, while a stale
+  // belief_evidence_origin_key argument is dropped — the tool call still
+  // succeeds and the key never reaches the app.
+  it('includes belief_evidence_direction and belief_evidence_strength in the POST body and drops a stale belief_evidence_origin_key', async () => {
     await withMcpClient(async (client) => {
-      await client.callTool({
+      const toolResult = await client.callTool({
         name: 'rah_create_edge',
         arguments: {
           sourceId: 2,
@@ -132,6 +137,10 @@ describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
           belief_evidence_origin_key: 'origin:stdio-evidence-test',
         },
       });
+
+      // Ignored, not rejected: the stale argument still yields a successful
+      // edge creation rather than a tool error.
+      expect((toolResult as { isError?: boolean }).isError ?? false).toBe(false);
 
       const createEdgeRequest = recordedApiRequests.find(
         (entry) => entry.method === 'POST' && entry.pathname === '/api/edges'
@@ -146,18 +155,20 @@ describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
         created_via: 'mcp',
         confirmed_by_user: true,
       });
-      // The evidence fields must survive the tool schema and reach the app.
+      // The surviving evidence fields must reach the app.
       expect(createEdgeRequest?.body).toMatchObject({
         belief_evidence_direction: 'for',
         belief_evidence_strength: 0.9,
-        belief_evidence_origin_key: 'origin:stdio-evidence-test',
       });
+      // The removed field must not be forwarded at all.
+      expect(Object.keys(createEdgeRequest?.body ?? {})).not.toContain('belief_evidence_origin_key');
     });
   });
 
-  // Discoverability: the tool's advertised input schema must name the
-  // evidence fields, otherwise no external agent can know they exist.
-  it('advertises the evidence fields in the rah_create_edge input schema', async () => {
+  // EDITED from the three-field discoverability case: the advertised input
+  // schema must still name the two surviving evidence fields, and must no
+  // longer advertise the removed origin key to any external agent.
+  it('advertises the surviving evidence fields and not belief_evidence_origin_key in the rah_create_edge input schema', async () => {
     await withMcpClient(async (client) => {
       const result = await client.listTools();
       const createEdgeTool = result.tools.find((tool) => tool.name === 'rah_create_edge');
@@ -166,7 +177,7 @@ describe('app-MCP proxy rah_create_edge evidence forwarding (MR-B)', () => {
       const inputSchemaJson = JSON.stringify(createEdgeTool?.inputSchema);
       expect(inputSchemaJson).toContain('belief_evidence_direction');
       expect(inputSchemaJson).toContain('belief_evidence_strength');
-      expect(inputSchemaJson).toContain('belief_evidence_origin_key');
+      expect(inputSchemaJson).not.toContain('belief_evidence_origin_key');
     });
   });
 });

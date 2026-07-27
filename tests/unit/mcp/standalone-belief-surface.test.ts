@@ -1,9 +1,11 @@
 /**
- * MR-B contract tests for the standalone MCP server's belief surface:
+ * Contract tests for the standalone MCP server's belief surface:
  *  - schema parity: the standalone init-db path must create the belief
- *    columns and tables the app's belief engine expects,
- *  - createEdge accepts and stores the three writable evidence fields
- *    (belief_evidence_contribution stays NULL — grading is app-owned),
+ *    columns and tables the app's belief engine expects, and must NOT create
+ *    the removed belief_evidence_origin_key column,
+ *  - createEdge accepts and stores the two writable evidence fields
+ *    (belief_evidence_contribution stays NULL — grading is app-owned), and
+ *    ignores a stale belief_evidence_origin_key argument instead of failing,
  *  - getNodesById exposes belief_value / belief_computed_at,
  *  - new setBeliefSourceTrust / getBeliefSourceTrust tools upsert and read belief_source_trust,
  *  - createEdge rejects malformed evidence (direction without strength,
@@ -39,7 +41,8 @@ const standaloneServerEntryPath = path.join(
   'index.js'
 );
 
-// Seed a database that already carries the FULL MR-B belief schema, so the
+// Seed a database that already carries the FULL post-removal belief schema
+// (three evidence columns, no belief_evidence_origin_key), so the
 // tool-behavior tests below exercise the tools, not schema migration.
 // (Schema creation by the standalone path itself is pinned separately in the
 // init-db parity test.)
@@ -76,7 +79,6 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
       explanation TEXT,
       belief_evidence_direction TEXT,
       belief_evidence_strength REAL,
-      belief_evidence_origin_key TEXT,
       belief_evidence_contribution REAL
     );
 
@@ -168,11 +170,11 @@ function getStructured<T>(result: unknown): T {
   return (result as { structuredContent?: unknown }).structuredContent as T;
 }
 
-// The four evidence columns of one edge row, as read back directly via SQL.
+// The three surviving evidence columns of one edge row, as read back
+// directly via SQL.
 interface EdgeEvidenceRow {
   belief_evidence_direction: string | null;
   belief_evidence_strength: number | null;
-  belief_evidence_origin_key: string | null;
   belief_evidence_contribution: number | null;
 }
 
@@ -183,11 +185,24 @@ function readEdgeEvidenceRow(edgeId: number): EdgeEvidenceRow | undefined {
   try {
     return directDb
       .prepare(
-        `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key,
+        `SELECT belief_evidence_direction, belief_evidence_strength,
                 belief_evidence_contribution
          FROM edges WHERE id = ?`
       )
       .get(edgeId) as EdgeEvidenceRow | undefined;
+  } finally {
+    directDb.close();
+  }
+}
+
+// Column names of the edges table in the temp database file — used to prove
+// the removed origin key has no storage behind it on the standalone side.
+function readStandaloneEdgeColumnNames(): string[] {
+  const directDb = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    return (directDb.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>).map(
+      column => column.name
+    );
   } finally {
     directDb.close();
   }
@@ -271,8 +286,10 @@ describe('standalone MCP server belief surface (MR-B)', () => {
         expect(nodeColumnNames).toContain('belief_computed_at');
         expect(edgeColumnNames).toContain('belief_evidence_direction');
         expect(edgeColumnNames).toContain('belief_evidence_strength');
-        expect(edgeColumnNames).toContain('belief_evidence_origin_key');
         expect(edgeColumnNames).toContain('belief_evidence_contribution');
+        // EDITED from the four-column parity expectation: the standalone
+        // init-db column list must no longer create the removed origin key.
+        expect(edgeColumnNames).not.toContain('belief_evidence_origin_key');
         expect(tableNames).toContain('belief_source_trust');
         expect(tableNames).toContain('belief_movements');
       } finally {
@@ -283,11 +300,11 @@ describe('standalone MCP server belief surface (MR-B)', () => {
     }
   });
 
-  // Evidence write path: createEdge must accept the three writable evidence
-  // fields and persist them in the dedicated evidence columns, while the
-  // grading stamp (belief_evidence_contribution) stays NULL because the
-  // standalone server never grades — grading is app-owned.
-  it('createEdge stores belief_evidence_direction, belief_evidence_strength, and belief_evidence_origin_key; contribution stays NULL', async () => {
+  // EDITED from the three-field storage case: createEdge must accept the two
+  // surviving writable evidence fields and persist them, while the grading
+  // stamp (belief_evidence_contribution) stays NULL because the standalone
+  // server never grades — grading is app-owned.
+  it('createEdge stores belief_evidence_direction and belief_evidence_strength; contribution stays NULL', async () => {
     await withStandaloneClient(async (client) => {
       const result = await client.callTool({
         name: 'createEdge',
@@ -298,7 +315,6 @@ describe('standalone MCP server belief surface (MR-B)', () => {
           confirmed_by_user: true,
           belief_evidence_direction: 'for',
           belief_evidence_strength: 0.8,
-          belief_evidence_origin_key: 'origin:standalone-belief-test',
         },
       });
 
@@ -309,15 +325,60 @@ describe('standalone MCP server belief surface (MR-B)', () => {
       expect(evidenceRow).toBeDefined();
       expect(evidenceRow?.belief_evidence_direction).toBe('for');
       expect(evidenceRow?.belief_evidence_strength).toBeCloseTo(0.8, 10);
-      expect(evidenceRow?.belief_evidence_origin_key).toBe('origin:standalone-belief-test');
+      expect(evidenceRow?.belief_evidence_contribution).toBeNull();
+      // No origin-key column is left for the standalone write path to fill.
+      expect(readStandaloneEdgeColumnNames()).not.toContain('belief_evidence_origin_key');
+    });
+  });
+
+  // A stale client that still passes the removed field must get a normal
+  // successful edge creation: the argument is ignored, not rejected, and the
+  // other evidence fields still land in their columns.
+  it('createEdge ignores a stale belief_evidence_origin_key argument and still creates the edge', async () => {
+    await withStandaloneClient(async (client) => {
+      const result = await client.callTool({
+        name: 'createEdge',
+        arguments: {
+          sourceId: 2,
+          targetId: 1,
+          explanation: 'Reports a measured result that supports the claim node.',
+          confirmed_by_user: true,
+          belief_evidence_direction: 'for',
+          belief_evidence_strength: 0.8,
+          belief_evidence_origin_key: 'origin:standalone-stale-caller',
+        },
+      });
+
+      expect((result as { isError?: boolean }).isError ?? false).toBe(false);
+      const structured = getStructured<{ success: boolean; edgeId: number }>(result);
+      expect(structured.success).toBe(true);
+
+      const evidenceRow = readEdgeEvidenceRow(structured.edgeId);
+      expect(evidenceRow?.belief_evidence_direction).toBe('for');
+      expect(evidenceRow?.belief_evidence_strength).toBeCloseTo(0.8, 10);
       expect(evidenceRow?.belief_evidence_contribution).toBeNull();
     });
   });
 
-  // GUARD (deliberately green today): a createEdge call WITHOUT evidence
-  // arguments must keep all four evidence columns NULL — plain relationship
-  // edges never masquerade as evidence.
-  it('GUARD: createEdge without evidence arguments stores NULL in all four evidence columns', async () => {
+  // Discoverability: the standalone createEdge tool must no longer advertise
+  // the removed origin key, while still advertising the surviving fields.
+  it('advertises the surviving evidence fields and not belief_evidence_origin_key in the createEdge input schema', async () => {
+    await withStandaloneClient(async (client) => {
+      const listedTools = await client.listTools();
+      const createEdgeTool = listedTools.tools.find((tool) => tool.name === 'createEdge');
+      expect(createEdgeTool).toBeDefined();
+
+      const inputSchemaJson = JSON.stringify(createEdgeTool?.inputSchema);
+      expect(inputSchemaJson).toContain('belief_evidence_direction');
+      expect(inputSchemaJson).toContain('belief_evidence_strength');
+      expect(inputSchemaJson).not.toContain('belief_evidence_origin_key');
+    });
+  });
+
+  // GUARD: a createEdge call WITHOUT evidence arguments must keep all three
+  // surviving evidence columns NULL — plain relationship edges never
+  // masquerade as evidence.
+  it('GUARD: createEdge without evidence arguments stores NULL in all three evidence columns', async () => {
     await withStandaloneClient(async (client) => {
       const result = await client.callTool({
         name: 'createEdge',
@@ -336,7 +397,6 @@ describe('standalone MCP server belief surface (MR-B)', () => {
       expect(evidenceRow).toBeDefined();
       expect(evidenceRow?.belief_evidence_direction).toBeNull();
       expect(evidenceRow?.belief_evidence_strength).toBeNull();
-      expect(evidenceRow?.belief_evidence_origin_key).toBeNull();
       expect(evidenceRow?.belief_evidence_contribution).toBeNull();
     });
   });
@@ -464,7 +524,6 @@ describe('standalone MCP server belief surface (MR-B)', () => {
           confirmed_by_user: true,
           belief_evidence_direction: 'for',
           belief_evidence_strength: 1.5,
-          belief_evidence_origin_key: 'origin:standalone-belief-test',
         },
       });
 

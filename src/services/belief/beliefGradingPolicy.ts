@@ -26,10 +26,6 @@ export interface BeliefEvidenceContribution {
   edgeId: number;
   // strength × trustWeight; negative when the edge direction is 'against'.
   signedContribution: number;
-  // Origin key populated by beliefService for provenance/independence
-  // tracking; grading no longer reads it (every contribution counts, no
-  // collapse-by-origin-key). A later MR removes this field entirely.
-  beliefEvidenceOriginKey: string | null;
 }
 
 // Contract for a belief grading policy version.

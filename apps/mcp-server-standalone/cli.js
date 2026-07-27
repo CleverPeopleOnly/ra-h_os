@@ -182,7 +182,6 @@ function ensureBeliefSchema(db) {
     ['nodes', 'belief_computed_at', 'TEXT'],
     ['edges', 'belief_evidence_direction', 'TEXT'],
     ['edges', 'belief_evidence_strength', 'REAL'],
-    ['edges', 'belief_evidence_origin_key', 'TEXT'],
     ['edges', 'belief_evidence_contribution', 'REAL'],
   ];
 

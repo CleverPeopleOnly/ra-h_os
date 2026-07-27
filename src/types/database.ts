@@ -111,7 +111,6 @@ export interface EdgeData {
   // in the app-owned context JSON.
   belief_evidence_direction?: 'for' | 'against'; // how the from-node bears on the to-node
   belief_evidence_strength?: number;                     // evidence weight in [0, 1]
-  belief_evidence_origin_key?: string | null;      // same key = non-independent evidence (POLICY V1 collapses)
 }
 
 export interface ChatData {

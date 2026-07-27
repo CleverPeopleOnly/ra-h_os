@@ -49,8 +49,7 @@ function createEdge(edgeData) {
     // dedicated belief_ edge columns. The standalone server stores evidence
     // but NEVER grades — belief_evidence_contribution is never written here.
     belief_evidence_direction,
-    belief_evidence_strength,
-    belief_evidence_origin_key
+    belief_evidence_strength
   } = edgeData;
   const now = new Date().toISOString();
   const db = getDb();
@@ -80,14 +79,13 @@ function createEdge(edgeData) {
   // working against databases that predate the belief schema.
   const hasBeliefEvidenceFields =
     belief_evidence_direction !== undefined ||
-    belief_evidence_strength !== undefined ||
-    belief_evidence_origin_key !== undefined;
+    belief_evidence_strength !== undefined;
 
   const stmt = hasBeliefEvidenceFields
     ? db.prepare(`
         INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
-                           belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           belief_evidence_direction, belief_evidence_strength)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
     : db.prepare(`
         INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation)
@@ -103,8 +101,7 @@ function createEdge(edgeData) {
           now,
           cleanExplanation,
           belief_evidence_direction ?? null,
-          belief_evidence_strength ?? null,
-          belief_evidence_origin_key ?? null
+          belief_evidence_strength ?? null
         )
       : stmt.run(
           from_node_id,

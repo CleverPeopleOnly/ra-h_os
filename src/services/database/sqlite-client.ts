@@ -418,7 +418,6 @@ class SQLiteClient {
         explanation TEXT,
         belief_evidence_direction TEXT,
         belief_evidence_strength REAL,
-        belief_evidence_origin_key TEXT,
         belief_evidence_contribution REAL,
         FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
         FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
@@ -509,7 +508,7 @@ class SQLiteClient {
       console.warn('Failed to ensure nodes belief columns:', nodeErr);
     }
 
-    // edges: the four evidence columns the belief engine reads and stamps.
+    // edges: the three evidence columns the belief engine reads and stamps.
     try {
       // Vocabulary migration: databases created while the field was named
       // evidence_relation (with values supports/contradicts) get the column
@@ -526,25 +525,14 @@ class SQLiteClient {
         }
       }
 
-      // Vocabulary migration: the key identifying the origin artifact of a
-      // piece of evidence shipped briefly as evidence_independence_key; it is
-      // now belief_evidence_origin_key (data carries over unchanged).
-      if (preMigrationEdgeCols.some(col => col.name === 'evidence_independence_key')) {
-        try {
-          this.db.exec('ALTER TABLE edges RENAME COLUMN evidence_independence_key TO belief_evidence_origin_key;');
-        } catch (renameErr) {
-          console.warn('Failed to migrate edges.evidence_independence_key to belief_evidence_origin_key:', renameErr);
-        }
-      }
-
       // Vocabulary migration: the evidence columns shipped briefly without the
       // belief_ prefix; every belief-system column now carries it so belief
       // code is recognisable on sight anywhere in the codebase. Data carries
-      // over unchanged.
+      // over unchanged. The origin key is deliberately absent — it is dropped
+      // below rather than renamed forward.
       const unprefixedEvidenceRenames: Array<[string, string]> = [
         ['evidence_direction', 'belief_evidence_direction'],
         ['evidence_strength', 'belief_evidence_strength'],
-        ['evidence_origin_key', 'belief_evidence_origin_key'],
         ['evidence_effective_contribution', 'belief_evidence_contribution'],
       ];
       for (const [oldName, newName] of unprefixedEvidenceRenames) {
@@ -557,10 +545,40 @@ class SQLiteClient {
         }
       }
 
-      const edgeCols = this.db.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
-      // Adds one missing evidence column to edges; no-op when it already exists.
+      // Column list as it stands after the vocabulary renames above — the
+      // basis for both the removal loop and the ensure-column loop below.
+      const edgeColsAfterVocabularyRenames = this.db
+        .prepare('PRAGMA table_info(edges)')
+        .all() as Array<{ name: string }>;
+
+      // Removal migration: the evidence origin key existed only to feed the
+      // grading step that collapsed evidence sharing an origin. That step is
+      // deleted — repetition now reinforces belief, weighted by source
+      // standing — so nothing reads the key and it is dropped under every
+      // name it ever shipped under, never renamed forward. ALTER TABLE DROP
+      // COLUMN edits the existing edges table in place, so its indexes and
+      // its ON DELETE CASCADE foreign keys survive untouched (a copy-into-a-
+      // new-table rebuild would lose both).
+      const removedBeliefEvidenceOriginKeyColumnNames = [
+        'belief_evidence_origin_key',
+        'evidence_origin_key',
+        'evidence_independence_key',
+      ];
+      for (const removedBeliefEvidenceColumnName of removedBeliefEvidenceOriginKeyColumnNames) {
+        if (edgeColsAfterVocabularyRenames.some(col => col.name === removedBeliefEvidenceColumnName)) {
+          try {
+            this.db.exec(`ALTER TABLE edges DROP COLUMN ${removedBeliefEvidenceColumnName};`);
+          } catch (dropErr) {
+            console.warn(`Failed to drop removed edges.${removedBeliefEvidenceColumnName}`, dropErr);
+          }
+        }
+      }
+
+      // Adds one missing evidence column to edges; no-op when it already
+      // exists. Reads the post-rename column list: the loop above only ever
+      // removes origin-key columns, none of which are ensured here.
       const ensureEdgeEvidenceCol = (name: string, ddl: string) => {
-        if (!edgeCols.some(col => col.name === name)) {
+        if (!edgeColsAfterVocabularyRenames.some(col => col.name === name)) {
           try {
             this.db.exec(ddl);
           } catch (colErr) {
@@ -570,7 +588,6 @@ class SQLiteClient {
       };
       ensureEdgeEvidenceCol('belief_evidence_direction', 'ALTER TABLE edges ADD COLUMN belief_evidence_direction TEXT;');
       ensureEdgeEvidenceCol('belief_evidence_strength', 'ALTER TABLE edges ADD COLUMN belief_evidence_strength REAL;');
-      ensureEdgeEvidenceCol('belief_evidence_origin_key', 'ALTER TABLE edges ADD COLUMN belief_evidence_origin_key TEXT;');
       ensureEdgeEvidenceCol('belief_evidence_contribution', 'ALTER TABLE edges ADD COLUMN belief_evidence_contribution REAL;');
     } catch (edgeErr) {
       console.warn('Failed to ensure edges evidence columns:', edgeErr);
@@ -589,9 +606,8 @@ class SQLiteClient {
       if (hasLegacySourceTrust) {
         const legacyTrustCols = this.db.prepare('PRAGMA table_info(source_trust)').all() as Array<{ name: string }>;
         // The key naming WHO is trusted (author/domain) shipped briefly as
-        // origin_key; normalise to trust_origin_key before copying so it can
-        // never be confused with edges.belief_evidence_origin_key (which
-        // names the origin artifact of one piece of evidence).
+        // origin_key; normalise to trust_origin_key before copying so its
+        // subject — the trusted source — is unmistakable on sight.
         if (legacyTrustCols.some(col => col.name === 'origin_key')) {
           this.db.exec('ALTER TABLE source_trust RENAME COLUMN origin_key TO trust_origin_key;');
         }

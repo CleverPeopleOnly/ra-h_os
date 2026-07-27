@@ -5,8 +5,10 @@
  * OPEN SIGNED (-1, +1) scale:
  *   value = (1 - e^(-RATE*S)) - (1 - e^(-RATE*C)) = e^(-RATE*C) - e^(-RATE*S)
  * where S/C are the plain positive/|negative| sums of ALL contributions —
- * same-origin-key contributions are NOT collapsed, they stack (the old V1
- * largest-|value| collapse rule has been removed from grading).
+ * repeated contributions are NOT collapsed, they stack (the old V1
+ * largest-|value| collapse rule has been removed from grading, and with it
+ * the beliefEvidenceOriginKey field it keyed off: a contribution is now
+ * edge id + signed value only).
  * NEUTRAL_BELIEF (0) replaces the old PRIOR_BELIEF (0.5) as the anchor for
  * "balanced/torn" evidence; the range is open and never reaches +/-1.
  *
@@ -30,13 +32,12 @@ function expectedBelief(supportSum: number, contradictionSum: number): number {
   );
 }
 
-// Shorthand for building one contribution row in the tests below.
-function contribution(
-  edgeId: number,
-  signedContribution: number,
-  beliefEvidenceOriginKey: string | null
-): BeliefEvidenceContribution {
-  return { edgeId, signedContribution, beliefEvidenceOriginKey };
+// Shorthand for building one contribution row in the tests below. A
+// contribution is now edge id + signed value only: beliefEvidenceOriginKey
+// has been removed from BeliefEvidenceContribution, so this object literal
+// must type-check with exactly these two properties.
+function contribution(edgeId: number, signedContribution: number): BeliefEvidenceContribution {
+  return { edgeId, signedContribution };
 }
 
 describe('beliefGradingPolicyV1', () => {
@@ -51,7 +52,7 @@ describe('beliefGradingPolicyV1', () => {
   // A single independent support contribution must land exactly on the
   // saturation-formula anchor.
   it('grades a single support contribution to the exact formula anchor', () => {
-    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, 0.8, 'origin-a')]);
+    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, 0.8)]);
     expect(value).toBeCloseTo(expectedBelief(0.8, 0), 10);
   });
 
@@ -59,22 +60,22 @@ describe('beliefGradingPolicyV1', () => {
   // S = sum of positives, C = sum of |negatives|.
   it('combines independent support and contradiction masses per the formula', () => {
     const value = beliefGradingPolicyV1.gradeBelief([
-      contribution(1, 0.8, 'origin-a'),
-      contribution(2, -0.5, 'origin-b'),
+      contribution(1, 0.8),
+      contribution(2, -0.5),
     ]);
     expect(value).toBeCloseTo(expectedBelief(0.8, 0.5), 10);
   });
 
-  // Collapse is REMOVED from grading: contributions sharing an origin key no
-  // longer collapse to the strongest one — they all count and their masses
-  // SUM like any other independent contributions. Two same-key supports
-  // (0.4 + 0.7) plus one different-key contradiction (0.2) must combine to
-  // S = 1.1, C = 0.2, not the old collapsed S = 0.7, C = 0.2.
-  it('same-origin-key contributions stack (no collapse) — masses sum', () => {
+  // Collapse is REMOVED from grading: repeated contributions no longer
+  // collapse to the strongest one — they all count and their masses SUM.
+  // Two supports (0.4 + 0.7) plus one contradiction (0.2) must combine to
+  // S = 1.1, C = 0.2, not the old collapsed S = 0.7, C = 0.2. Unchanged by
+  // the origin-key removal: the policy never read the key.
+  it('repeated contributions stack (no collapse) — masses sum', () => {
     const value = beliefGradingPolicyV1.gradeBelief([
-      contribution(1, 0.4, 'shared-key'),
-      contribution(2, 0.7, 'shared-key'),
-      contribution(3, -0.2, 'other-key'),
+      contribution(1, 0.4),
+      contribution(2, 0.7),
+      contribution(3, -0.2),
     ]);
     expect(value).toBeCloseTo(expectedBelief(0.4 + 0.7, 0.2), 10);
   });
@@ -82,7 +83,7 @@ describe('beliefGradingPolicyV1', () => {
   // Full-strength (+1.0) single-key support must land exactly on 1 - e^-1
   // and land strictly on the positive side of neutral.
   it('grades a single full-strength (+1.0) support to 1 - e^-1 and stays positive', () => {
-    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, 1.0, 'origin-full')]);
+    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, 1.0)]);
     expect(value).toBeCloseTo(1 - Math.exp(-1), 10);
     expect(value).toBeGreaterThan(0);
   });
@@ -91,7 +92,7 @@ describe('beliefGradingPolicyV1', () => {
   // e^-1 - 1 and land strictly on the negative side of neutral — this is
   // the open-signed-scale behavior that has no analog on the old 0..1 scale.
   it('grades a single full-strength (-1.0) contradiction to e^-1 - 1 and stays negative', () => {
-    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, -1.0, 'origin-full')]);
+    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, -1.0)]);
     expect(value).toBeCloseTo(Math.exp(-1) - 1, 10);
     expect(value).toBeLessThan(0);
   });
@@ -100,9 +101,9 @@ describe('beliefGradingPolicyV1', () => {
   // graded value — a property only meaningful on a signed, zero-anchored
   // scale (there is no equivalent on the old 0..1 scale).
   it('negating all contributions exactly negates the graded value (sign symmetry)', () => {
-    const supportOnly = beliefGradingPolicyV1.gradeBelief([contribution(1, 0.6, 'origin-x')]);
+    const supportOnly = beliefGradingPolicyV1.gradeBelief([contribution(1, 0.6)]);
     const contradictionOnly = beliefGradingPolicyV1.gradeBelief([
-      contribution(1, -0.6, 'origin-x'),
+      contribution(1, -0.6),
     ]);
     expect(contradictionOnly).toBeCloseTo(-supportOnly, 10);
   });
@@ -111,8 +112,8 @@ describe('beliefGradingPolicyV1', () => {
   // keys) must land exactly on NEUTRAL_BELIEF (0), not the old 0.5 prior.
   it('grades balanced equal-mass support and contradiction to exactly NEUTRAL_BELIEF', () => {
     const value = beliefGradingPolicyV1.gradeBelief([
-      contribution(1, 0.9, 'key-a'),
-      contribution(2, -0.9, 'key-b'),
+      contribution(1, 0.9),
+      contribution(2, -0.9),
     ]);
     expect(value).toBeCloseTo(NEUTRAL_BELIEF, 10);
   });
@@ -129,7 +130,7 @@ describe('beliefGradingPolicyV1', () => {
   // strictly below +1 (the scale is open, never reaching the endpoint) while
   // getting arbitrarily close to it.
   it('keeps a very large support mass strictly below +1', () => {
-    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, 20, 'origin-huge')]);
+    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, 20)]);
     expect(value).toBeLessThan(1);
     expect(value).toBeGreaterThan(0.999);
   });
@@ -137,7 +138,7 @@ describe('beliefGradingPolicyV1', () => {
   // Strictly bounded below: even a very large contradiction mass must stay
   // strictly above -1 (open scale) while getting arbitrarily close to it.
   it('keeps a very large contradiction mass strictly above -1', () => {
-    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, -20, 'origin-huge')]);
+    const value = beliefGradingPolicyV1.gradeBelief([contribution(1, -20)]);
     expect(value).toBeGreaterThan(-1);
     expect(value).toBeLessThan(-0.999);
   });
@@ -147,8 +148,8 @@ describe('beliefGradingPolicyV1', () => {
   // scale's directionality rather than just its magnitude.
   it('grades net-against evidence (contradiction outweighs support) to a negative value', () => {
     const value = beliefGradingPolicyV1.gradeBelief([
-      contribution(1, 0.2, 'key-a'),
-      contribution(2, -0.9, 'key-b'),
+      contribution(1, 0.2),
+      contribution(2, -0.9),
     ]);
     expect(value).toBeLessThan(0);
   });
