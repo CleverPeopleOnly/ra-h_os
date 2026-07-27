@@ -16,10 +16,6 @@
 // is never 0; 0 means graded-and-balanced, not ungraded.
 export const NEUTRAL_BELIEF = 0;
 
-// Trust weight applied to evidence whose origin is unknown (the from-node has
-// no trustOriginKey in its metadata, or the key has no belief_source_trust row).
-export const DEFAULT_ORIGIN_TRUST = 0.3;
-
 // Rate of the exponential saturation applied to accumulated support and
 // contradiction mass.
 export const SATURATION_RATE = 1.0;

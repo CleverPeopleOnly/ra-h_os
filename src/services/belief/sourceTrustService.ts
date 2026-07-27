@@ -7,7 +7,8 @@
 import { getSQLiteClient } from '@/services/database/sqlite-client';
 
 // Look up the trust score for an origin key; null when no row exists.
-// (The DEFAULT_ORIGIN_TRUST fallback belongs to the belief engine, not here.)
+// (A null here means the origin is UNASSESSED — the belief engine excludes
+// its evidence entirely rather than inventing a default trust weight.)
 export async function getTrustScore(trustOriginKey: string): Promise<number | null> {
   // Single-row lookup by primary key; undefined when the origin is unknown.
   const trustRow = getSQLiteClient()

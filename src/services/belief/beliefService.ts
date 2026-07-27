@@ -8,7 +8,6 @@
 
 import { getSQLiteClient } from '@/services/database/sqlite-client';
 import {
-  DEFAULT_ORIGIN_TRUST,
   beliefGradingPolicyV1,
   type BeliefEvidenceContribution,
 } from '@/services/belief/beliefGradingPolicy';
@@ -75,14 +74,17 @@ function readTrustOriginKeyFromMetadata(metadataJson: string | null): string | n
 
 // Recompute and persist the belief value for one node:
 //  - loads its incoming evidence edges (belief_evidence_direction IS NOT NULL),
-//  - weights each by the from-node origin's trust score (DEFAULT_ORIGIN_TRUST
-//    when the origin is unknown),
-//  - grades via beliefGradingPolicyV1 and persists nodes.belief_value +
-//    belief_computed_at,
-//  - stamps each edge's belief_evidence_contribution,
+//  - weights each by the from-node origin's real trust score — an edge whose
+//    origin has no trustOriginKey, or whose key has no belief_source_trust
+//    row, is UNASSESSED and is excluded from grading entirely (no fallback
+//    trust weight is invented),
+//  - grades the counted (assessed) contributions via beliefGradingPolicyV1
+//    and persists nodes.belief_value + belief_computed_at,
+//  - stamps belief_evidence_contribution on assessed edges only,
 //  - appends a belief_movements row iff the value actually changed.
-// A node with zero evidence edges stays/becomes ungraded (belief_value NULL)
-// with no movement row and no stamps.
+// A node with zero counted contributions stays/becomes ungraded
+// (belief_value NULL) with no movement row and no stamps — whether that's
+// because it has no evidence edges at all, or only unassessed ones.
 export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecomputeResult> {
   const sqlite = getSQLiteClient();
 
@@ -99,40 +101,47 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     .all(nodeId) as EvidenceEdgeRow[];
 
   // Belief value before this recompute; null when the node was ungraded.
+  // Read before the loop so both the "no evidence edges" and "no assessed
+  // contributions" paths can share the same post-loop NULL branch below.
   const previousBeliefRow = sqlite
     .prepare('SELECT belief_value FROM nodes WHERE id = ?')
     .get(nodeId) as { belief_value: number | null } | undefined;
   const previousBeliefValue = previousBeliefRow?.belief_value ?? null;
 
-  if (evidenceEdges.length === 0) {
-    // Ungraded is a real state: clear any stale value, record nothing else.
-    if (previousBeliefValue !== null) {
-      sqlite
-        .prepare('UPDATE nodes SET belief_value = NULL, belief_computed_at = NULL WHERE id = ?')
-        .run(nodeId);
-    }
-    return { beliefValue: null, movement: null, contributions: [] };
-  }
-
-  // Signed effective contribution per edge: strength × origin trust weight,
-  // negative for 'against' evidence.
+  // Signed effective contribution per ASSESSED edge: strength × origin trust
+  // weight, negative for 'against' evidence. Unassessed edges (no resolvable
+  // trust score) are skipped entirely — never added here, never stamped.
   const contributions: BeliefEdgeContribution[] = [];
   // Same contributions in the shape the grading policy consumes.
   const policyContributions: BeliefEvidenceContribution[] = [];
   for (const evidenceEdge of evidenceEdges) {
     const trustOriginKey = readTrustOriginKeyFromMetadata(evidenceEdge.from_node_metadata);
-    // Origin trust weight: belief_source_trust score when known, else the default.
-    const trustWeight =
-      (trustOriginKey !== null ? await getTrustScore(trustOriginKey) : null) ??
-      DEFAULT_ORIGIN_TRUST;
+    // Origin trust score: only a real belief_source_trust row counts.
+    const trustScore = trustOriginKey !== null ? await getTrustScore(trustOriginKey) : null;
+    if (trustScore === null || trustScore === undefined) {
+      // Unassessed source: not evidence. Skip — no contribution, no stamp.
+      continue;
+    }
     const directionSign = evidenceEdge.belief_evidence_direction === 'against' ? -1 : 1;
-    const effectiveContribution = directionSign * evidenceEdge.belief_evidence_strength * trustWeight;
+    const effectiveContribution = directionSign * evidenceEdge.belief_evidence_strength * trustScore;
     contributions.push({ edgeId: evidenceEdge.id, effectiveContribution });
     policyContributions.push({
       edgeId: evidenceEdge.id,
       signedContribution: effectiveContribution,
       beliefEvidenceOriginKey: evidenceEdge.belief_evidence_origin_key,
     });
+  }
+
+  if (policyContributions.length === 0) {
+    // Ungraded is a real state: clear any stale value, record nothing else.
+    // Reached both when there were no evidence edges at all and when every
+    // edge present was unassessed.
+    if (previousBeliefValue !== null) {
+      sqlite
+        .prepare('UPDATE nodes SET belief_value = NULL, belief_computed_at = NULL WHERE id = ?')
+        .run(nodeId);
+    }
+    return { beliefValue: null, movement: null, contributions: [] };
   }
 
   // The graded belief value under the pinned v1 policy.

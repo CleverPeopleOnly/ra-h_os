@@ -31,8 +31,8 @@ describe('sourceTrustService', () => {
   });
 
   // Unknown origins are a real state: the lookup must report null, not a
-  // default — the DEFAULT_ORIGIN_TRUST fallback belongs to the belief
-  // engine, not to this service.
+  // default — the belief engine treats a null score as UNASSESSED and
+  // excludes that evidence entirely rather than falling back to a default.
   it('returns null for an origin key with no belief_source_trust row', async () => {
     db = await openTempBeliefDatabase();
     const { getTrustScore } = await db.importSourceTrustService();

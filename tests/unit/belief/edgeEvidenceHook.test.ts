@@ -88,7 +88,15 @@ describe('EdgeService evidence hook', () => {
   it('triggers a belief recompute of the target node when an evidence edge is created', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
-    const sourceNodeId = db.insertNodeFixture({ title: 'evidence source node' });
+    // The source must be ASSESSED (trustOriginKey + a seeded
+    // belief_source_trust row) — an unassessed source's evidence is
+    // excluded from grading entirely, so the recompute would stay NULL.
+    const sourceTrustOriginKey = 'trust:evidence-hook-source';
+    const sourceNodeId = db.insertNodeFixture({
+      title: 'evidence source node',
+      trustOriginKey: sourceTrustOriginKey,
+    });
+    db.seedSourceTrustRow(sourceTrustOriginKey, 0.9);
     const { edgeService } = await db.importEdgeService();
 
     const evidenceInput: EvidenceEdgeInput = {
