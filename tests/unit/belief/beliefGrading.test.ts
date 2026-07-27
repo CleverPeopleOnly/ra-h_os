@@ -18,7 +18,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_ORIGIN_TRUST,
-  PRIOR_BELIEF,
+  NEUTRAL_BELIEF,
   SATURATION_RATE,
 } from '@/services/belief/beliefGradingPolicy';
 import {
@@ -35,12 +35,10 @@ afterEach(() => {
 });
 
 // Expected belief for a support mass S and contradiction mass C under the
-// pinned v1 saturation formula.
+// pinned v1 OPEN SIGNED saturation formula: e^(-RATE*C) - e^(-RATE*S).
 function expectedBelief(supportSum: number, contradictionSum: number): number {
   return (
-    PRIOR_BELIEF +
-    (1 - PRIOR_BELIEF) * (1 - Math.exp(-SATURATION_RATE * supportSum)) -
-    PRIOR_BELIEF * (1 - Math.exp(-SATURATION_RATE * contradictionSum))
+    Math.exp(-SATURATION_RATE * contradictionSum) - Math.exp(-SATURATION_RATE * supportSum)
   );
 }
 
@@ -133,7 +131,7 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeGreaterThan(PRIOR_BELIEF);
+    expect(db.readNodeBelief(claimNodeId).belief_value).toBeGreaterThan(NEUTRAL_BELIEF);
   });
 
   // 2b. Any lone contradiction must push belief below the prior.
@@ -150,7 +148,7 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeLessThan(PRIOR_BELIEF);
+    expect(db.readNodeBelief(claimNodeId).belief_value).toBeLessThan(NEUTRAL_BELIEF);
   });
 
   // 3. Exact anchor: strength 1.0 at trust 1.0 lands precisely on
@@ -228,7 +226,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
     const valueAfterSecondSupport = Number(db.readNodeBelief(claimNodeId).belief_value);
 
-    const firstIncrement = valueAfterFirstSupport - PRIOR_BELIEF;
+    const firstIncrement = valueAfterFirstSupport - NEUTRAL_BELIEF;
     const secondIncrement = valueAfterSecondSupport - valueAfterFirstSupport;
     expect(secondIncrement).toBeGreaterThan(0);
     expect(secondIncrement).toBeLessThan(firstIncrement);
@@ -252,12 +250,13 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
 
     const beliefValue = Number(db.readNodeBelief(claimNodeId).belief_value);
-    expect(beliefValue).toBeGreaterThan(PRIOR_BELIEF);
+    expect(beliefValue).toBeGreaterThan(NEUTRAL_BELIEF);
     expect(beliefValue).toBeLessThan(1);
   });
 
-  // 5b. Lower bound: even ten strong independent contradictions never reach 0.
-  it('keeps belief strictly above 0 under ten strong independent contradictions', async () => {
+  // 5b. Lower bound: even ten strong independent contradictions never reach
+  //     -1 (the open-signed-scale floor, replacing the old 0..1 scale's 0).
+  it('keeps belief strictly above -1 under ten strong independent contradictions', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'heavily contradicted claim' });
     for (let contradictionIndex = 0; contradictionIndex < 10; contradictionIndex += 1) {
@@ -274,13 +273,17 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
 
     const beliefValue = Number(db.readNodeBelief(claimNodeId).belief_value);
-    expect(beliefValue).toBeLessThan(PRIOR_BELIEF);
-    expect(beliefValue).toBeGreaterThan(0);
+    expect(beliefValue).toBeLessThan(NEUTRAL_BELIEF);
+    // Open-scale floor: heavy contradiction approaches -1 but must never
+    // reach or pass it (the old scale's floor of 0 no longer applies).
+    expect(beliefValue).toBeGreaterThan(-1);
   });
 
-  // 6a. POLICY V1 (provisional): repeating the same evidence (same
-  //     independence key, equal strength) must not move the value.
-  it('POLICY V1: an equal-strength repeat sharing the independence key leaves belief unchanged', async () => {
+  // 6a. Collapse is REMOVED from grading: repeating the same evidence (same
+  //     origin key, equal strength) now STACKS instead of being ignored, so
+  //     the repeat must raise belief — S = 0.7 + 0.7 = 1.4, landing on the
+  //     summed-mass anchor, strictly above the single-edge value.
+  it('reinforcement: an equal-strength same-key repeat raises belief (stacks, no collapse)', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
@@ -303,13 +306,14 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
     const valueAfterRepeat = Number(db.readNodeBelief(claimNodeId).belief_value);
 
-    expect(valueAfterRepeat).toBeCloseTo(valueBeforeRepeat, 12);
+    expect(valueAfterRepeat).toBeGreaterThan(valueBeforeRepeat);
+    expect(valueAfterRepeat).toBeCloseTo(expectedBelief(0.7 + 0.7, 0), 10);
   });
 
-  // 6b. POLICY V1 (provisional): a stronger same-key contribution REPLACES
-  //     the weaker one entirely — the value equals the single-stronger-edge
-  //     anchor, not a stack of both.
-  it('POLICY V1: a stronger same-key contribution replaces the weaker one entirely', async () => {
+  // 6b. Collapse is REMOVED from grading: a stronger same-key contribution no
+  //     longer replaces the weaker one — both count, so S = 0.7 + 0.9 = 1.6,
+  //     not just the stronger edge's 0.9 alone.
+  it('reinforcement: a stronger same-key contribution adds to the weaker (stacks)', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
@@ -331,7 +335,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
 
     expect(Number(db.readNodeBelief(claimNodeId).belief_value)).toBeCloseTo(
-      expectedBelief(0.9, 0),
+      expectedBelief(0.7 + 0.9, 0),
       10
     );
   });
