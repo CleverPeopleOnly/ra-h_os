@@ -412,7 +412,8 @@ describe('standalone MCP server belief surface (MR-B)', () => {
   });
 
   // Unknown origins are a real state: getBeliefSourceTrust must report null, not
-  // invent a default (the DEFAULT_ORIGIN_TRUST fallback is app-engine-owned).
+  // invent a default — the belief engine treats such an origin as unassessed
+  // and excludes its evidence entirely rather than falling back to a default.
   it('getBeliefSourceTrust returns null trust for an origin key with no belief_source_trust row', async () => {
     await withStandaloneClient(async (client) => {
       const result = await client.callTool({

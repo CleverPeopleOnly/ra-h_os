@@ -4,23 +4,23 @@
  *
  * Semantics pinned here:
  *  - trust weight per evidence edge comes from the FROM-node's metadata
- *    trustOriginKey looked up in belief_source_trust; missing key or row falls back
- *    to DEFAULT_ORIGIN_TRUST
+ *    trustOriginKey looked up in belief_source_trust; an edge whose source
+ *    has no trustOriginKey, or whose key has no belief_source_trust row, is
+ *    UNASSESSED and is excluded from grading entirely (left unstamped, its
+ *    belief_evidence_contribution stays NULL) — there is no fallback weight
  *  - recompute persists nodes.belief_value + belief_computed_at, stamps
- *    edges.belief_evidence_contribution, and appends a belief_movements
- *    row only when the value actually changed
- *  - a node with no evidence edges stays ungraded (belief_value NULL)
+ *    edges.belief_evidence_contribution for ASSESSED edges only, and
+ *    appends a belief_movements row only when the value actually changed
+ *  - a node with no counted (assessed) evidence stays ungraded
+ *    (belief_value NULL), whether it has zero evidence edges or only
+ *    unassessed ones
  *
  * The static import of beliefGradingPolicy is safe (pure constants module);
  * everything database-bound is imported through the helper context.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  DEFAULT_ORIGIN_TRUST,
-  NEUTRAL_BELIEF,
-  SATURATION_RATE,
-} from '@/services/belief/beliefGradingPolicy';
+import { NEUTRAL_BELIEF, SATURATION_RATE } from '@/services/belief/beliefGradingPolicy';
 import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
@@ -340,10 +340,12 @@ describe('recomputeNodeBelief grading behavior', () => {
     );
   });
 
-  // 7a. Trust weighting: the same-strength support from a 0.9-trust origin
-  //     must move belief further than one from an origin with no
-  //     belief_source_trust row.
-  it('moves belief further for a 0.9-trust origin than for an origin with no trust row', async () => {
+  // 7a. Trust weighting vs. non-counting: a same-strength support from a
+  //     0.9-trust origin grades to a real positive number, while a support
+  //     from an origin with NO belief_source_trust row is UNASSESSED and is
+  //     not counted at all, so that node's belief stays NULL (not merely a
+  //     smaller number).
+  it('grades a 0.9-trust origin to a real value; an unknown origin is not counted (NULL)', async () => {
     db = await openTempBeliefDatabase();
     const trustedClaim = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
@@ -353,7 +355,8 @@ describe('recomputeNodeBelief grading behavior', () => {
       trustScore: 0.9,
     });
     // Second claim: its source node carries a trustOriginKey that has no
-    // belief_source_trust row, so it must fall back to DEFAULT_ORIGIN_TRUST.
+    // belief_source_trust row, so its only evidence edge is unassessed and
+    // excluded from grading entirely.
     const unknownClaim = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
       strength: 1.0,
@@ -367,13 +370,16 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(unknownClaim.claimNodeId);
 
     const trustedValue = Number(db.readNodeBelief(trustedClaim.claimNodeId).belief_value);
-    const unknownValue = Number(db.readNodeBelief(unknownClaim.claimNodeId).belief_value);
-    expect(trustedValue).toBeGreaterThan(unknownValue);
+    expect(Number.isFinite(trustedValue)).toBe(true);
+    expect(trustedValue).toBeGreaterThan(0);
+    expect(db.readNodeBelief(unknownClaim.claimNodeId).belief_value).toBeNull();
   });
 
-  // 7b. Trust fallback is exact: a source node with NO trustOriginKey in its
-  //     metadata weighs in at exactly DEFAULT_ORIGIN_TRUST.
-  it('pins an unknown-origin support to exactly the DEFAULT_ORIGIN_TRUST weight', async () => {
+  // 7b. Non-counting is exact: a support edge from a source with NO
+  //     trustOriginKey in its metadata is unassessed, so it contributes zero
+  //     evidence mass and the node stays ungraded (NULL), not weighted down
+  //     to a fallback trust value.
+  it('an unknown-origin support is not counted — the node stays NULL', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim with anonymous evidence' });
     // Source node without any trustOriginKey in its metadata.
@@ -389,10 +395,7 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    expect(Number(db.readNodeBelief(claimNodeId).belief_value)).toBeCloseTo(
-      expectedBelief(DEFAULT_ORIGIN_TRUST, 0),
-      10
-    );
+    expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
   });
 
   // 8. A contradiction arriving after support must lower the value below the
@@ -470,10 +473,15 @@ describe('recomputeNodeBelief grading behavior', () => {
     expect(db.readBeliefMovements(claimNodeId)).toHaveLength(1);
   });
 
-  // 10. Edge stamping: after a recompute, every evidence edge carries its
-  //     signed effective contribution (strength × trustWeight) in
-  //     belief_evidence_contribution, and the result reports the same.
-  it('stamps each evidence edge with its signed strength × trustWeight contribution', async () => {
+  // 10. Edge stamping vs. non-counting: after a recompute, an ASSESSED
+  //     evidence edge carries its signed effective contribution
+  //     (strength × trustWeight) in belief_evidence_contribution and is
+  //     reported in result.contributions; an UNASSESSED edge (unknown
+  //     origin) is excluded from grading, left unstamped (NULL), and does
+  //     NOT appear in result.contributions. The node's belief_value comes
+  //     from the assessed support alone — the unassessed contradiction
+  //     contributes nothing.
+  it('only assessed-source edges are counted and stamped; unassessed edges stay NULL', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId, edgeId: supportEdgeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
@@ -482,7 +490,8 @@ describe('recomputeNodeBelief grading behavior', () => {
       trustOriginKey: 'origin-trusted',
       trustScore: 0.9,
     });
-    // Contradicting edge from an unknown origin: weight DEFAULT_ORIGIN_TRUST.
+    // Contradicting edge from an unknown origin: unassessed, excluded from
+    // grading and stamping entirely.
     const contradictionEdgeId = addEvidenceEdge(db, claimNodeId, {
       direction: 'against',
       strength: 0.5,
@@ -495,26 +504,56 @@ describe('recomputeNodeBelief grading behavior', () => {
     const result = await recomputeNodeBelief(claimNodeId);
 
     const expectedSupportContribution = 0.8 * 0.9;
-    const expectedContradictionContribution = -0.5 * DEFAULT_ORIGIN_TRUST;
+    // Node grades from the assessed support alone; the unassessed
+    // contradiction contributes zero mass.
+    expect(Number(db.readNodeBelief(claimNodeId).belief_value)).toBeCloseTo(
+      expectedBelief(expectedSupportContribution, 0),
+      10
+    );
     expect(Number(db.readEvidenceStamp(supportEdgeId))).toBeCloseTo(
       expectedSupportContribution,
       10
     );
-    expect(Number(db.readEvidenceStamp(contradictionEdgeId))).toBeCloseTo(
-      expectedContradictionContribution,
-      10
-    );
-    const reportedByEdgeId = new Map(
-      result.contributions.map(entry => [entry.edgeId, entry.effectiveContribution])
-    );
-    expect(Number(reportedByEdgeId.get(supportEdgeId))).toBeCloseTo(
-      expectedSupportContribution,
-      10
-    );
-    expect(Number(reportedByEdgeId.get(contradictionEdgeId))).toBeCloseTo(
-      expectedContradictionContribution,
-      10
-    );
+    // Unassessed edge is left unstamped.
+    expect(db.readEvidenceStamp(contradictionEdgeId)).toBeNull();
+    const reportedEdgeIds = result.contributions.map(entry => entry.edgeId);
+    expect(reportedEdgeIds).toEqual([supportEdgeId]);
+  });
+
+  // 10b. Mixed assessed + unassessed support: the node must grade from the
+  //      assessed edge alone (strength 0.8, trust 1.0 -> S = 0.8), and the
+  //      unassessed support edge (no belief_source_trust row) must add
+  //      nothing to that mass — so the graded value is strictly less than
+  //      it would be if the unassessed edge's strength were also counted.
+  it('grades only from assessed-source support when an unassessed support is also present', async () => {
+    db = await openTempBeliefDatabase();
+    const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
+      direction: 'for',
+      strength: 0.8,
+      beliefEvidenceOriginKey: 'origin-assessed',
+      trustOriginKey: 'origin-assessed',
+      trustScore: 1.0,
+    });
+    // Second support edge from a source with no belief_source_trust row:
+    // unassessed, must be excluded from the graded mass entirely.
+    const unassessedStrength = 0.6;
+    addEvidenceEdge(db, claimNodeId, {
+      direction: 'for',
+      strength: unassessedStrength,
+      beliefEvidenceOriginKey: 'origin-unassessed',
+      trustOriginKey: 'origin-unassessed',
+      // no trustScore: deliberately unseeded
+    });
+    const { recomputeNodeBelief } = await db.importBeliefService();
+
+    await recomputeNodeBelief(claimNodeId);
+
+    const beliefValue = Number(db.readNodeBelief(claimNodeId).belief_value);
+    expect(beliefValue).toBeCloseTo(expectedBelief(0.8, 0), 10);
+    // If the unassessed edge's strength had also been counted, the value
+    // would be strictly higher — confirms it was excluded, not just
+    // down-weighted.
+    expect(beliefValue).toBeLessThan(expectedBelief(0.8 + unassessedStrength, 0));
   });
 
   // 11. Raising an origin's trust and recomputing must raise the value and

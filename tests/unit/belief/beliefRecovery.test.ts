@@ -41,7 +41,15 @@ describe('belief recovery sweep (MR-B)', () => {
   // stamps written, movement appended, and its id reported.
   it('regrades a node whose evidence edges have a NULL effective-contribution stamp', async () => {
     db = await openTempBeliefDatabase();
-    const evidenceNodeId = db.insertNodeFixture({ title: 'offline evidence origin node' });
+    // The source must be ASSESSED (trustOriginKey + a seeded
+    // belief_source_trust row) — an unassessed source's evidence is
+    // excluded from grading entirely, so it would never produce a value.
+    const evidenceSourceTrustOriginKey = 'trust:offline-evidence-source';
+    const evidenceNodeId = db.insertNodeFixture({
+      title: 'offline evidence origin node',
+      trustOriginKey: evidenceSourceTrustOriginKey,
+    });
+    db.seedSourceTrustRow(evidenceSourceTrustOriginKey, 0.9);
     const claimNodeId = db.insertNodeFixture({ title: 'claim node with offline evidence' });
     // Simulates a standalone write while the app was closed: evidence fields
     // set, belief_evidence_contribution left NULL (never graded).
@@ -78,7 +86,15 @@ describe('belief recovery sweep (MR-B)', () => {
   // by the app and must NOT be regraded again by the sweep.
   it('does not regrade a node whose evidence edges are already fully stamped', async () => {
     db = await openTempBeliefDatabase();
-    const evidenceNodeId = db.insertNodeFixture({ title: 'already graded evidence origin' });
+    // Assessed source, as above: an unassessed source's edge is never
+    // stamped at all, which would make the initial recompute below produce
+    // no movement and defeat the point of this idempotence test.
+    const evidenceSourceTrustOriginKey = 'trust:already-graded-source';
+    const evidenceNodeId = db.insertNodeFixture({
+      title: 'already graded evidence origin',
+      trustOriginKey: evidenceSourceTrustOriginKey,
+    });
+    db.seedSourceTrustRow(evidenceSourceTrustOriginKey, 0.9);
     const claimNodeId = db.insertNodeFixture({ title: 'claim node already fully graded' });
     db.insertEvidenceEdgeFixture({
       fromNodeId: evidenceNodeId,
@@ -100,6 +116,36 @@ describe('belief recovery sweep (MR-B)', () => {
     // Fully-stamped node: not reported, no new movement rows.
     expect(recoveryResult.regradedNodeIds).not.toContain(claimNodeId);
     expect(db.readBeliefMovements(claimNodeId)).toHaveLength(1);
+  });
+
+  // New behaviour (unassessed source is not evidence): an evidence edge
+  // from a source with NO belief_source_trust row is excluded from grading
+  // entirely, so recomputeNodeBelief never stamps it and it stays pending.
+  // The sweep's NULL-stamp query still matches this node every run (the
+  // edge's stamp never clears) and recomputes it — matching the current
+  // recovery contract, the node IS visited/reported — but the recomputed
+  // belief_value must stay NULL since there is no counted evidence.
+  it('recomputes a node with only unassessed-source evidence but leaves belief_value NULL', async () => {
+    db = await openTempBeliefDatabase();
+    const unassessedSourceNodeId = db.insertNodeFixture({ title: 'unassessed evidence source' });
+    const claimNodeId = db.insertNodeFixture({
+      title: 'claim node with only unassessed offline evidence',
+    });
+    // No trustOriginKey and no belief_source_trust row: this source is
+    // unassessed, so its edge is left ungraded/pending on purpose.
+    db.insertEvidenceEdgeFixture({
+      fromNodeId: unassessedSourceNodeId,
+      toNodeId: claimNodeId,
+      direction: 'for',
+      strength: 0.8,
+      beliefEvidenceOriginKey: 'origin:unassessed-offline-write',
+    });
+
+    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
+    const recoveryResult = await recoverUngradedEvidence();
+
+    expect(recoveryResult.regradedNodeIds).toContain(claimNodeId);
+    expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
   });
 
   // Nodes without any evidence edges have nothing to recover: the sweep
