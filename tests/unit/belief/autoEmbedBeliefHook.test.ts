@@ -27,7 +27,9 @@ vi.mock('@/services/embedding/ingestion', () => ({
 // queue's post-embed hook invokes the recompute.
 vi.mock('@/services/belief/beliefService', () => ({
   recomputeNodeBelief: vi.fn(async () => ({
-    beliefValue: null,
+    // EDITED from beliefValue: the recompute result names the graded
+    // quantity, and that quantity is credence.
+    beliefCredence: null,
     movement: null,
     contributions: [],
   })),

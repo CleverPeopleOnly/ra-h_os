@@ -170,15 +170,45 @@ function ensureMinimumSchema(db) {
 }
 
 /**
+ * Rename one legacy belief column to its settled credence name, in place.
+ * When BOTH names are already on the table the legacy column is dropped
+ * instead — the graded quantity must never sit under two names at once, and
+ * the fork has no production data to copy across. No-op when the legacy name
+ * is absent. Only in-place ALTER TABLE statements are used, so the table's
+ * indexes and foreign keys survive untouched.
+ */
+function renameBeliefColumnToCredence(db, tableName, legacyColumnName, credenceColumnName) {
+  // Column names already present on this table, per PRAGMA table_info.
+  const existingColumnNames = db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all()
+    .map((column) => column.name);
+  if (!existingColumnNames.includes(legacyColumnName)) {
+    return;
+  }
+  db.exec(
+    existingColumnNames.includes(credenceColumnName)
+      ? `ALTER TABLE ${tableName} DROP COLUMN ${legacyColumnName};`
+      : `ALTER TABLE ${tableName} RENAME COLUMN ${legacyColumnName} TO ${credenceColumnName};`
+  );
+}
+
+/**
  * Belief-engine schema (fork addition): make init-db create the same belief
  * columns and tables the app's belief engine expects, so evidence written
  * through the standalone server has the app-parity schema to land in.
  */
 function ensureBeliefSchema(db) {
+  // Vocabulary migration, run BEFORE the additions below so a database still
+  // naming the graded quantity belief_value gets it renamed rather than
+  // gaining a second, empty belief_credence column beside it — which is the
+  // half-migrated state the app-side migration then has to clean up.
+  renameBeliefColumnToCredence(db, 'nodes', 'belief_value', 'belief_credence');
+
   // Belief columns added to the upstream-owned nodes/edges tables. ALTER TABLE
   // has no IF NOT EXISTS, so each column is added only when missing.
   const beliefColumnAdditions = [
-    ['nodes', 'belief_value', 'REAL'],
+    ['nodes', 'belief_credence', 'REAL'],
     ['nodes', 'belief_computed_at', 'TEXT'],
     ['edges', 'belief_evidence_direction', 'TEXT'],
     ['edges', 'belief_evidence_strength', 'REAL'],
@@ -208,12 +238,19 @@ function ensureBeliefSchema(db) {
     CREATE TABLE IF NOT EXISTS belief_movements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       node_id INTEGER NOT NULL,
-      from_value REAL,
-      to_value REAL NOT NULL,
+      from_credence REAL,
+      to_credence REAL NOT NULL,
       "trigger" TEXT NOT NULL,
       occurred_at TEXT NOT NULL
     );
   `);
+
+  // A movement records the same quantity as nodes.belief_credence — the
+  // node's credence before and after a recompute — so both numeric columns
+  // carry that one word. CREATE TABLE IF NOT EXISTS above is a no-op on an
+  // existing log, so an older one only gets there through these renames.
+  renameBeliefColumnToCredence(db, 'belief_movements', 'from_value', 'from_credence');
+  renameBeliefColumnToCredence(db, 'belief_movements', 'to_value', 'to_credence');
 }
 
 function initDb(dbPath) {

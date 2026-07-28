@@ -1,20 +1,20 @@
 /**
  * Belief grading policy — the pure math that turns a set of signed evidence
- * contributions into a single belief value for a node.
+ * contributions into a single credence for a node.
  *
- * Open signed scale: belief values live in the open interval (−1, +1), with
+ * Open signed scale: a credence lives in the open interval (−1, +1), with
  * 0 as the neutral/torn anchor (no lean either way) rather than a 0..1
  * probability. Every contribution is additive — there is no collapse-by-
  * origin-key step. Formula:
  *   S = sum of positive contributions
  *   C = sum of |negative| contributions
- *   value = (1 - e^(-RATE * S)) - (1 - e^(-RATE * C))
+ *   credence = (1 - e^(-RATE * S)) - (1 - e^(-RATE * C))
  */
 
-// Neutral/torn anchor on the open signed belief scale — replaces the old 0.5
-// prior. NOTE: an ungraded node (no evidence edges at all) stays NULL — it
-// is never 0; 0 means graded-and-balanced, not ungraded.
-export const NEUTRAL_BELIEF = 0;
+// Neutral/torn anchor on the open signed credence scale — replaces the old
+// 0.5 prior. NOTE: an ungraded node (no evidence edges at all) stays NULL —
+// it is never 0; 0 means graded-and-balanced, not ungraded.
+export const NEUTRAL_BELIEF_CREDENCE = 0;
 
 // Rate of the exponential saturation applied to accumulated support and
 // contradiction mass.
@@ -30,16 +30,16 @@ export interface BeliefEvidenceContribution {
 
 // Contract for a belief grading policy version.
 export interface BeliefGradingPolicy {
-  // Reduce a node's evidence contributions to one belief value in the open
+  // Reduce a node's evidence contributions to one credence in the open
   // interval (−1, +1).
   gradeBelief(contributions: BeliefEvidenceContribution[]): number;
 }
 
 // V1 policy: every contribution is additive (no origin-key collapse), then
-// apply the saturating formula value = (1 - e^(-RATE*S)) - (1 - e^(-RATE*C)),
+// apply the saturating formula credence = (1 - e^(-RATE*S)) - (1 - e^(-RATE*C)),
 // where S is the summed positive mass and C the summed |negative| mass.
-// Saturating in both directions, so the value stays strictly inside (−1, +1);
-// balanced masses (including the empty-list case) grade to 0 (neutral).
+// Saturating in both directions, so the credence stays strictly inside
+// (−1, +1); balanced masses (including the empty-list case) grade to 0 (neutral).
 export const beliefGradingPolicyV1: BeliefGradingPolicy = {
   gradeBelief(contributions: BeliefEvidenceContribution[]): number {
     // Total supporting mass (S in the formula).

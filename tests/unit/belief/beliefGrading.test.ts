@@ -8,11 +8,11 @@
  *    has no trustOriginKey, or whose key has no belief_source_trust row, is
  *    UNASSESSED and is excluded from grading entirely (left unstamped, its
  *    belief_evidence_contribution stays NULL) — there is no fallback weight
- *  - recompute persists nodes.belief_value + belief_computed_at, stamps
+ *  - recompute persists nodes.belief_credence + belief_computed_at, stamps
  *    edges.belief_evidence_contribution for ASSESSED edges only, and
- *    appends a belief_movements row only when the value actually changed
+ *    appends a belief_movements row only when the credence actually changed
  *  - a node with no counted (assessed) evidence stays ungraded
- *    (belief_value NULL), whether it has zero evidence edges or only
+ *    (belief_credence NULL), whether it has zero evidence edges or only
  *    unassessed ones
  *
  * The static import of beliefGradingPolicy is safe (pure constants module);
@@ -20,7 +20,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NEUTRAL_BELIEF, SATURATION_RATE } from '@/services/belief/beliefGradingPolicy';
+import { NEUTRAL_BELIEF_CREDENCE, SATURATION_RATE } from '@/services/belief/beliefGradingPolicy';
 import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
@@ -34,9 +34,11 @@ afterEach(() => {
   db = undefined;
 });
 
-// Expected belief for a support mass S and contradiction mass C under the
+// Expected credence for a support mass S and contradiction mass C under the
 // pinned v1 OPEN SIGNED saturation formula: e^(-RATE*C) - e^(-RATE*S).
-function expectedBelief(supportSum: number, contradictionSum: number): number {
+// Renaming this MR moves no arithmetic: the formula is byte-for-byte the one
+// the pre-rename tests asserted, so every number below is unchanged.
+function expectedBeliefCredence(supportSum: number, contradictionSum: number): number {
   return (
     Math.exp(-SATURATION_RATE * contradictionSum) - Math.exp(-SATURATION_RATE * supportSum)
   );
@@ -100,16 +102,16 @@ function addEvidenceEdge(
 describe('recomputeNodeBelief grading behavior', () => {
   // 1. Ungraded is a real state: no evidence means belief stays NULL (not
   //    0.5) and no movement is recorded.
-  it('leaves an evidence-free node ungraded (belief_value NULL) and records no movement', async () => {
+  it('leaves an evidence-free node ungraded (belief_credence NULL) and records no movement', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'lonely claim' });
     const { recomputeNodeBelief } = await db.importBeliefService();
 
     const result = await recomputeNodeBelief(claimNodeId);
 
-    expect(result.beliefValue).toBeNull();
+    expect(result.beliefCredence).toBeNull();
     expect(result.movement).toBeNull();
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
     expect(db.readBeliefMovements(claimNodeId)).toHaveLength(0);
   });
 
@@ -126,7 +128,7 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeGreaterThan(NEUTRAL_BELIEF);
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeGreaterThan(NEUTRAL_BELIEF_CREDENCE);
   });
 
   // 2b. Any lone contradiction must push belief below the prior.
@@ -142,7 +144,7 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeLessThan(NEUTRAL_BELIEF);
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeLessThan(NEUTRAL_BELIEF_CREDENCE);
   });
 
   // 3. Exact anchor: strength 1.0 at trust 1.0 lands precisely on
@@ -160,14 +162,14 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     const result = await recomputeNodeBelief(claimNodeId);
 
-    const anchor = expectedBelief(1.0, 0);
-    expect(result.beliefValue).toBeCloseTo(anchor, 10);
+    const anchor = expectedBeliefCredence(1.0, 0);
+    expect(result.beliefCredence).toBeCloseTo(anchor, 10);
     const persisted = db.readNodeBelief(claimNodeId);
-    expect(persisted.belief_value).toBeCloseTo(anchor, 10);
+    expect(persisted.belief_credence).toBeCloseTo(anchor, 10);
     expect(persisted.belief_computed_at).toBeTruthy();
   });
 
-  // 4a. Monotonic: a second INDEPENDENT support must raise the value.
+  // 4a. Monotonic: a second INDEPENDENT support must raise the credence.
   it('raises belief when a second independent support is added', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
@@ -178,7 +180,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
     await recomputeNodeBelief(claimNodeId);
-    const valueAfterFirstSupport = db.readNodeBelief(claimNodeId).belief_value;
+    const credenceAfterFirstSupport = db.readNodeBelief(claimNodeId).belief_credence;
 
     addEvidenceEdge(db, claimNodeId, {
       direction: 'for',
@@ -187,9 +189,9 @@ describe('recomputeNodeBelief grading behavior', () => {
       trustScore: 1.0,
     });
     await recomputeNodeBelief(claimNodeId);
-    const valueAfterSecondSupport = db.readNodeBelief(claimNodeId).belief_value;
+    const credenceAfterSecondSupport = db.readNodeBelief(claimNodeId).belief_credence;
 
-    expect(valueAfterSecondSupport).toBeGreaterThan(Number(valueAfterFirstSupport));
+    expect(credenceAfterSecondSupport).toBeGreaterThan(Number(credenceAfterFirstSupport));
   });
 
   // 4b. Saturating: the second support's increment must be smaller than the
@@ -204,7 +206,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
     await recomputeNodeBelief(claimNodeId);
-    const valueAfterFirstSupport = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const credenceAfterFirstSupport = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
     addEvidenceEdge(db, claimNodeId, {
       direction: 'for',
@@ -213,10 +215,10 @@ describe('recomputeNodeBelief grading behavior', () => {
       trustScore: 1.0,
     });
     await recomputeNodeBelief(claimNodeId);
-    const valueAfterSecondSupport = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const credenceAfterSecondSupport = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
-    const firstIncrement = valueAfterFirstSupport - NEUTRAL_BELIEF;
-    const secondIncrement = valueAfterSecondSupport - valueAfterFirstSupport;
+    const firstIncrement = credenceAfterFirstSupport - NEUTRAL_BELIEF_CREDENCE;
+    const secondIncrement = credenceAfterSecondSupport - credenceAfterFirstSupport;
     expect(secondIncrement).toBeGreaterThan(0);
     expect(secondIncrement).toBeLessThan(firstIncrement);
   });
@@ -237,9 +239,9 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    const beliefValue = Number(db.readNodeBelief(claimNodeId).belief_value);
-    expect(beliefValue).toBeGreaterThan(NEUTRAL_BELIEF);
-    expect(beliefValue).toBeLessThan(1);
+    const beliefCredence = Number(db.readNodeBelief(claimNodeId).belief_credence);
+    expect(beliefCredence).toBeGreaterThan(NEUTRAL_BELIEF_CREDENCE);
+    expect(beliefCredence).toBeLessThan(1);
   });
 
   // 5b. Lower bound: even ten strong independent contradictions never reach
@@ -259,17 +261,17 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    const beliefValue = Number(db.readNodeBelief(claimNodeId).belief_value);
-    expect(beliefValue).toBeLessThan(NEUTRAL_BELIEF);
+    const beliefCredence = Number(db.readNodeBelief(claimNodeId).belief_credence);
+    expect(beliefCredence).toBeLessThan(NEUTRAL_BELIEF_CREDENCE);
     // Open-scale floor: heavy contradiction approaches -1 but must never
     // reach or pass it (the old scale's floor of 0 no longer applies).
-    expect(beliefValue).toBeGreaterThan(-1);
+    expect(beliefCredence).toBeGreaterThan(-1);
   });
 
   // 6a. Repetition reinforces: an equal-strength repeat from the SAME
   //     assessed trust origin STACKS instead of being ignored, so the repeat
   //     must raise belief — S = 0.7 + 0.7 = 1.4, landing on the summed-mass
-  //     anchor, strictly above the single-edge value. (Nothing here depends
+  //     anchor, strictly above the single-edge credence. (Nothing here depends
   //     on an origin key: repetition is weighted purely by source standing.)
   it('reinforcement: an equal-strength repeat from the same assessed source raises belief (stacks)', async () => {
     db = await openTempBeliefDatabase();
@@ -281,7 +283,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
     await recomputeNodeBelief(claimNodeId);
-    const valueBeforeRepeat = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const credenceBeforeRepeat = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
     addEvidenceEdge(db, claimNodeId, {
       direction: 'for',
@@ -290,10 +292,10 @@ describe('recomputeNodeBelief grading behavior', () => {
       trustScore: 1.0,
     });
     await recomputeNodeBelief(claimNodeId);
-    const valueAfterRepeat = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const credenceAfterRepeat = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
-    expect(valueAfterRepeat).toBeGreaterThan(valueBeforeRepeat);
-    expect(valueAfterRepeat).toBeCloseTo(expectedBelief(0.7 + 0.7, 0), 10);
+    expect(credenceAfterRepeat).toBeGreaterThan(credenceBeforeRepeat);
+    expect(credenceAfterRepeat).toBeCloseTo(expectedBeliefCredence(0.7 + 0.7, 0), 10);
   });
 
   // 6b. A stronger repeat from the same assessed source does not replace the
@@ -318,8 +320,8 @@ describe('recomputeNodeBelief grading behavior', () => {
     });
     await recomputeNodeBelief(claimNodeId);
 
-    expect(Number(db.readNodeBelief(claimNodeId).belief_value)).toBeCloseTo(
-      expectedBelief(0.7 + 0.9, 0),
+    expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
+      expectedBeliefCredence(0.7 + 0.9, 0),
       10
     );
   });
@@ -329,7 +331,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   //     from an origin with NO belief_source_trust row is UNASSESSED and is
   //     not counted at all, so that node's belief stays NULL (not merely a
   //     smaller number).
-  it('grades a 0.9-trust origin to a real value; an unknown origin is not counted (NULL)', async () => {
+  it('grades a 0.9-trust origin to a real credence; an unknown origin is not counted (NULL)', async () => {
     db = await openTempBeliefDatabase();
     const trustedClaim = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
@@ -351,16 +353,16 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(trustedClaim.claimNodeId);
     await recomputeNodeBelief(unknownClaim.claimNodeId);
 
-    const trustedValue = Number(db.readNodeBelief(trustedClaim.claimNodeId).belief_value);
-    expect(Number.isFinite(trustedValue)).toBe(true);
-    expect(trustedValue).toBeGreaterThan(0);
-    expect(db.readNodeBelief(unknownClaim.claimNodeId).belief_value).toBeNull();
+    const trustedCredence = Number(db.readNodeBelief(trustedClaim.claimNodeId).belief_credence);
+    expect(Number.isFinite(trustedCredence)).toBe(true);
+    expect(trustedCredence).toBeGreaterThan(0);
+    expect(db.readNodeBelief(unknownClaim.claimNodeId).belief_credence).toBeNull();
   });
 
   // 7b. Non-counting is exact: a support edge from a source with NO
   //     trustOriginKey in its metadata is unassessed, so it contributes zero
   //     evidence mass and the node stays ungraded (NULL), not weighted down
-  //     to a fallback trust value.
+  //     to a fallback trust weight.
   it('an unknown-origin support is not counted — the node stays NULL', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim with anonymous evidence' });
@@ -376,10 +378,10 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
   });
 
-  // 8. A contradiction arriving after support must lower the value below the
+  // 8. A contradiction arriving after support must lower the credence below the
   //    support-only level, exactly per the formula.
   it('lowers belief below the support-only level when a contradiction is added', async () => {
     db = await openTempBeliefDatabase();
@@ -391,7 +393,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
     await recomputeNodeBelief(claimNodeId);
-    const supportOnlyValue = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const supportOnlyCredence = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
     addEvidenceEdge(db, claimNodeId, {
       direction: 'against',
@@ -400,15 +402,15 @@ describe('recomputeNodeBelief grading behavior', () => {
       trustScore: 1.0,
     });
     await recomputeNodeBelief(claimNodeId);
-    const mixedEvidenceValue = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const mixedEvidenceCredence = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
-    expect(mixedEvidenceValue).toBeLessThan(supportOnlyValue);
-    expect(mixedEvidenceValue).toBeCloseTo(expectedBelief(0.8, 0.5), 10);
+    expect(mixedEvidenceCredence).toBeLessThan(supportOnlyCredence);
+    expect(mixedEvidenceCredence).toBeCloseTo(expectedBeliefCredence(0.8, 0.5), 10);
   });
 
   // 9a. Movements: the FIRST grading of a node appends one movement row with
-  //     from_value NULL (there was no previous value).
-  it('appends one movement row with NULL from_value on first grading', async () => {
+  //     from_credence NULL (there was no previous credence).
+  it('appends one movement row with NULL from_credence on first grading', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
@@ -422,18 +424,42 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     const movements = db.readBeliefMovements(claimNodeId);
     expect(movements).toHaveLength(1);
-    expect(movements[0].from_value).toBeNull();
-    expect(movements[0].to_value).toBeCloseTo(
-      Number(db.readNodeBelief(claimNodeId).belief_value),
+    expect(movements[0].from_credence).toBeNull();
+    expect(movements[0].to_credence).toBeCloseTo(
+      Number(db.readNodeBelief(claimNodeId).belief_credence),
       10
     );
     expect(movements[0].trigger).toBeTruthy();
     expect(movements[0].occurred_at).toBeTruthy();
   });
 
+  // 9a-bis. The RETURNED movement record names the quantity the same way the
+  //     column does: fromCredence / toCredence, and nothing else. Pinning the
+  //     exact key set stops a leftover fromValue / toValue surviving beside
+  //     the renamed fields.
+  it('returns a movement record whose fields are fromCredence, toCredence and trigger', async () => {
+    db = await openTempBeliefDatabase();
+    const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
+      direction: 'for',
+      strength: 0.6,
+      trustOriginKey: 'origin-movement-shape',
+      trustScore: 1.0,
+    });
+    const { recomputeNodeBelief } = await db.importBeliefService();
+
+    const result = await recomputeNodeBelief(claimNodeId);
+
+    expect(result.movement).not.toBeNull();
+    const firstMovement = result.movement!;
+    expect(Object.keys(firstMovement).sort()).toEqual(['fromCredence', 'toCredence', 'trigger']);
+    // First grading: there was no previous credence.
+    expect(firstMovement.fromCredence).toBeNull();
+    expect(firstMovement.toCredence).toBeCloseTo(Number(result.beliefCredence), 10);
+  });
+
   // 9b. Movements: recomputing with nothing changed (within 1e-12) must not
   //     append another row.
-  it('appends no movement row when a recompute produces an unchanged value', async () => {
+  it('appends no movement row when a recompute produces an unchanged credence', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
       direction: 'for',
@@ -455,7 +481,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   //     (strength × trustWeight) in belief_evidence_contribution and is
   //     reported in result.contributions; an UNASSESSED edge (unknown
   //     origin) is excluded from grading, left unstamped (NULL), and does
-  //     NOT appear in result.contributions. The node's belief_value comes
+  //     NOT appear in result.contributions. The node's belief_credence comes
   //     from the assessed support alone — the unassessed contradiction
   //     contributes nothing.
   it('only assessed-source edges are counted and stamped; unassessed edges stay NULL', async () => {
@@ -481,8 +507,8 @@ describe('recomputeNodeBelief grading behavior', () => {
     const expectedSupportContribution = 0.8 * 0.9;
     // Node grades from the assessed support alone; the unassessed
     // contradiction contributes zero mass.
-    expect(Number(db.readNodeBelief(claimNodeId).belief_value)).toBeCloseTo(
-      expectedBelief(expectedSupportContribution, 0),
+    expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
+      expectedBeliefCredence(expectedSupportContribution, 0),
       10
     );
     expect(Number(db.readEvidenceStamp(supportEdgeId))).toBeCloseTo(
@@ -498,7 +524,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   // 10b. Mixed assessed + unassessed support: the node must grade from the
   //      assessed edge alone (strength 0.8, trust 1.0 -> S = 0.8), and the
   //      unassessed support edge (no belief_source_trust row) must add
-  //      nothing to that mass — so the graded value is strictly less than
+  //      nothing to that mass — so the graded credence is strictly less than
   //      it would be if the unassessed edge's strength were also counted.
   it('grades only from assessed-source support when an unassessed support is also present', async () => {
     db = await openTempBeliefDatabase();
@@ -521,12 +547,12 @@ describe('recomputeNodeBelief grading behavior', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    const beliefValue = Number(db.readNodeBelief(claimNodeId).belief_value);
-    expect(beliefValue).toBeCloseTo(expectedBelief(0.8, 0), 10);
-    // If the unassessed edge's strength had also been counted, the value
+    const beliefCredence = Number(db.readNodeBelief(claimNodeId).belief_credence);
+    expect(beliefCredence).toBeCloseTo(expectedBeliefCredence(0.8, 0), 10);
+    // If the unassessed edge's strength had also been counted, the credence
     // would be strictly higher — confirms it was excluded, not just
     // down-weighted.
-    expect(beliefValue).toBeLessThan(expectedBelief(0.8 + unassessedStrength, 0));
+    expect(beliefCredence).toBeLessThan(expectedBeliefCredence(0.8 + unassessedStrength, 0));
   });
 
   // 12. Origin-key removal at the service boundary: recomputeNodeBelief must
@@ -559,7 +585,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     gradeBeliefSpy.mockRestore();
   });
 
-  // 11. Raising an origin's trust and recomputing must raise the value and
+  // 11. Raising an origin's trust and recomputing must raise the credence and
   //     append a second movement row recording the change.
   it('raises belief and appends a movement when the origin trust score increases', async () => {
     db = await openTempBeliefDatabase();
@@ -571,18 +597,18 @@ describe('recomputeNodeBelief grading behavior', () => {
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
     await recomputeNodeBelief(claimNodeId);
-    const valueAtLowTrust = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const credenceAtLowTrust = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
     // Raise the origin's trust through the real service, then regrade.
     const { upsertTrustScore } = await db.importSourceTrustService();
     await upsertTrustScore('origin-growing', 0.9);
     await recomputeNodeBelief(claimNodeId);
-    const valueAtHighTrust = Number(db.readNodeBelief(claimNodeId).belief_value);
+    const credenceAtHighTrust = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
-    expect(valueAtHighTrust).toBeGreaterThan(valueAtLowTrust);
+    expect(credenceAtHighTrust).toBeGreaterThan(credenceAtLowTrust);
     const movements = db.readBeliefMovements(claimNodeId);
     expect(movements).toHaveLength(2);
-    expect(Number(movements[1].from_value)).toBeCloseTo(valueAtLowTrust, 10);
-    expect(movements[1].to_value).toBeCloseTo(valueAtHighTrust, 10);
+    expect(Number(movements[1].from_credence)).toBeCloseTo(credenceAtLowTrust, 10);
+    expect(movements[1].to_credence).toBeCloseTo(credenceAtHighTrust, 10);
   });
 });

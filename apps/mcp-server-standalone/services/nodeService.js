@@ -385,17 +385,17 @@ function getNodeById(id) {
 }
 
 /**
- * Read one node's persisted belief state (fork addition): the belief_value
- * the app-owned engine graded and when it was computed. Returns NULL values
- * when the database predates the belief columns, so callers keep working
- * against legacy schemas.
+ * Read one node's persisted belief state (fork addition): the belief_credence
+ * the app-owned engine graded and when it was computed. Returns NULLs when the
+ * database predates the belief columns, so callers keep working against legacy
+ * schemas.
  */
 function getNodeBeliefState(id) {
   try {
-    const rows = query('SELECT belief_value, belief_computed_at FROM nodes WHERE id = ?', [id]);
-    return rows[0] || { belief_value: null, belief_computed_at: null };
+    const rows = query('SELECT belief_credence, belief_computed_at FROM nodes WHERE id = ?', [id]);
+    return rows[0] || { belief_credence: null, belief_computed_at: null };
   } catch {
-    return { belief_value: null, belief_computed_at: null };
+    return { belief_credence: null, belief_computed_at: null };
   }
 }
 

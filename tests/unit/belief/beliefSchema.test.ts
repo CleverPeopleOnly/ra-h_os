@@ -2,7 +2,13 @@
  * Schema tests for the belief engine (MR-A).
  *
  * Pins that SQLite client bootstrap gives a database:
- *  - nodes.belief_value / nodes.belief_computed_at
+ *  - nodes.belief_credence / nodes.belief_computed_at — credence is the one
+ *    word for the belief system's central quantity, so the column that holds
+ *    it says credence and the old nodes.belief_value name is gone from fresh
+ *    databases and renamed away on existing ones
+ *  - belief_movements.from_credence / to_credence — the movement log records
+ *    the SAME quantity before and after a recompute, so it uses the same word
+ *    (the old from_value / to_value names are renamed, never re-created)
  *  - edges.belief_evidence_direction / belief_evidence_strength /
  *    belief_evidence_contribution — and NO belief_evidence_origin_key: that
  *    column existed only to feed the deleted POLICY-V1 collapse-by-origin
@@ -194,6 +200,77 @@ function createDatabaseCarryingBeliefEvidenceOriginKey(dbPath: string): void {
   shippedOriginKeyDb.close();
 }
 
+// Lay down a database in the shape shipped BEFORE the credence rename: the
+// graded quantity is nodes.belief_value and the movement log records it as
+// from_value / to_value. It carries real data for the rename to preserve —
+// a graded node, an UNGRADED (NULL) node, an evidence edge, and two movement
+// rows one of which has a NULL from_value.
+//
+// It also creates idx_edges_from / idx_edges_to / idx_nodes_updated_at
+// explicitly (the base helper creates no indexes), so the rebuild guard below
+// has something real to lose. ensureCoreSchema creates those same three
+// indexes before the belief migration runs, so a copy-into-a-new-table
+// rebuild inside the migration would destroy them with nothing to recreate
+// them — which is exactly what the guard test catches.
+function createDatabaseNamingCredenceAsBeliefValue(dbPath: string): void {
+  createLegacyDatabaseWithoutBeliefColumns(dbPath);
+  const oldQuantityNameDb = new Database(dbPath);
+  oldQuantityNameDb.exec(`
+    ALTER TABLE nodes ADD COLUMN belief_value REAL;
+    ALTER TABLE nodes ADD COLUMN belief_computed_at TEXT;
+    ALTER TABLE edges ADD COLUMN belief_evidence_direction TEXT;
+    ALTER TABLE edges ADD COLUMN belief_evidence_strength REAL;
+    ALTER TABLE edges ADD COLUMN belief_evidence_contribution REAL;
+    CREATE TABLE belief_source_trust (
+      trust_origin_key TEXT PRIMARY KEY,
+      score REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE belief_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      node_id INTEGER NOT NULL,
+      from_value REAL,
+      to_value REAL NOT NULL,
+      "trigger" TEXT NOT NULL,
+      occurred_at TEXT NOT NULL
+    );
+    INSERT INTO nodes (id, title, belief_value, belief_computed_at)
+    VALUES (1, 'graded claim', -0.42, '2026-07-27T00:00:00.000Z'),
+           (2, 'ungraded claim', NULL, NULL),
+           (3, 'evidence source', 0.75, '2026-07-27T01:00:00.000Z');
+    INSERT INTO edges (id, from_node_id, to_node_id, source, explanation,
+                       belief_evidence_direction, belief_evidence_strength,
+                       belief_evidence_contribution)
+    VALUES (1, 3, 1, 'user', 'supporting evidence edge', 'for', 0.7, 0.63);
+    INSERT INTO belief_movements (id, node_id, from_value, to_value, "trigger", occurred_at)
+    VALUES (1, 1, NULL, 0.31, 'belief-recompute', '2026-07-26T00:00:00.000Z'),
+           (2, 1, 0.31, -0.42, 'belief-recompute', '2026-07-27T00:00:00.000Z');
+    CREATE INDEX idx_edges_from ON edges(from_node_id);
+    CREATE INDEX idx_edges_to ON edges(to_node_id);
+    CREATE INDEX idx_nodes_updated_at ON nodes(updated_at DESC);
+  `);
+  oldQuantityNameDb.close();
+}
+
+// Lay down the half-migrated shape the standalone MCP server can leave
+// behind: a pre-rename app database (populated nodes.belief_value) that
+// standalone init-db has since touched, adding an EMPTY nodes.belief_credence
+// beside it. The standalone path only ever ADDs missing columns — it has no
+// rename step — so both names end up on nodes at once, and the movement log
+// it never touches still carries from_value / to_value.
+//
+// There is no production data to protect (the fork is still in development),
+// so the specified fix is deliberately simple: the orphan belief_value column
+// is DROPPED outright. Nothing is copied out of it first.
+function createDatabaseCarryingBothBeliefValueAndBeliefCredence(dbPath: string): void {
+  createDatabaseNamingCredenceAsBeliefValue(dbPath);
+  const bothQuantityNamesDb = new Database(dbPath);
+  // Exactly what standalone init-db's ensure-column loop would have done:
+  // add the credence column, leave the old one and its rows alone.
+  bothQuantityNamesDb.exec('ALTER TABLE nodes ADD COLUMN belief_credence REAL;');
+  bothQuantityNamesDb.close();
+}
+
 // One row of "PRAGMA foreign_key_list(edges)" as read by the survival test:
 // which local column references which column of which table, and what the
 // declared ON DELETE action is.
@@ -224,15 +301,22 @@ describe('belief engine schema', () => {
     ).toBe(true);
   });
 
-  it('fresh database: nodes has belief_value REAL and belief_computed_at TEXT', async () => {
+  // EDITED from the belief_value case: the graded quantity is credence, so a
+  // fresh database must carry nodes.belief_credence and must NOT carry the
+  // old nodes.belief_value name at all.
+  it('fresh database: nodes has belief_credence REAL, belief_computed_at TEXT, and no belief_value', async () => {
     db = await openTempBeliefDatabase();
     const nodeColumns = db.readTableColumns('nodes');
-    const beliefValueColumn = findColumn(nodeColumns, 'belief_value');
+    const beliefCredenceColumn = findColumn(nodeColumns, 'belief_credence');
     const beliefComputedAtColumn = findColumn(nodeColumns, 'belief_computed_at');
-    expect(beliefValueColumn).toBeDefined();
-    expect(beliefValueColumn?.type.toUpperCase()).toBe('REAL');
+    expect(beliefCredenceColumn).toBeDefined();
+    expect(beliefCredenceColumn?.type.toUpperCase()).toBe('REAL');
     expect(beliefComputedAtColumn).toBeDefined();
     expect(beliefComputedAtColumn?.type.toUpperCase()).toBe('TEXT');
+    expect(
+      nodeColumns.map(column => column.name),
+      'the old nodes.belief_value name must not exist on a fresh database'
+    ).not.toContain('belief_value');
   });
 
   // Edited from the old four-column case: the origin key is removed, so a
@@ -280,16 +364,28 @@ describe('belief engine schema', () => {
     expect(updatedAtColumn?.notnull, 'updated_at is NOT NULL').toBe(1);
   });
 
-  it('fresh database: belief_movements table exists with the pinned audit columns', async () => {
+  // EDITED from the from_value / to_value case: a movement records the node's
+  // credence before and after the recompute, which is the same quantity as
+  // nodes.belief_credence, so both columns say credence and neither old name
+  // may survive on a fresh database.
+  it('fresh database: belief_movements table exists with from_credence / to_credence and no from_value / to_value', async () => {
     db = await openTempBeliefDatabase();
     const movementColumns = db.readTableColumns('belief_movements');
     expect(movementColumns.length, 'belief_movements table should exist').toBeGreaterThan(0);
     expect(findColumn(movementColumns, 'id')?.pk, 'id is the primary key').toBe(1);
     expect(findColumn(movementColumns, 'node_id')?.notnull, 'node_id is NOT NULL').toBe(1);
-    expect(findColumn(movementColumns, 'from_value'), 'from_value exists (nullable)').toBeDefined();
-    expect(findColumn(movementColumns, 'to_value')?.notnull, 'to_value is NOT NULL').toBe(1);
+    expect(
+      findColumn(movementColumns, 'from_credence'),
+      'from_credence exists (nullable)'
+    ).toBeDefined();
+    expect(findColumn(movementColumns, 'from_credence')?.type.toUpperCase()).toBe('REAL');
+    expect(findColumn(movementColumns, 'to_credence')?.notnull, 'to_credence is NOT NULL').toBe(1);
+    expect(findColumn(movementColumns, 'to_credence')?.type.toUpperCase()).toBe('REAL');
     expect(findColumn(movementColumns, 'trigger')?.notnull, 'trigger is NOT NULL').toBe(1);
     expect(findColumn(movementColumns, 'occurred_at')?.notnull, 'occurred_at is NOT NULL').toBe(1);
+    const movementColumnNames = movementColumns.map(column => column.name);
+    expect(movementColumnNames, 'the old from_value name must be gone').not.toContain('from_value');
+    expect(movementColumnNames, 'the old to_value name must be gone').not.toContain('to_value');
   });
 
   it('legacy database file without belief columns gains the nodes and edges columns after client init', async () => {
@@ -298,7 +394,10 @@ describe('belief engine schema', () => {
     });
     const nodeColumnNames = db.readTableColumns('nodes').map(column => column.name);
     const edgeColumnNames = db.readTableColumns('edges').map(column => column.name);
-    expect(nodeColumnNames).toContain('belief_value');
+    // EDITED from belief_value: a database that never had the quantity at all
+    // gains it under its one correct name, never under the old one.
+    expect(nodeColumnNames).toContain('belief_credence');
+    expect(nodeColumnNames).not.toContain('belief_value');
     expect(nodeColumnNames).toContain('belief_computed_at');
     expect(edgeColumnNames).toContain('belief_evidence_direction');
     expect(edgeColumnNames).toContain('belief_evidence_strength');
@@ -410,12 +509,15 @@ describe('belief engine schema', () => {
     expect(preservedEdgeRows[2].belief_evidence_strength).toBeCloseTo(0.5, 10);
     expect(preservedEdgeRows[2].belief_evidence_contribution).toBeNull();
 
-    // The nodes belief columns are unaffected by the edges-side drop.
+    // The nodes belief columns are unaffected by the edges-side drop. EDITED
+    // from belief_value: the fixture lays the quantity down under its old
+    // name, so after client init it is readable as belief_credence with the
+    // stored number carried across unchanged.
     const preservedGradedNode = db.sqlite
-      .prepare('SELECT title, belief_value, belief_computed_at FROM nodes WHERE id = 1')
-      .get() as { title: string; belief_value: number; belief_computed_at: string };
+      .prepare('SELECT title, belief_credence, belief_computed_at FROM nodes WHERE id = 1')
+      .get() as { title: string; belief_credence: number; belief_computed_at: string };
     expect(preservedGradedNode.title).toBe('claim');
-    expect(preservedGradedNode.belief_value).toBeCloseTo(0.31, 10);
+    expect(preservedGradedNode.belief_credence).toBeCloseTo(0.31, 10);
     expect(preservedGradedNode.belief_computed_at).toBe('2026-07-27T00:00:00.000Z');
   });
 
@@ -542,6 +644,302 @@ describe('belief engine schema', () => {
       .get() as { trust_origin_key: string; score: number };
     expect(migratedTrustRow.trust_origin_key).toBe('marelie');
     expect(migratedTrustRow.score).toBeCloseTo(0.9, 10);
+  });
+
+  // The headline credence migration on nodes: a database whose graded
+  // quantity is stored as belief_value must come out of client init with
+  // that column gone and belief_credence holding exactly the same numbers —
+  // graded values and the ungraded NULL alike — with belief_computed_at and
+  // the upstream node columns untouched beside them.
+  it('a database naming the quantity belief_value comes out with belief_credence holding the same values', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseNamingCredenceAsBeliefValue,
+    });
+
+    const nodeColumnNames = db.readTableColumns('nodes').map(column => column.name);
+    expect(nodeColumnNames, 'the quantity is now called credence').toContain('belief_credence');
+    expect(nodeColumnNames, 'the old belief_value column is renamed away').not.toContain(
+      'belief_value'
+    );
+    expect(nodeColumnNames).toContain('belief_computed_at');
+    // The upstream-owned columns beside ours are untouched by the rename.
+    for (const upstreamNodeColumnName of [
+      'id',
+      'title',
+      'description',
+      'source',
+      'link',
+      'event_date',
+      'created_at',
+      'updated_at',
+      'metadata',
+      'embedding',
+      'embedding_updated_at',
+      'embedding_text',
+      'chunk_status',
+    ]) {
+      expect(nodeColumnNames, `nodes.${upstreamNodeColumnName} must survive`).toContain(
+        upstreamNodeColumnName
+      );
+    }
+
+    // Every row's stored number carries over unchanged, NULL row included.
+    const migratedNodeRows = db.sqlite
+      .prepare('SELECT id, title, belief_credence, belief_computed_at FROM nodes ORDER BY id ASC')
+      .all() as Array<{
+      id: number;
+      title: string;
+      belief_credence: number | null;
+      belief_computed_at: string | null;
+    }>;
+    expect(migratedNodeRows).toHaveLength(3);
+    expect(migratedNodeRows.map(row => row.title)).toEqual([
+      'graded claim',
+      'ungraded claim',
+      'evidence source',
+    ]);
+    expect(Number(migratedNodeRows[0].belief_credence)).toBeCloseTo(-0.42, 10);
+    expect(migratedNodeRows[0].belief_computed_at).toBe('2026-07-27T00:00:00.000Z');
+    // An ungraded node stays ungraded: NULL is a real state, not a zero.
+    expect(migratedNodeRows[1].belief_credence).toBeNull();
+    expect(migratedNodeRows[1].belief_computed_at).toBeNull();
+    expect(Number(migratedNodeRows[2].belief_credence)).toBeCloseTo(0.75, 10);
+
+    // The edges evidence data sitting beside the renamed node column is
+    // untouched — this MR renames one quantity and moves nothing else.
+    const preservedEvidenceEdge = db.sqlite
+      .prepare(
+        `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_contribution
+         FROM edges WHERE id = 1`
+      )
+      .get() as {
+      belief_evidence_direction: string;
+      belief_evidence_strength: number;
+      belief_evidence_contribution: number;
+    };
+    expect(preservedEvidenceEdge.belief_evidence_direction).toBe('for');
+    expect(preservedEvidenceEdge.belief_evidence_strength).toBeCloseTo(0.7, 10);
+    expect(preservedEvidenceEdge.belief_evidence_contribution).toBeCloseTo(0.63, 10);
+  });
+
+  // The same migration on the movement log: from_value / to_value record the
+  // node's credence before and after a recompute, so they are renamed to
+  // from_credence / to_credence with every logged row preserved — including
+  // the first-grading row whose "before" is NULL.
+  it('a database naming the movement columns from_value / to_value comes out with from_credence / to_credence and its rows intact', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseNamingCredenceAsBeliefValue,
+    });
+
+    const movementColumnNames = db.readTableColumns('belief_movements').map(column => column.name);
+    expect(movementColumnNames).toContain('from_credence');
+    expect(movementColumnNames).toContain('to_credence');
+    expect(movementColumnNames, 'the old from_value column is renamed away').not.toContain(
+      'from_value'
+    );
+    expect(movementColumnNames, 'the old to_value column is renamed away').not.toContain('to_value');
+
+    // Read through the helper so the shared movement-row shape is exercised.
+    const migratedMovements = db.readBeliefMovements(1);
+    expect(migratedMovements).toHaveLength(2);
+    expect(migratedMovements[0].from_credence, 'a first grading has no previous credence').toBeNull();
+    expect(Number(migratedMovements[0].to_credence)).toBeCloseTo(0.31, 10);
+    expect(migratedMovements[0].trigger).toBe('belief-recompute');
+    expect(migratedMovements[0].occurred_at).toBe('2026-07-26T00:00:00.000Z');
+    expect(Number(migratedMovements[1].from_credence)).toBeCloseTo(0.31, 10);
+    expect(Number(migratedMovements[1].to_credence)).toBeCloseTo(-0.42, 10);
+  });
+
+  // Table-rebuild guard for the credence rename, mirroring the origin-key
+  // one. Renaming a column can be implemented either as ALTER TABLE ...
+  // RENAME COLUMN or as a copy-into-a-new-table rebuild, and a rebuild
+  // silently loses whatever it does not re-declare. ensureCoreSchema creates
+  // idx_edges_from / idx_edges_to / idx_nodes_updated_at BEFORE the belief
+  // migration runs, so nothing would recreate them afterwards: losing them
+  // degrades every graph traversal and every recent-nodes listing, and losing
+  // ON DELETE CASCADE orphans edges when a node is deleted.
+  it('renaming belief_value to belief_credence leaves the nodes and edges indexes and the ON DELETE CASCADE foreign keys intact', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseNamingCredenceAsBeliefValue,
+    });
+
+    // Precondition: the rename this test guards actually happened.
+    expect(db.readTableColumns('nodes').map(column => column.name)).toContain('belief_credence');
+
+    // The nodes listing index survives the nodes-table rename.
+    const survivingNodeIndexNames = (
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='nodes'")
+        .all() as Array<{ name: string }>
+    ).map(indexRow => indexRow.name);
+    expect(
+      survivingNodeIndexNames,
+      'idx_nodes_updated_at must survive the credence rename'
+    ).toContain('idx_nodes_updated_at');
+
+    // Both edges traversal indexes survive.
+    const survivingEdgeIndexNames = (
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='edges'")
+        .all() as Array<{ name: string }>
+    ).map(indexRow => indexRow.name);
+    expect(survivingEdgeIndexNames, 'idx_edges_from must survive the rename').toContain(
+      'idx_edges_from'
+    );
+    expect(survivingEdgeIndexNames, 'idx_edges_to must survive the rename').toContain(
+      'idx_edges_to'
+    );
+
+    // Both foreign keys to nodes(id) survive, still cascading on delete.
+    const survivingForeignKeys = db.sqlite
+      .prepare("PRAGMA foreign_key_list('edges')")
+      .all() as EdgeForeignKeyDeclaration[];
+    for (const referencingColumnName of ['from_node_id', 'to_node_id']) {
+      const foreignKeyForColumn = survivingForeignKeys.find(
+        declaration => declaration.from === referencingColumnName
+      );
+      expect(
+        foreignKeyForColumn,
+        `edges.${referencingColumnName} must still declare a foreign key`
+      ).toBeDefined();
+      expect(foreignKeyForColumn?.table).toBe('nodes');
+      expect(foreignKeyForColumn?.to).toBe('id');
+      expect(
+        foreignKeyForColumn?.on_delete.toUpperCase(),
+        `edges.${referencingColumnName} must still cascade on delete`
+      ).toBe('CASCADE');
+    }
+  });
+
+  // The half-migrated case: standalone init-db can leave a database carrying
+  // BOTH nodes.belief_value (populated) and an empty nodes.belief_credence.
+  // App client init must resolve that to one column — belief_credence stays,
+  // belief_value goes — so the quantity is never stored under two names at
+  // once. Deliberately NOT asserted: what belief_credence holds afterwards.
+  // There is no production data to protect, so the orphan column is simply
+  // dropped and nothing is copied out of it; pinning the numbers either way
+  // would over-specify the decision.
+  it('a database carrying both belief_value and an empty belief_credence loses belief_value outright', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseCarryingBothBeliefValueAndBeliefCredence,
+    });
+
+    const nodeColumnNames = db.readTableColumns('nodes').map(column => column.name);
+    expect(nodeColumnNames, 'the surviving column is the credence one').toContain(
+      'belief_credence'
+    );
+    expect(
+      nodeColumnNames,
+      'the orphan belief_value column must be dropped, never left beside belief_credence'
+    ).not.toContain('belief_value');
+    expect(nodeColumnNames).toContain('belief_computed_at');
+
+    // The rows themselves survive the drop: same three nodes, same titles,
+    // same computed-at stamps, and the upstream-owned columns beside ours.
+    const survivingNodeRows = db.sqlite
+      .prepare('SELECT id, title, belief_computed_at FROM nodes ORDER BY id ASC')
+      .all() as Array<{ id: number; title: string; belief_computed_at: string | null }>;
+    expect(survivingNodeRows).toHaveLength(3);
+    expect(survivingNodeRows.map(row => row.title)).toEqual([
+      'graded claim',
+      'ungraded claim',
+      'evidence source',
+    ]);
+    expect(survivingNodeRows[0].belief_computed_at).toBe('2026-07-27T00:00:00.000Z');
+    expect(survivingNodeRows[1].belief_computed_at).toBeNull();
+
+    // The edges evidence data is untouched by a nodes-side drop.
+    const untouchedEvidenceEdge = db.sqlite
+      .prepare(
+        `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_contribution
+         FROM edges WHERE id = 1`
+      )
+      .get() as {
+      belief_evidence_direction: string;
+      belief_evidence_strength: number;
+      belief_evidence_contribution: number;
+    };
+    expect(untouchedEvidenceEdge.belief_evidence_direction).toBe('for');
+    expect(untouchedEvidenceEdge.belief_evidence_strength).toBeCloseTo(0.7, 10);
+    expect(untouchedEvidenceEdge.belief_evidence_contribution).toBeCloseTo(0.63, 10);
+  });
+
+  // Rebuild guard for the nodes-side DROP, which the rename guard above does
+  // not cover: that test exercises ALTER TABLE ... RENAME COLUMN on nodes,
+  // this one exercises ALTER TABLE ... DROP COLUMN on nodes, and only a drop
+  // tempts an implementation into a copy-into-a-new-table rebuild. The
+  // constraint is the same either way — ensureCoreSchema creates
+  // idx_nodes_updated_at and the two edges indexes BEFORE the belief
+  // migration runs, so nothing would recreate them afterwards.
+  it('dropping the orphan belief_value column leaves the nodes and edges indexes and the ON DELETE CASCADE foreign keys intact', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseCarryingBothBeliefValueAndBeliefCredence,
+    });
+
+    // Precondition: the drop this test guards actually happened.
+    expect(db.readTableColumns('nodes').map(column => column.name)).not.toContain('belief_value');
+
+    // The nodes listing index survives the nodes-table drop.
+    const survivingNodeIndexNames = (
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='nodes'")
+        .all() as Array<{ name: string }>
+    ).map(indexRow => indexRow.name);
+    expect(survivingNodeIndexNames, 'idx_nodes_updated_at must survive the drop').toContain(
+      'idx_nodes_updated_at'
+    );
+
+    // Both edges traversal indexes survive.
+    const survivingEdgeIndexNames = (
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='edges'")
+        .all() as Array<{ name: string }>
+    ).map(indexRow => indexRow.name);
+    expect(survivingEdgeIndexNames, 'idx_edges_from must survive the drop').toContain(
+      'idx_edges_from'
+    );
+    expect(survivingEdgeIndexNames, 'idx_edges_to must survive the drop').toContain('idx_edges_to');
+
+    // Both foreign keys to nodes(id) survive, still cascading on delete — a
+    // nodes rebuild would break what edges point at.
+    const survivingForeignKeys = db.sqlite
+      .prepare("PRAGMA foreign_key_list('edges')")
+      .all() as EdgeForeignKeyDeclaration[];
+    for (const referencingColumnName of ['from_node_id', 'to_node_id']) {
+      const foreignKeyForColumn = survivingForeignKeys.find(
+        declaration => declaration.from === referencingColumnName
+      );
+      expect(
+        foreignKeyForColumn,
+        `edges.${referencingColumnName} must still declare a foreign key`
+      ).toBeDefined();
+      expect(foreignKeyForColumn?.table).toBe('nodes');
+      expect(foreignKeyForColumn?.to).toBe('id');
+      expect(
+        foreignKeyForColumn?.on_delete.toUpperCase(),
+        `edges.${referencingColumnName} must still cascade on delete`
+      ).toBe('CASCADE');
+    }
+  });
+
+  // Trust is OUT OF SCOPE of the credence rename (belief_source_trust and its
+  // trust_origin_key are removed by the separate sources-as-nodes MR), so a
+  // database that carries both must come out with the trust table untouched.
+  it('renaming belief_value to belief_credence leaves belief_source_trust untouched', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseNamingCredenceAsBeliefValue,
+    });
+
+    // Precondition: the rename this test guards actually happened, so the
+    // "trust is untouched" claim below is made about a migrated database.
+    expect(db.readTableColumns('nodes').map(column => column.name)).toContain('belief_credence');
+
+    const sourceTrustColumns = db.readTableColumns('belief_source_trust');
+    expect(
+      findColumn(sourceTrustColumns, 'trust_origin_key')?.pk,
+      'trust_origin_key is still the primary key'
+    ).toBe(1);
+    expect(findColumn(sourceTrustColumns, 'score')?.notnull, 'score is still NOT NULL').toBe(1);
   });
 
   it('legacy database file gains the belief_source_trust and belief_movements tables after client init', async () => {

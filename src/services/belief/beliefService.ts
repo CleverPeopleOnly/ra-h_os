@@ -1,9 +1,9 @@
 /**
- * Belief service — recomputes a node's belief value from its incoming
- * evidence edges, persists the result (nodes.belief_value +
+ * Belief service — recomputes a node's credence from its incoming
+ * evidence edges, persists the result (nodes.belief_credence +
  * belief_computed_at), stamps each evidence edge's
  * belief_evidence_contribution, and appends a belief_movements row
- * whenever the value actually changed.
+ * whenever the credence actually changed.
  */
 
 import { getSQLiteClient } from '@/services/database/sqlite-client';
@@ -22,20 +22,20 @@ export interface BeliefEdgeContribution {
   effectiveContribution: number;
 }
 
-// One recorded change of a node's belief value.
+// One recorded change of a node's credence.
 export interface BeliefMovementRecord {
-  // Value before the recompute; null when the node was previously ungraded.
-  fromValue: number | null;
-  // Value after the recompute.
-  toValue: number;
+  // Credence before the recompute; null when the node was previously ungraded.
+  fromCredence: number | null;
+  // Credence after the recompute.
+  toCredence: number;
   // What caused the recompute (e.g. an edge insert or an embed pass).
   trigger: string;
 }
 
 // Full outcome of one recomputeNodeBelief call.
 export interface BeliefRecomputeResult {
-  // New belief value, or null when the node has no evidence edges (ungraded).
-  beliefValue: number | null;
+  // New credence, or null when the node has no evidence edges (ungraded).
+  beliefCredence: number | null;
   // Movement appended by this recompute, or null when nothing changed.
   movement: BeliefMovementRecord | null;
   // Per-edge effective contributions stamped during this recompute.
@@ -51,9 +51,9 @@ interface EvidenceEdgeRow {
   from_node_metadata: string | null;
 }
 
-// Two belief values within this distance count as "unchanged" — no
+// Two credences within this distance count as "unchanged" — no
 // belief_movements row is appended for a recompute that lands this close.
-const BELIEF_CHANGE_EPSILON = 1e-12;
+const BELIEF_CREDENCE_CHANGE_EPSILON = 1e-12;
 
 // Extract the trustOriginKey from a node's metadata JSON; null when the
 // metadata is absent, unparseable, or carries no usable key.
@@ -71,18 +71,18 @@ function readTrustOriginKeyFromMetadata(metadataJson: string | null): string | n
   }
 }
 
-// Recompute and persist the belief value for one node:
+// Recompute and persist the credence for one node:
 //  - loads its incoming evidence edges (belief_evidence_direction IS NOT NULL),
 //  - weights each by the from-node origin's real trust score — an edge whose
 //    origin has no trustOriginKey, or whose key has no belief_source_trust
 //    row, is UNASSESSED and is excluded from grading entirely (no fallback
 //    trust weight is invented),
 //  - grades the counted (assessed) contributions via beliefGradingPolicyV1
-//    and persists nodes.belief_value + belief_computed_at,
+//    and persists nodes.belief_credence + belief_computed_at,
 //  - stamps belief_evidence_contribution on assessed edges only,
-//  - appends a belief_movements row iff the value actually changed.
+//  - appends a belief_movements row iff the credence actually changed.
 // A node with zero counted contributions stays/becomes ungraded
-// (belief_value NULL) with no movement row and no stamps — whether that's
+// (belief_credence NULL) with no movement row and no stamps — whether that's
 // because it has no evidence edges at all, or only unassessed ones.
 export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecomputeResult> {
   const sqlite = getSQLiteClient();
@@ -99,13 +99,13 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     )
     .all(nodeId) as EvidenceEdgeRow[];
 
-  // Belief value before this recompute; null when the node was ungraded.
+  // Credence before this recompute; null when the node was ungraded.
   // Read before the loop so both the "no evidence edges" and "no assessed
   // contributions" paths can share the same post-loop NULL branch below.
   const previousBeliefRow = sqlite
-    .prepare('SELECT belief_value FROM nodes WHERE id = ?')
-    .get(nodeId) as { belief_value: number | null } | undefined;
-  const previousBeliefValue = previousBeliefRow?.belief_value ?? null;
+    .prepare('SELECT belief_credence FROM nodes WHERE id = ?')
+    .get(nodeId) as { belief_credence: number | null } | undefined;
+  const previousBeliefCredence = previousBeliefRow?.belief_credence ?? null;
 
   // Signed effective contribution per ASSESSED edge: strength × origin trust
   // weight, negative for 'against' evidence. Unassessed edges (no resolvable
@@ -131,25 +131,25 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
   }
 
   if (policyContributions.length === 0) {
-    // Ungraded is a real state: clear any stale value, record nothing else.
+    // Ungraded is a real state: clear any stale credence, record nothing else.
     // Reached both when there were no evidence edges at all and when every
     // edge present was unassessed.
-    if (previousBeliefValue !== null) {
+    if (previousBeliefCredence !== null) {
       sqlite
-        .prepare('UPDATE nodes SET belief_value = NULL, belief_computed_at = NULL WHERE id = ?')
+        .prepare('UPDATE nodes SET belief_credence = NULL, belief_computed_at = NULL WHERE id = ?')
         .run(nodeId);
     }
-    return { beliefValue: null, movement: null, contributions: [] };
+    return { beliefCredence: null, movement: null, contributions: [] };
   }
 
-  // The graded belief value under the pinned v1 policy.
-  const newBeliefValue = beliefGradingPolicyV1.gradeBelief(policyContributions);
+  // The graded credence under the pinned v1 policy.
+  const newBeliefCredence = beliefGradingPolicyV1.gradeBelief(policyContributions);
   // Single timestamp shared by the node stamp and any movement row.
   const computedAt = new Date().toISOString();
 
   sqlite
-    .prepare('UPDATE nodes SET belief_value = ?, belief_computed_at = ? WHERE id = ?')
-    .run(newBeliefValue, computedAt, nodeId);
+    .prepare('UPDATE nodes SET belief_credence = ?, belief_computed_at = ? WHERE id = ?')
+    .run(newBeliefCredence, computedAt, nodeId);
 
   // Stamp each evidence edge with its signed effective contribution.
   const stampEvidenceEdge = sqlite.prepare(
@@ -159,24 +159,24 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     stampEvidenceEdge.run(contribution.effectiveContribution, contribution.edgeId);
   }
 
-  // Append a movement row only when the value actually moved.
-  const beliefValueChanged =
-    previousBeliefValue === null ||
-    Math.abs(newBeliefValue - previousBeliefValue) > BELIEF_CHANGE_EPSILON;
+  // Append a movement row only when the credence actually moved.
+  const beliefCredenceChanged =
+    previousBeliefCredence === null ||
+    Math.abs(newBeliefCredence - previousBeliefCredence) > BELIEF_CREDENCE_CHANGE_EPSILON;
   let movement: BeliefMovementRecord | null = null;
-  if (beliefValueChanged) {
+  if (beliefCredenceChanged) {
     movement = {
-      fromValue: previousBeliefValue,
-      toValue: newBeliefValue,
+      fromCredence: previousBeliefCredence,
+      toCredence: newBeliefCredence,
       trigger: 'belief-recompute',
     };
     sqlite
       .prepare(
-        `INSERT INTO belief_movements (node_id, from_value, to_value, "trigger", occurred_at)
+        `INSERT INTO belief_movements (node_id, from_credence, to_credence, "trigger", occurred_at)
          VALUES (?, ?, ?, ?, ?)`
       )
-      .run(nodeId, previousBeliefValue, newBeliefValue, movement.trigger, computedAt);
+      .run(nodeId, previousBeliefCredence, newBeliefCredence, movement.trigger, computedAt);
   }
 
-  return { beliefValue: newBeliefValue, movement, contributions };
+  return { beliefCredence: newBeliefCredence, movement, contributions };
 }
