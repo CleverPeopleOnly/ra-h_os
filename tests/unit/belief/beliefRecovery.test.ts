@@ -58,7 +58,6 @@ describe('belief recovery sweep (MR-B)', () => {
       toNodeId: claimNodeId,
       direction: 'for',
       strength: 0.8,
-      beliefEvidenceOriginKey: 'origin:offline-write',
     });
 
     const { recoverUngradedEvidence } = await importBeliefRecoveryService();
@@ -101,7 +100,6 @@ describe('belief recovery sweep (MR-B)', () => {
       toNodeId: claimNodeId,
       direction: 'for',
       strength: 0.6,
-      beliefEvidenceOriginKey: 'origin:already-graded',
     });
 
     // Grade the node for real first, so its evidence carries stamps.
@@ -138,7 +136,6 @@ describe('belief recovery sweep (MR-B)', () => {
       toNodeId: claimNodeId,
       direction: 'for',
       strength: 0.8,
-      beliefEvidenceOriginKey: 'origin:unassessed-offline-write',
     });
 
     const { recoverUngradedEvidence } = await importBeliefRecoveryService();

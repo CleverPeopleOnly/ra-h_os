@@ -2,12 +2,15 @@
  * Tests for the EdgeService evidence hook (MR-A).
  *
  * Pins that EdgeService.createEdge:
- *  - stores the new optional evidence fields (belief_evidence_direction,
- *    belief_evidence_strength, belief_evidence_origin_key) in the new edge columns,
+ *  - stores the optional evidence fields (belief_evidence_direction,
+ *    belief_evidence_strength) in the dedicated edge columns,
  *  - triggers recomputeNodeBelief(to_node_id) so the target node's
  *    belief_value becomes non-NULL WITHOUT any explicit belief call,
  *  - leaves belief_value NULL and the evidence columns NULL when called
- *    without evidence fields.
+ *    without evidence fields,
+ *  - IGNORES a belief_evidence_origin_key field from a stale caller rather
+ *    than erroring: the column is removed, so there is nothing to store,
+ *    but the edge must still be created with its other evidence intact.
  *
  * All edges are created with skip_inference: true and an explicit
  * explanation so no LLM path is ever exercised. Runs against a fresh
@@ -21,13 +24,18 @@ import {
   type TempBeliefDatabase,
 } from './helpers/tempBeliefDatabase';
 
-// EdgeData extended with the MR-A evidence fields. Declared here (assignable
-// to EdgeData) so the tests compile before EdgeData itself gains the fields;
-// once MR-A extends EdgeData this alias becomes redundant but stays valid.
+// EdgeData with the two surviving evidence fields made required, so the
+// tests below cannot accidentally omit them.
 type EvidenceEdgeInput = EdgeData & {
   belief_evidence_direction: 'for' | 'against';
   belief_evidence_strength: number;
-  belief_evidence_origin_key: string | null;
+};
+
+// An evidence edge input from a STALE caller that still sends the removed
+// origin key. It stays assignable to EdgeData, which is exactly the point:
+// createEdge must accept it and ignore the extra field.
+type StaleOriginKeyEdgeInput = EvidenceEdgeInput & {
+  belief_evidence_origin_key: string;
 };
 
 // The database context under test; opened per test, closed after each.
@@ -42,17 +50,22 @@ afterEach(() => {
 interface EvidenceEdgeRow {
   belief_evidence_direction: string | null;
   belief_evidence_strength: number | null;
-  belief_evidence_origin_key: string | null;
 }
 
 // Read the evidence columns of one edge straight from SQLite.
 function readEvidenceColumns(context: TempBeliefDatabase, edgeId: number): EvidenceEdgeRow {
   return context.sqlite
     .prepare(
-      `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key
+      `SELECT belief_evidence_direction, belief_evidence_strength
        FROM edges WHERE id = ?`
     )
     .get(edgeId) as EvidenceEdgeRow;
+}
+
+// Names of the columns the edges table actually has, straight from SQLite —
+// used to prove the removed origin key has no storage behind it.
+function readEdgeTableColumnNames(context: TempBeliefDatabase): string[] {
+  return context.readTableColumns('edges').map(column => column.name);
 }
 
 describe('EdgeService evidence hook', () => {
@@ -73,14 +86,44 @@ describe('EdgeService evidence hook', () => {
       skip_inference: true,
       belief_evidence_direction: 'for',
       belief_evidence_strength: 0.8,
-      belief_evidence_origin_key: 'origin-hook-test',
     };
     const createdEdge = await edgeService.createEdge(evidenceInput);
 
     const storedEvidence = readEvidenceColumns(db, createdEdge.id);
     expect(storedEvidence.belief_evidence_direction).toBe('for');
     expect(Number(storedEvidence.belief_evidence_strength)).toBeCloseTo(0.8, 10);
-    expect(storedEvidence.belief_evidence_origin_key).toBe('origin-hook-test');
+    // There is no origin-key column left for createEdge to write into.
+    expect(readEdgeTableColumnNames(db)).not.toContain('belief_evidence_origin_key');
+  });
+
+  // A caller that has not yet dropped the removed field must not break: the
+  // extra belief_evidence_origin_key is ignored and the edge is created
+  // normally with its direction and strength intact.
+  it('ignores a stale belief_evidence_origin_key field and still creates the edge with its other evidence', async () => {
+    db = await openTempBeliefDatabase();
+    const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
+    const sourceNodeId = db.insertNodeFixture({ title: 'evidence source node' });
+    const { edgeService } = await db.importEdgeService();
+
+    const staleOriginKeyInput: StaleOriginKeyEdgeInput = {
+      from_node_id: sourceNodeId,
+      to_node_id: claimNodeId,
+      explanation: 'Evidence fixture from a caller that still sends the origin key.',
+      created_via: 'workflow',
+      source: 'user',
+      skip_inference: true,
+      belief_evidence_direction: 'against',
+      belief_evidence_strength: 0.4,
+      belief_evidence_origin_key: 'origin-stale-caller',
+    };
+    const createdEdge = await edgeService.createEdge(staleOriginKeyInput);
+
+    expect(createdEdge.id).toBeGreaterThan(0);
+    const storedEvidence = readEvidenceColumns(db, createdEdge.id);
+    expect(storedEvidence.belief_evidence_direction).toBe('against');
+    expect(Number(storedEvidence.belief_evidence_strength)).toBeCloseTo(0.4, 10);
+    // The ignored field left no trace: no column, hence nowhere it landed.
+    expect(readEdgeTableColumnNames(db)).not.toContain('belief_evidence_origin_key');
   });
 
   // Creating an evidence edge must, by itself, grade the target node: its
@@ -108,7 +151,6 @@ describe('EdgeService evidence hook', () => {
       skip_inference: true,
       belief_evidence_direction: 'for',
       belief_evidence_strength: 0.8,
-      belief_evidence_origin_key: 'origin-hook-test',
     };
     await edgeService.createEdge(evidenceInput);
 
@@ -147,6 +189,5 @@ describe('EdgeService evidence hook', () => {
     const storedEvidence = readEvidenceColumns(db, createdEdge.id);
     expect(storedEvidence.belief_evidence_direction).toBeNull();
     expect(storedEvidence.belief_evidence_strength).toBeNull();
-    expect(storedEvidence.belief_evidence_origin_key).toBeNull();
   });
 });

@@ -138,8 +138,7 @@ const createEdgeInputSchema = {
   // dedicated belief_ edge columns. This server never grades — the RA-H app
   // owns grading (belief_evidence_contribution stays NULL here).
   belief_evidence_direction: z.enum(['for', 'against']).optional().describe("Evidence direction: whether the source node argues 'for' or 'against' the target node. Requires belief_evidence_strength."),
-  belief_evidence_strength: z.number().optional().describe('Evidence weight in [0, 1].'),
-  belief_evidence_origin_key: z.string().nullable().optional().describe('Origin key of this evidence; evidence sharing a key is treated as non-independent by the app-owned grading policy.')
+  belief_evidence_strength: z.number().optional().describe('Evidence weight in [0, 1].')
 };
 
 const updateEdgeInputSchema = {
@@ -509,7 +508,7 @@ async function main() {
       description: 'Connect two nodes with an edge only after the user has explicitly confirmed the proposed relationship. Edges are the most valuable part of the graph — they represent understanding, not proximity. Direction matters: reads as sourceId → [explanation] → targetId. The explanation should read as a sentence (e.g. "invented this technique", "contradicts the claim in"). Call queryEdge first to check if a connection already exists between the two nodes.',
       inputSchema: createEdgeInputSchema
     },
-    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key }) => {
+    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength }) => {
       if (!confirmed_by_user) {
         throw new Error('createEdge requires explicit user confirmation before writing the relationship.');
       }
@@ -529,8 +528,7 @@ async function main() {
         explanation: explanation.trim(),
         source: 'mcp',
         belief_evidence_direction,
-        belief_evidence_strength,
-        belief_evidence_origin_key
+        belief_evidence_strength
       });
 
       return {

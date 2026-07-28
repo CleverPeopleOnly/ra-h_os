@@ -170,8 +170,7 @@ const createEdgeInputSchema = {
   // Belief evidence fields (fork addition): optional, forwarded verbatim to
   // the app's /api/edges — the app-owned belief engine does the grading.
   belief_evidence_direction: z.enum(['for', 'against']).optional().describe("Evidence direction: whether the source node argues 'for' or 'against' the target node. Requires belief_evidence_strength."),
-  belief_evidence_strength: z.number().min(0).max(1).optional().describe('Evidence weight in [0, 1].'),
-  belief_evidence_origin_key: z.string().nullable().optional().describe('Origin key of this evidence; evidence sharing a key is treated as non-independent by the grading policy.')
+  belief_evidence_strength: z.number().min(0).max(1).optional().describe('Evidence weight in [0, 1].')
 };
 
 const createEdgeOutputSchema = {
@@ -548,7 +547,7 @@ server.registerTool(
     inputSchema: createEdgeInputSchema,
     outputSchema: createEdgeOutputSchema
   },
-  async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key }) => {
+  async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength }) => {
     if (!confirmed_by_user) {
       throw new Error('rah_create_edge requires explicit user confirmation before writing the relationship.');
     }
@@ -567,7 +566,6 @@ server.registerTool(
     // keep an evidence-free payload.
     if (belief_evidence_direction !== undefined) payload.belief_evidence_direction = belief_evidence_direction;
     if (belief_evidence_strength !== undefined) payload.belief_evidence_strength = belief_evidence_strength;
-    if (belief_evidence_origin_key !== undefined) payload.belief_evidence_origin_key = belief_evidence_origin_key;
 
     const result = await callRaHApi('/api/edges', {
       method: 'POST',

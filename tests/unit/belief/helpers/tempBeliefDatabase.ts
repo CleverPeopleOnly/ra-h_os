@@ -72,12 +72,13 @@ export interface TempBeliefDatabase {
   insertNodeFixture(options: { title: string; trustOriginKey?: string }): number;
   // Insert an evidence edge fixture directly (bypasses EdgeService and its
   // LLM inference paths); fails while the evidence columns do not exist yet.
+  // There is no origin-key argument: belief_evidence_origin_key is removed
+  // from the schema, so an evidence edge is direction + strength only.
   insertEvidenceEdgeFixture(options: {
     fromNodeId: number;
     toNodeId: number;
     direction: 'for' | 'against';
     strength: number;
-    beliefEvidenceOriginKey: string | null;
   }): number;
   // Seed or overwrite a belief_source_trust row directly via SQL.
   seedSourceTrustRow(trustOriginKey: string, score: number): void;
@@ -91,6 +92,11 @@ export interface TempBeliefDatabase {
   readTableColumns(tableName: string): SqliteTableColumn[];
   // Import the belief service bound to this database generation.
   importBeliefService(): Promise<typeof import('@/services/belief/beliefService')>;
+  // Import the grading-policy module from the SAME module-registry generation
+  // the belief service binds to, so a test can spy on
+  // beliefGradingPolicyV1.gradeBelief and inspect the contribution objects
+  // recomputeNodeBelief actually hands the policy.
+  importBeliefGradingPolicyModule(): Promise<typeof import('@/services/belief/beliefGradingPolicy')>;
   // Import the source trust service bound to this database generation.
   importSourceTrustService(): Promise<typeof import('@/services/belief/sourceTrustService')>;
   // Import the edge service bound to this database generation.
@@ -157,15 +163,15 @@ export async function openTempBeliefDatabase(
       return Number(result.lastInsertRowid);
     },
 
-    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, direction, strength, beliefEvidenceOriginKey }) {
+    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, direction, strength }) {
       const result = sqlite
         .prepare(
           `INSERT INTO edges
              (from_node_id, to_node_id, source, explanation,
-              belief_evidence_direction, belief_evidence_strength, belief_evidence_origin_key)
-           VALUES (?, ?, 'user', 'evidence edge fixture', ?, ?, ?)`
+              belief_evidence_direction, belief_evidence_strength)
+           VALUES (?, ?, 'user', 'evidence edge fixture', ?, ?)`
         )
-        .run(fromNodeId, toNodeId, direction, strength, beliefEvidenceOriginKey);
+        .run(fromNodeId, toNodeId, direction, strength);
       return Number(result.lastInsertRowid);
     },
 
@@ -206,6 +212,7 @@ export async function openTempBeliefDatabase(
     },
 
     importBeliefService: () => import('@/services/belief/beliefService'),
+    importBeliefGradingPolicyModule: () => import('@/services/belief/beliefGradingPolicy'),
     importSourceTrustService: () => import('@/services/belief/sourceTrustService'),
     importEdgeService: () => import('@/services/database/edges'),
     importAutoEmbedQueueModule: () => import('@/services/embedding/autoEmbedQueue'),
