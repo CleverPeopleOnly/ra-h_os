@@ -1,12 +1,21 @@
 /**
  * Tests for the app-MCP proxy (apps/mcp-server/stdio-server.js): the
- * rah_create_edge tool must accept the two writable evidence fields and
- * include them in the POST body it sends to /api/edges.
+ * rah_create_edge tool must accept the one signed writable evidence field
+ * (belief_evidence_support) and include it in the POST body it sends to
+ * /api/edges.
  *
- * belief_evidence_origin_key is REMOVED: the tool must no longer advertise it
- * on its input schema and must never forward it. A stale client that still
- * passes it must still get a successful edge creation — the field is dropped
- * by the schema, not rejected.
+ * belief_evidence_direction and belief_evidence_strength are MERGED AWAY into
+ * that signed field: the tool must no longer advertise either on its input
+ * schema and must never forward them. A stale client that still passes them
+ * must still get a successful edge creation — the fields are dropped by the
+ * schema, not rejected, and the resulting edge is a plain non-evidence one.
+ *
+ * This proxy is also the app-side write path that validates evidence today
+ * (its Zod schema bounded the old strength to [0, 1]), so the support range
+ * rules are pinned here as well as on the standalone server: outside
+ * [-1, +1] is an error, but exactly 0 is ACCEPTED and forwarded — NULL means
+ * the edge was never assessed as evidence, 0 means it was assessed and leans
+ * neither way, and the proxy must not collapse the two.
  *
  * Seam (same as tests/unit/mcp/stdio-server.test.ts): the spawned proxy is
  * pointed at a local in-process HTTP stub via RAH_MCP_TARGET_URL, and the
@@ -119,11 +128,11 @@ beforeEach(() => {
 });
 
 describe('app-MCP proxy rah_create_edge evidence forwarding', () => {
-  // EDITED from the three-field forwarding case: the two surviving evidence
-  // arguments must still appear in the POST body, while a stale
-  // belief_evidence_origin_key argument is dropped — the tool call still
-  // succeeds and the key never reaches the app.
-  it('includes belief_evidence_direction and belief_evidence_strength in the POST body and drops a stale belief_evidence_origin_key', async () => {
+  // EDITED from the two-field forwarding case: the one signed evidence
+  // argument must appear in the POST body, while stale
+  // belief_evidence_direction / belief_evidence_strength arguments are
+  // dropped — the tool call still succeeds and neither reaches the app.
+  it('includes belief_evidence_support in the POST body and drops stale belief_evidence_direction / belief_evidence_strength', async () => {
     await withMcpClient(async (client) => {
       const toolResult = await client.callTool({
         name: 'rah_create_edge',
@@ -132,13 +141,13 @@ describe('app-MCP proxy rah_create_edge evidence forwarding', () => {
           targetId: 1,
           explanation: 'Reports a measured result that supports the claim node.',
           confirmed_by_user: true,
-          belief_evidence_direction: 'for',
-          belief_evidence_strength: 0.9,
-          belief_evidence_origin_key: 'origin:stdio-evidence-test',
+          belief_evidence_support: 0.9,
+          belief_evidence_direction: 'against',
+          belief_evidence_strength: 0.4,
         },
       });
 
-      // Ignored, not rejected: the stale argument still yields a successful
+      // Ignored, not rejected: the stale arguments still yield a successful
       // edge creation rather than a tool error.
       expect((toolResult as { isError?: boolean }).isError ?? false).toBe(false);
 
@@ -155,28 +164,114 @@ describe('app-MCP proxy rah_create_edge evidence forwarding', () => {
         created_via: 'mcp',
         confirmed_by_user: true,
       });
-      // The surviving evidence fields must reach the app.
+      // The signed evidence field must reach the app.
       expect(createEdgeRequest?.body).toMatchObject({
-        belief_evidence_direction: 'for',
-        belief_evidence_strength: 0.9,
+        belief_evidence_support: 0.9,
       });
-      // The removed field must not be forwarded at all.
-      expect(Object.keys(createEdgeRequest?.body ?? {})).not.toContain('belief_evidence_origin_key');
+      // Neither merged-away field may be forwarded. The stale pair said
+      // 'against' 0.4: if either survived, the edge's meaning would flip.
+      const forwardedBodyKeys = Object.keys(createEdgeRequest?.body ?? {});
+      expect(forwardedBodyKeys).not.toContain('belief_evidence_direction');
+      expect(forwardedBodyKeys).not.toContain('belief_evidence_strength');
     });
   });
 
-  // EDITED from the three-field discoverability case: the advertised input
-  // schema must still name the two surviving evidence fields, and must no
-  // longer advertise the removed origin key to any external agent.
-  it('advertises the surviving evidence fields and not belief_evidence_origin_key in the rah_create_edge input schema', async () => {
+  // Sign pass-through: a negative support is a contradiction and must reach
+  // the app with its sign intact, since support is the only signed term.
+  it('forwards a negative belief_evidence_support with its sign intact', async () => {
+    await withMcpClient(async (client) => {
+      await client.callTool({
+        name: 'rah_create_edge',
+        arguments: {
+          sourceId: 2,
+          targetId: 1,
+          explanation: 'Reports a measured result that contradicts the claim node.',
+          confirmed_by_user: true,
+          belief_evidence_support: -0.9,
+        },
+      });
+
+      const createEdgeRequest = recordedApiRequests.find(
+        (entry) => entry.method === 'POST' && entry.pathname === '/api/edges'
+      );
+      expect(createEdgeRequest?.body).toMatchObject({ belief_evidence_support: -0.9 });
+    });
+  });
+
+  // CORRECTED from "a support of exactly 0 is rejected". A support of 0 is a
+  // legitimate, recordable judgement: NULL means the edge was never assessed
+  // as evidence, 0 means it WAS assessed and leans neither way. Rejecting 0
+  // would force a classifier that genuinely finds no lean to invent one. So
+  // the proxy must accept it and forward it verbatim — a zero that reached
+  // the app as an omitted field would arrive as "not evidence" instead.
+  it('accepts a belief_evidence_support of exactly 0 and forwards it in the POST body', async () => {
+    await withMcpClient(async (client) => {
+      const toolResult = await client.callTool({
+        name: 'rah_create_edge',
+        arguments: {
+          sourceId: 2,
+          targetId: 1,
+          explanation: 'Reports a measured result that bears neither way on the claim node.',
+          confirmed_by_user: true,
+          belief_evidence_support: 0,
+        },
+      });
+
+      expect((toolResult as { isError?: boolean }).isError ?? false).toBe(false);
+
+      const createEdgeRequest = recordedApiRequests.find(
+        (entry) => entry.method === 'POST' && entry.pathname === '/api/edges'
+      );
+      expect(createEdgeRequest, 'proxy should have POSTed to /api/edges').toBeDefined();
+      // The key must be present AND zero: dropping it would turn an assessed
+      // "leans neither way" into an unassessed plain edge at the app.
+      expect(Object.keys(createEdgeRequest?.body ?? {})).toContain('belief_evidence_support');
+      expect(createEdgeRequest?.body?.belief_evidence_support).toBe(0);
+    });
+  });
+
+  // The signed range runs -1..+1, so both ends are out of bounds: the tool
+  // must error at either end and POST nothing.
+  it('rejects a belief_evidence_support outside [-1, 1] at either end and sends no request to /api/edges', async () => {
+    await withMcpClient(async (client) => {
+      for (const outOfRangeSupport of [1.5, -1.5]) {
+        const toolResult = await client.callTool({
+          name: 'rah_create_edge',
+          arguments: {
+            sourceId: 2,
+            targetId: 1,
+            explanation: 'Reports a measured result that supports the claim node.',
+            confirmed_by_user: true,
+            belief_evidence_support: outOfRangeSupport,
+          },
+        });
+
+        expect(
+          (toolResult as { isError?: boolean }).isError,
+          `support ${outOfRangeSupport} must be rejected`
+        ).toBe(true);
+      }
+      expect(
+        recordedApiRequests.filter(
+          (entry) => entry.method === 'POST' && entry.pathname === '/api/edges'
+        )
+      ).toHaveLength(0);
+    });
+  });
+
+  // EDITED from the two-field discoverability case: the advertised input
+  // schema must name the one signed evidence field and must no longer
+  // advertise either merged-away field to any external agent.
+  it('advertises belief_evidence_support and neither belief_evidence_direction nor belief_evidence_strength in the rah_create_edge input schema', async () => {
     await withMcpClient(async (client) => {
       const result = await client.listTools();
       const createEdgeTool = result.tools.find((tool) => tool.name === 'rah_create_edge');
       expect(createEdgeTool).toBeDefined();
 
       const inputSchemaJson = JSON.stringify(createEdgeTool?.inputSchema);
-      expect(inputSchemaJson).toContain('belief_evidence_direction');
-      expect(inputSchemaJson).toContain('belief_evidence_strength');
+      expect(inputSchemaJson).toContain('belief_evidence_support');
+      expect(inputSchemaJson).not.toContain('belief_evidence_direction');
+      expect(inputSchemaJson).not.toContain('belief_evidence_strength');
       expect(inputSchemaJson).not.toContain('belief_evidence_origin_key');
     });
   });

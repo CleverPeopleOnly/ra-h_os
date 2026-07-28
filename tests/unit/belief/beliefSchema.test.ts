@@ -9,12 +9,17 @@
  *  - belief_movements.from_credence / to_credence — the movement log records
  *    the SAME quantity before and after a recompute, so it uses the same word
  *    (the old from_value / to_value names are renamed, never re-created)
- *  - edges.belief_evidence_direction / belief_evidence_strength /
- *    belief_evidence_contribution — and NO belief_evidence_origin_key: that
- *    column existed only to feed the deleted POLICY-V1 collapse-by-origin
- *    step, nothing reads it now, so it is removed from fresh databases and
- *    dropped (never renamed forward) from every database that still has it
- *    under any of its historical names
+ *  - edges.belief_evidence_support / belief_evidence_contribution — support
+ *    is the ONE signed number saying how an edge bears on its target
+ *    (-1..+1, positive supporting it, negative contradicting it, NULL
+ *    meaning the edge is not evidence at all). It replaces the old
+ *    belief_evidence_direction + belief_evidence_strength pair, which could
+ *    disagree: an edge could carry a strength with no direction, storable
+ *    but impossible to grade. Merging them makes that state unrepresentable
+ *  - and NO belief_evidence_origin_key: that column existed only to feed the
+ *    deleted POLICY-V1 collapse-by-origin step, nothing reads it now, so it
+ *    is removed from fresh databases and dropped (never renamed forward)
+ *    from every database that still has it under any of its historical names
  *  - belief_source_trust (keyed by trust_origin_key) and belief_movements tables
  * on BOTH a fresh database and a pre-existing legacy database file created
  * without those columns (the ensure-column migration path).
@@ -61,12 +66,21 @@ const removedEvidenceOriginKeyColumnNames = [
   'evidence_independence_key',
 ] as const;
 
-// The evidence columns that survive the removal, in the order they are read
-// back by the data-preservation assertions below.
+// The evidence columns edges carries after the direction+strength merge:
+// one signed support field and the grading stamp. Used by the data
+// preservation assertions below.
 const survivingEdgeEvidenceColumnNames = [
+  'belief_evidence_support',
+  'belief_evidence_contribution',
+] as const;
+
+// The two columns the signed support field replaces. Neither may survive on
+// any database, fresh or migrated: while both existed the schema allowed an
+// edge whose strength and direction disagreed (or whose direction was
+// missing entirely), which is exactly the invalid state the merge removes.
+const mergedAwayEdgeEvidenceColumnNames = [
   'belief_evidence_direction',
   'belief_evidence_strength',
-  'belief_evidence_contribution',
 ] as const;
 
 // Lay down a legacy database file with today's pre-belief nodes/edges shape,
@@ -271,6 +285,70 @@ function createDatabaseCarryingBothBeliefValueAndBeliefCredence(dbPath: string):
   bothQuantityNamesDb.close();
 }
 
+// Lay down a database in TODAY's shipped shape, the one the support merge
+// has to migrate: the graded quantity is already nodes.belief_credence and
+// the evidence fields are still the separate belief_evidence_direction +
+// belief_evidence_strength pair, with belief_evidence_contribution stamps
+// beside them.
+//
+// The edge rows deliberately cover every case the merge must get right:
+//  1. 'for' + 0.7, stamped 0.63          -> support +0.7, stamp preserved
+//  2. 'against' + 0.4, stamped -0.36     -> support -0.4, stamp preserved
+//  3. 'for' + 0.5, never stamped (NULL)  -> support +0.5, stamp still NULL
+//  4. NULL direction + NULL strength     -> support NULL (a plain edge)
+//  5. NULL direction + strength 0.9      -> support NULL: the storable-but-
+//     ungradeable state the two-column shape allowed. Recompute selected on
+//     "direction IS NOT NULL", so this row was never evidence; the merge must
+//     not resurrect it as evidence off the orphan magnitude alone.
+//
+// It also creates idx_nodes_updated_at / idx_edges_from / idx_edges_to
+// explicitly (the base helper creates none), so the rebuild guard below has
+// something real to lose: ensureCoreSchema creates those same three indexes
+// BEFORE the belief migration runs, so a copy-into-a-new-table rebuild inside
+// the migration would destroy them with nothing left to recreate them.
+function createDatabaseSplittingSupportIntoDirectionAndStrength(dbPath: string): void {
+  createLegacyDatabaseWithoutBeliefColumns(dbPath);
+  const splitEvidenceFieldsDb = new Database(dbPath);
+  splitEvidenceFieldsDb.exec(`
+    ALTER TABLE nodes ADD COLUMN belief_credence REAL;
+    ALTER TABLE nodes ADD COLUMN belief_computed_at TEXT;
+    ALTER TABLE edges ADD COLUMN belief_evidence_direction TEXT;
+    ALTER TABLE edges ADD COLUMN belief_evidence_strength REAL;
+    ALTER TABLE edges ADD COLUMN belief_evidence_contribution REAL;
+    CREATE TABLE belief_source_trust (
+      trust_origin_key TEXT PRIMARY KEY,
+      score REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE belief_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      node_id INTEGER NOT NULL,
+      from_credence REAL,
+      to_credence REAL NOT NULL,
+      "trigger" TEXT NOT NULL,
+      occurred_at TEXT NOT NULL
+    );
+    INSERT INTO nodes (id, title, belief_credence, belief_computed_at)
+    VALUES (1, 'graded claim', 0.31, '2026-07-27T00:00:00.000Z'),
+           (2, 'ungraded claim', NULL, NULL),
+           (3, 'evidence source', 0.75, '2026-07-27T01:00:00.000Z');
+    INSERT INTO edges (id, from_node_id, to_node_id, source, explanation,
+                       belief_evidence_direction, belief_evidence_strength,
+                       belief_evidence_contribution)
+    VALUES (1, 3, 1, 'user', 'supporting evidence edge', 'for', 0.7, 0.63),
+           (2, 3, 1, 'user', 'contradicting evidence edge', 'against', 0.4, -0.36),
+           (3, 3, 1, 'user', 'supporting evidence edge never graded', 'for', 0.5, NULL),
+           (4, 3, 1, 'user', 'plain non-evidence edge', NULL, NULL, NULL),
+           (5, 3, 1, 'user', 'orphan strength with no direction', NULL, 0.9, NULL);
+    INSERT INTO belief_movements (id, node_id, from_credence, to_credence, "trigger", occurred_at)
+    VALUES (1, 1, NULL, 0.31, 'belief-recompute', '2026-07-27T00:00:00.000Z');
+    CREATE INDEX idx_edges_from ON edges(from_node_id);
+    CREATE INDEX idx_edges_to ON edges(to_node_id);
+    CREATE INDEX idx_nodes_updated_at ON nodes(updated_at DESC);
+  `);
+  splitEvidenceFieldsDb.close();
+}
+
 // One row of "PRAGMA foreign_key_list(edges)" as read by the survival test:
 // which local column references which column of which table, and what the
 // declared ON DELETE action is.
@@ -319,21 +397,35 @@ describe('belief engine schema', () => {
     ).not.toContain('belief_value');
   });
 
-  // Edited from the old four-column case: the origin key is removed, so a
-  // fresh database must carry exactly the three surviving evidence columns
-  // with their types unchanged.
-  it('fresh database: edges has the three surviving evidence columns with the pinned types', async () => {
+  // EDITED from the three-column case: direction and strength are merged into
+  // one signed REAL support column, so a fresh database carries exactly two
+  // evidence columns — support (the assertion) and contribution (the grading
+  // stamp, whose type is unchanged by this merge).
+  it('fresh database: edges has belief_evidence_support REAL and belief_evidence_contribution REAL', async () => {
     db = await openTempBeliefDatabase();
     const edgeColumns = db.readTableColumns('edges');
     const expectedEvidenceColumnTypes: Record<string, string> = {
-      belief_evidence_direction: 'TEXT',
-      belief_evidence_strength: 'REAL',
+      belief_evidence_support: 'REAL',
       belief_evidence_contribution: 'REAL',
     };
     for (const [columnName, expectedType] of Object.entries(expectedEvidenceColumnTypes)) {
       const column = findColumn(edgeColumns, columnName);
       expect(column, `edges.${columnName} should exist`).toBeDefined();
       expect(column?.type.toUpperCase(), `edges.${columnName} type`).toBe(expectedType);
+    }
+  });
+
+  // The merge itself on a fresh database: neither half of the old pair may be
+  // created any more. Keeping either alongside support would re-open the
+  // disagreement the single signed field exists to prevent.
+  it('fresh database: edges has neither belief_evidence_direction nor belief_evidence_strength', async () => {
+    db = await openTempBeliefDatabase();
+    const edgeColumnNames = db.readTableColumns('edges').map(column => column.name);
+    for (const mergedAwayColumnName of mergedAwayEdgeEvidenceColumnNames) {
+      expect(
+        edgeColumnNames,
+        `edges.${mergedAwayColumnName} must not exist on a fresh database`
+      ).not.toContain(mergedAwayColumnName);
     }
   });
 
@@ -399,31 +491,47 @@ describe('belief engine schema', () => {
     expect(nodeColumnNames).toContain('belief_credence');
     expect(nodeColumnNames).not.toContain('belief_value');
     expect(nodeColumnNames).toContain('belief_computed_at');
-    expect(edgeColumnNames).toContain('belief_evidence_direction');
-    expect(edgeColumnNames).toContain('belief_evidence_strength');
+    // EDITED from the direction/strength pair: a database that never had any
+    // evidence fields gains the single signed support column, never the pair.
+    expect(edgeColumnNames).toContain('belief_evidence_support');
     expect(edgeColumnNames).toContain('belief_evidence_contribution');
+    for (const mergedAwayColumnName of mergedAwayEdgeEvidenceColumnNames) {
+      expect(edgeColumnNames, `edges.${mergedAwayColumnName} must never be added`).not.toContain(
+        mergedAwayColumnName
+      );
+    }
     // Edited from the old four-column expectation: the removed origin key
     // must never be added back to a database that does not have it.
     expect(edgeColumnNames).not.toContain('belief_evidence_origin_key');
   });
 
-  // Vocabulary migration: the field shipped briefly as evidence_relation with
-  // supports/contradicts values; client init must rename the column to
-  // belief_evidence_direction and map the stored values to for/against.
-  it('legacy evidence_relation column is renamed to belief_evidence_direction with values mapped to for/against', async () => {
+  // EDITED from the rename-to-direction case. The field shipped briefly as
+  // evidence_relation with supports/contradicts values beside an
+  // evidence_strength magnitude. Both halves now land in ONE signed
+  // belief_evidence_support: 'supports' keeps the magnitude's sign,
+  // 'contradicts' negates it. No intermediate direction column may survive.
+  it('legacy evidence_relation and evidence_strength merge into signed belief_evidence_support', async () => {
     db = await openTempBeliefDatabase({
       prepareExistingDbFile: createDatabaseWithMrAVocabulary,
     });
 
     const edgeColumnNames = db.readTableColumns('edges').map(col => col.name);
-    expect(edgeColumnNames).toContain('belief_evidence_direction');
+    expect(edgeColumnNames).toContain('belief_evidence_support');
     expect(edgeColumnNames).not.toContain('evidence_relation');
     expect(edgeColumnNames).not.toContain('evidence_direction');
+    for (const mergedAwayColumnName of mergedAwayEdgeEvidenceColumnNames) {
+      expect(edgeColumnNames, `edges.${mergedAwayColumnName} must be gone`).not.toContain(
+        mergedAwayColumnName
+      );
+    }
 
-    const migratedDirections = db.sqlite
-      .prepare('SELECT belief_evidence_direction FROM edges ORDER BY id ASC')
-      .all() as Array<{ belief_evidence_direction: string }>;
-    expect(migratedDirections.map(row => row.belief_evidence_direction)).toEqual(['for', 'against']);
+    // Fixture rows: ('supports', 0.7) and ('contradicts', 0.4).
+    const migratedSupports = db.sqlite
+      .prepare('SELECT belief_evidence_support FROM edges ORDER BY id ASC')
+      .all() as Array<{ belief_evidence_support: number }>;
+    expect(migratedSupports).toHaveLength(2);
+    expect(migratedSupports[0].belief_evidence_support).toBeCloseTo(0.7, 10);
+    expect(migratedSupports[1].belief_evidence_support).toBeCloseTo(-0.4, 10);
   });
 
   // EDITED from the old rename-forward case. The origin-artifact key shipped
@@ -444,15 +552,13 @@ describe('belief engine schema', () => {
       ).not.toContain(removedOriginKeyColumnName);
     }
 
-    // The rows and their surviving evidence values are untouched by the drop.
+    // EDITED from the direction/strength read-back: the neighbouring evidence
+    // data survives the drop as one signed support value per row.
     const migratedEvidenceRows = db.sqlite
-      .prepare(
-        'SELECT belief_evidence_direction, belief_evidence_strength FROM edges ORDER BY id ASC'
-      )
-      .all() as Array<{ belief_evidence_direction: string; belief_evidence_strength: number }>;
-    expect(migratedEvidenceRows.map(row => row.belief_evidence_direction)).toEqual(['for', 'against']);
-    expect(migratedEvidenceRows[0].belief_evidence_strength).toBeCloseTo(0.7, 10);
-    expect(migratedEvidenceRows[1].belief_evidence_strength).toBeCloseTo(0.4, 10);
+      .prepare('SELECT belief_evidence_support FROM edges ORDER BY id ASC')
+      .all() as Array<{ belief_evidence_support: number }>;
+    expect(migratedEvidenceRows[0].belief_evidence_support).toBeCloseTo(0.7, 10);
+    expect(migratedEvidenceRows[1].belief_evidence_support).toBeCloseTo(-0.4, 10);
   });
 
   // The headline migration: a database carrying TODAY's shipped
@@ -477,11 +583,13 @@ describe('belief engine schema', () => {
       expect(edgeColumnNames, `edges.${upstreamColumnName} must survive`).toContain(upstreamColumnName);
     }
 
-    // All three rows survive with their evidence values, NULL key row included.
+    // EDITED from the direction/strength read-back: all three rows survive
+    // with their evidence merged into one signed support value, NULL key row
+    // included. 'for' keeps the magnitude's sign, 'against' negates it.
     const preservedEdgeRows = db.sqlite
       .prepare(
         `SELECT id, from_node_id, to_node_id, explanation,
-                belief_evidence_direction, belief_evidence_strength, belief_evidence_contribution
+                belief_evidence_support, belief_evidence_contribution
          FROM edges ORDER BY id ASC`
       )
       .all() as Array<{
@@ -489,24 +597,18 @@ describe('belief engine schema', () => {
       from_node_id: number;
       to_node_id: number;
       explanation: string;
-      belief_evidence_direction: string;
-      belief_evidence_strength: number;
+      belief_evidence_support: number | null;
       belief_evidence_contribution: number | null;
     }>;
     expect(preservedEdgeRows).toHaveLength(3);
     expect(preservedEdgeRows.map(row => row.id)).toEqual([1, 2, 3]);
-    expect(preservedEdgeRows.map(row => row.belief_evidence_direction)).toEqual([
-      'for',
-      'against',
-      'for',
-    ]);
-    expect(preservedEdgeRows[0].belief_evidence_strength).toBeCloseTo(0.7, 10);
+    expect(Number(preservedEdgeRows[0].belief_evidence_support)).toBeCloseTo(0.7, 10);
     expect(preservedEdgeRows[0].belief_evidence_contribution).toBeCloseTo(0.63, 10);
-    expect(preservedEdgeRows[1].belief_evidence_strength).toBeCloseTo(0.4, 10);
+    expect(Number(preservedEdgeRows[1].belief_evidence_support)).toBeCloseTo(-0.4, 10);
     expect(preservedEdgeRows[1].belief_evidence_contribution).toBeCloseTo(-0.36, 10);
     // The row whose origin key was NULL survives exactly like the others.
     expect(preservedEdgeRows[2].explanation).toBe('edge whose origin key was never set');
-    expect(preservedEdgeRows[2].belief_evidence_strength).toBeCloseTo(0.5, 10);
+    expect(Number(preservedEdgeRows[2].belief_evidence_support)).toBeCloseTo(0.5, 10);
     expect(preservedEdgeRows[2].belief_evidence_contribution).toBeNull();
 
     // The nodes belief columns are unaffected by the edges-side drop. EDITED
@@ -625,18 +727,19 @@ describe('belief engine schema', () => {
     // The dropped key is not renamed forward either.
     expect(edgeColumnNames).not.toContain('belief_evidence_origin_key');
 
+    // EDITED from the direction/strength read-back: the unprefixed-era row
+    // ('for', 0.7) lands as a single signed support of +0.7, with its
+    // contribution stamp carried across untouched.
     const migratedEdge = db.sqlite
       .prepare(
-        `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_contribution
+        `SELECT belief_evidence_support, belief_evidence_contribution
          FROM edges WHERE id = 1`
       )
       .get() as {
-      belief_evidence_direction: string;
-      belief_evidence_strength: number;
+      belief_evidence_support: number;
       belief_evidence_contribution: number;
     };
-    expect(migratedEdge.belief_evidence_direction).toBe('for');
-    expect(migratedEdge.belief_evidence_strength).toBeCloseTo(0.7, 10);
+    expect(Number(migratedEdge.belief_evidence_support)).toBeCloseTo(0.7, 10);
     expect(migratedEdge.belief_evidence_contribution).toBeCloseTo(0.21, 10);
 
     const migratedTrustRow = db.sqlite
@@ -705,20 +808,19 @@ describe('belief engine schema', () => {
     expect(migratedNodeRows[1].belief_computed_at).toBeNull();
     expect(Number(migratedNodeRows[2].belief_credence)).toBeCloseTo(0.75, 10);
 
-    // The edges evidence data sitting beside the renamed node column is
-    // untouched — this MR renames one quantity and moves nothing else.
+    // EDITED from the direction/strength read-back: the edges evidence data
+    // sitting beside the renamed node column carries the same weight it
+    // always did, now as one signed support of +0.7 with its stamp intact.
     const preservedEvidenceEdge = db.sqlite
       .prepare(
-        `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_contribution
+        `SELECT belief_evidence_support, belief_evidence_contribution
          FROM edges WHERE id = 1`
       )
       .get() as {
-      belief_evidence_direction: string;
-      belief_evidence_strength: number;
+      belief_evidence_support: number;
       belief_evidence_contribution: number;
     };
-    expect(preservedEvidenceEdge.belief_evidence_direction).toBe('for');
-    expect(preservedEvidenceEdge.belief_evidence_strength).toBeCloseTo(0.7, 10);
+    expect(Number(preservedEvidenceEdge.belief_evidence_support)).toBeCloseTo(0.7, 10);
     expect(preservedEvidenceEdge.belief_evidence_contribution).toBeCloseTo(0.63, 10);
   });
 
@@ -848,19 +950,18 @@ describe('belief engine schema', () => {
     expect(survivingNodeRows[0].belief_computed_at).toBe('2026-07-27T00:00:00.000Z');
     expect(survivingNodeRows[1].belief_computed_at).toBeNull();
 
-    // The edges evidence data is untouched by a nodes-side drop.
+    // EDITED from the direction/strength read-back: the edges evidence data
+    // is untouched by a nodes-side drop, and reads back as signed support.
     const untouchedEvidenceEdge = db.sqlite
       .prepare(
-        `SELECT belief_evidence_direction, belief_evidence_strength, belief_evidence_contribution
+        `SELECT belief_evidence_support, belief_evidence_contribution
          FROM edges WHERE id = 1`
       )
       .get() as {
-      belief_evidence_direction: string;
-      belief_evidence_strength: number;
+      belief_evidence_support: number;
       belief_evidence_contribution: number;
     };
-    expect(untouchedEvidenceEdge.belief_evidence_direction).toBe('for');
-    expect(untouchedEvidenceEdge.belief_evidence_strength).toBeCloseTo(0.7, 10);
+    expect(Number(untouchedEvidenceEdge.belief_evidence_support)).toBeCloseTo(0.7, 10);
     expect(untouchedEvidenceEdge.belief_evidence_contribution).toBeCloseTo(0.63, 10);
   });
 
@@ -940,6 +1041,187 @@ describe('belief engine schema', () => {
       'trust_origin_key is still the primary key'
     ).toBe(1);
     expect(findColumn(sourceTrustColumns, 'score')?.notnull, 'score is still NOT NULL').toBe(1);
+  });
+
+  // The headline merge migration: a database carrying TODAY's shipped
+  // direction + strength pair must come out of client init with both columns
+  // gone and belief_evidence_support holding the merged signed value —
+  // support = strength where direction was 'for', support = -strength where
+  // it was 'against'.
+  it('a database carrying belief_evidence_direction and belief_evidence_strength comes out with the merged signed belief_evidence_support', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseSplittingSupportIntoDirectionAndStrength,
+    });
+
+    const edgeColumnNames = db.readTableColumns('edges').map(column => column.name);
+    expect(edgeColumnNames, 'the merged signed column is present').toContain(
+      'belief_evidence_support'
+    );
+    for (const mergedAwayColumnName of mergedAwayEdgeEvidenceColumnNames) {
+      expect(
+        edgeColumnNames,
+        `edges.${mergedAwayColumnName} must be gone once its value is merged into support`
+      ).not.toContain(mergedAwayColumnName);
+    }
+
+    const mergedEdgeRows = db.sqlite
+      .prepare('SELECT id, explanation, belief_evidence_support FROM edges ORDER BY id ASC')
+      .all() as Array<{ id: number; explanation: string; belief_evidence_support: number | null }>;
+    expect(mergedEdgeRows).toHaveLength(5);
+    // 'for' 0.7 keeps its sign; 'against' 0.4 is negated; the ungraded 'for'
+    // 0.5 merges exactly like the graded ones.
+    expect(Number(mergedEdgeRows[0].belief_evidence_support)).toBeCloseTo(0.7, 10);
+    expect(Number(mergedEdgeRows[1].belief_evidence_support)).toBeCloseTo(-0.4, 10);
+    expect(Number(mergedEdgeRows[2].belief_evidence_support)).toBeCloseTo(0.5, 10);
+    // A plain edge was never evidence and stays that way.
+    expect(mergedEdgeRows[3].belief_evidence_support).toBeNull();
+    // The invalid state the two-column shape allowed: a magnitude with no
+    // direction was never gradeable, so it must NOT become evidence now.
+    expect(
+      mergedEdgeRows[4].belief_evidence_support,
+      'an orphan strength with no direction was never evidence — support stays NULL'
+    ).toBeNull();
+  });
+
+  // Data preservation across the merge: the existing grading stamps and every
+  // other edge and node column keep their values. The merge rewrites one
+  // quantity's storage and must move nothing else.
+  it('merging direction and strength into support preserves the contribution stamps and all other row data', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseSplittingSupportIntoDirectionAndStrength,
+    });
+
+    // Precondition: the merge this test guards actually happened, so every
+    // preservation claim below is made about a migrated database.
+    expect(db.readTableColumns('edges').map(column => column.name)).toContain(
+      'belief_evidence_support'
+    );
+
+    // Every existing belief_evidence_contribution stamp is carried across,
+    // NULL stamps included — the merge does not regrade anything.
+    const preservedStampRows = db.sqlite
+      .prepare('SELECT id, belief_evidence_contribution FROM edges ORDER BY id ASC')
+      .all() as Array<{ id: number; belief_evidence_contribution: number | null }>;
+    expect(preservedStampRows[0].belief_evidence_contribution).toBeCloseTo(0.63, 10);
+    expect(preservedStampRows[1].belief_evidence_contribution).toBeCloseTo(-0.36, 10);
+    expect(preservedStampRows[2].belief_evidence_contribution).toBeNull();
+    expect(preservedStampRows[3].belief_evidence_contribution).toBeNull();
+    expect(preservedStampRows[4].belief_evidence_contribution).toBeNull();
+
+    // The upstream-owned edge columns and their data survive untouched.
+    const edgeColumnNames = db.readTableColumns('edges').map(column => column.name);
+    for (const upstreamEdgeColumnName of [
+      'id',
+      'from_node_id',
+      'to_node_id',
+      'source',
+      'created_at',
+      'context',
+      'explanation',
+    ]) {
+      expect(edgeColumnNames, `edges.${upstreamEdgeColumnName} must survive`).toContain(
+        upstreamEdgeColumnName
+      );
+    }
+    const preservedEdgeRows = db.sqlite
+      .prepare('SELECT id, from_node_id, to_node_id, explanation FROM edges ORDER BY id ASC')
+      .all() as Array<{
+      id: number;
+      from_node_id: number;
+      to_node_id: number;
+      explanation: string;
+    }>;
+    expect(preservedEdgeRows.map(row => row.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(preservedEdgeRows.every(row => row.from_node_id === 3 && row.to_node_id === 1)).toBe(
+      true
+    );
+    expect(preservedEdgeRows[0].explanation).toBe('supporting evidence edge');
+    expect(preservedEdgeRows[4].explanation).toBe('orphan strength with no direction');
+
+    // The nodes side is untouched by an edges-side merge: graded credence,
+    // ungraded NULL, and the computed-at stamps all carry over.
+    const preservedNodeRows = db.sqlite
+      .prepare('SELECT id, title, belief_credence, belief_computed_at FROM nodes ORDER BY id ASC')
+      .all() as Array<{
+      id: number;
+      title: string;
+      belief_credence: number | null;
+      belief_computed_at: string | null;
+    }>;
+    expect(preservedNodeRows).toHaveLength(3);
+    expect(Number(preservedNodeRows[0].belief_credence)).toBeCloseTo(0.31, 10);
+    expect(preservedNodeRows[0].belief_computed_at).toBe('2026-07-27T00:00:00.000Z');
+    expect(preservedNodeRows[1].belief_credence).toBeNull();
+    expect(Number(preservedNodeRows[2].belief_credence)).toBeCloseTo(0.75, 10);
+
+    // The movement log is untouched too.
+    const preservedMovements = db.readBeliefMovements(1);
+    expect(preservedMovements).toHaveLength(1);
+    expect(preservedMovements[0].from_credence).toBeNull();
+    expect(Number(preservedMovements[0].to_credence)).toBeCloseTo(0.31, 10);
+  });
+
+  // Table-rebuild guard for the merge, mirroring the origin-key and credence
+  // ones. The merge needs an ADD COLUMN + UPDATE + two DROP COLUMNs, all of
+  // which an implementation could be tempted to do as one copy-into-a-new-
+  // table rebuild — which silently loses whatever it does not re-declare.
+  // ensureCoreSchema creates idx_nodes_updated_at / idx_edges_from /
+  // idx_edges_to BEFORE this migration runs, so nothing would recreate them:
+  // losing them degrades every graph traversal and every recent-nodes
+  // listing, and losing ON DELETE CASCADE orphans edges when a node is
+  // deleted.
+  it('merging direction and strength into support leaves the nodes and edges indexes and the ON DELETE CASCADE foreign keys intact', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createDatabaseSplittingSupportIntoDirectionAndStrength,
+    });
+
+    // Precondition: the merge this test guards actually happened.
+    expect(db.readTableColumns('edges').map(column => column.name)).toContain(
+      'belief_evidence_support'
+    );
+
+    // The nodes listing index survives an edges-table migration.
+    const survivingNodeIndexNames = (
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='nodes'")
+        .all() as Array<{ name: string }>
+    ).map(indexRow => indexRow.name);
+    expect(survivingNodeIndexNames, 'idx_nodes_updated_at must survive the merge').toContain(
+      'idx_nodes_updated_at'
+    );
+
+    // Both edges traversal indexes survive.
+    const survivingEdgeIndexNames = (
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='edges'")
+        .all() as Array<{ name: string }>
+    ).map(indexRow => indexRow.name);
+    expect(survivingEdgeIndexNames, 'idx_edges_from must survive the merge').toContain(
+      'idx_edges_from'
+    );
+    expect(survivingEdgeIndexNames, 'idx_edges_to must survive the merge').toContain(
+      'idx_edges_to'
+    );
+
+    // Both foreign keys to nodes(id) survive, still cascading on delete.
+    const survivingForeignKeys = db.sqlite
+      .prepare("PRAGMA foreign_key_list('edges')")
+      .all() as EdgeForeignKeyDeclaration[];
+    for (const referencingColumnName of ['from_node_id', 'to_node_id']) {
+      const foreignKeyForColumn = survivingForeignKeys.find(
+        declaration => declaration.from === referencingColumnName
+      );
+      expect(
+        foreignKeyForColumn,
+        `edges.${referencingColumnName} must still declare a foreign key`
+      ).toBeDefined();
+      expect(foreignKeyForColumn?.table).toBe('nodes');
+      expect(foreignKeyForColumn?.to).toBe('id');
+      expect(
+        foreignKeyForColumn?.on_delete.toUpperCase(),
+        `edges.${referencingColumnName} must still cascade on delete`
+      ).toBe('CASCADE');
+    }
   });
 
   it('legacy database file gains the belief_source_trust and belief_movements tables after client init', async () => {

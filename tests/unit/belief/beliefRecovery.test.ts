@@ -56,8 +56,7 @@ describe('belief recovery sweep (MR-B)', () => {
     const ungradedEdgeId = db.insertEvidenceEdgeFixture({
       fromNodeId: evidenceNodeId,
       toNodeId: claimNodeId,
-      direction: 'for',
-      strength: 0.8,
+      support: 0.8,
     });
 
     const { recoverUngradedEvidence } = await importBeliefRecoveryService();
@@ -98,8 +97,7 @@ describe('belief recovery sweep (MR-B)', () => {
     db.insertEvidenceEdgeFixture({
       fromNodeId: evidenceNodeId,
       toNodeId: claimNodeId,
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
     });
 
     // Grade the node for real first, so its evidence carries stamps.
@@ -134,8 +132,7 @@ describe('belief recovery sweep (MR-B)', () => {
     db.insertEvidenceEdgeFixture({
       fromNodeId: unassessedSourceNodeId,
       toNodeId: claimNodeId,
-      direction: 'for',
-      strength: 0.8,
+      support: 0.8,
     });
 
     const { recoverUngradedEvidence } = await importBeliefRecoveryService();
@@ -159,5 +156,33 @@ describe('belief recovery sweep (MR-B)', () => {
     expect(nodeBelief.belief_credence).toBeNull();
     expect(nodeBelief.belief_computed_at).toBeNull();
     expect(db.readBeliefMovements(plainNodeId)).toHaveLength(0);
+  });
+
+  // The evidence marker in the sweep's own query: the pending-work query
+  // selected on "belief_evidence_direction IS NOT NULL" and must now select
+  // on "belief_evidence_support IS NOT NULL". A node joined only by a plain
+  // edge (NULL support, NULL contribution) has no pending evidence, so the
+  // sweep must not pick it up even though its stamp is NULL.
+  it('does not regrade a node whose only incoming edge has NULL belief_evidence_support', async () => {
+    db = await openTempBeliefDatabase();
+    const plainNeighbourNodeId = db.insertNodeFixture({ title: 'plain neighbour node' });
+    const claimNodeId = db.insertNodeFixture({ title: 'claim joined only by a plain edge' });
+    db.insertNonEvidenceEdgeFixture({
+      fromNodeId: plainNeighbourNodeId,
+      toNodeId: claimNodeId,
+    });
+    // Precondition: the marker column the sweep must select on actually
+    // exists, so "not swept" below means "support was NULL", not "there is no
+    // support column and the sweep is looking at something else entirely".
+    expect(db.readTableColumns('edges').map(column => column.name)).toContain(
+      'belief_evidence_support'
+    );
+
+    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
+    const recoveryResult = await recoverUngradedEvidence();
+
+    expect(recoveryResult.regradedNodeIds).not.toContain(claimNodeId);
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
+    expect(db.readBeliefMovements(claimNodeId)).toHaveLength(0);
   });
 });

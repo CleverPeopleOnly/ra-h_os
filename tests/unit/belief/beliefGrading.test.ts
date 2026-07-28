@@ -36,8 +36,10 @@ afterEach(() => {
 
 // Expected credence for a support mass S and contradiction mass C under the
 // pinned v1 OPEN SIGNED saturation formula: e^(-RATE*C) - e^(-RATE*S).
-// Renaming this MR moves no arithmetic: the formula is byte-for-byte the one
-// the pre-rename tests asserted, so every number below is unchanged.
+// Merging direction and strength into one signed support field moves no
+// arithmetic: contribution was directionSign × strength × trustScore and is
+// now support × trustScore, which is the same product, so every number below
+// is byte-for-byte the one the pre-merge tests asserted.
 function expectedBeliefCredence(supportSum: number, contradictionSum: number): number {
   return (
     Math.exp(-SATURATION_RATE * contradictionSum) - Math.exp(-SATURATION_RATE * supportSum)
@@ -45,12 +47,13 @@ function expectedBeliefCredence(supportSum: number, contradictionSum: number): n
 }
 
 // Create a claim node plus one evidence source node (with optional trusted
-// origin), and connect them with one evidence edge. Returns all the ids.
+// origin), and connect them with one evidence edge whose signed support runs
+// -1..+1 (positive supporting the claim, negative contradicting it).
+// Returns all the ids.
 function seedClaimWithOneEvidenceEdge(
   context: TempBeliefDatabase,
   options: {
-    direction: 'for' | 'against';
-    strength: number;
+    support: number;
     trustOriginKey?: string;
     trustScore?: number;
   }
@@ -66,26 +69,24 @@ function seedClaimWithOneEvidenceEdge(
   const edgeId = context.insertEvidenceEdgeFixture({
     fromNodeId: sourceNodeId,
     toNodeId: claimNodeId,
-    direction: options.direction,
-    strength: options.strength,
+    support: options.support,
   });
   return { claimNodeId, sourceNodeId, edgeId };
 }
 
 // Add one more evidence edge (with its own source node) pointing at an
-// existing claim node.
+// existing claim node, carrying one signed support value.
 function addEvidenceEdge(
   context: TempBeliefDatabase,
   claimNodeId: number,
   options: {
-    direction: 'for' | 'against';
-    strength: number;
+    support: number;
     trustOriginKey?: string;
     trustScore?: number;
   }
 ): number {
   const sourceNodeId = context.insertNodeFixture({
-    title: `extra evidence source ${options.trustOriginKey ?? 'unassessed'}-${options.strength}`,
+    title: `extra evidence source ${options.trustOriginKey ?? 'unassessed'}-${options.support}`,
     trustOriginKey: options.trustOriginKey,
   });
   if (options.trustOriginKey && options.trustScore !== undefined) {
@@ -94,8 +95,7 @@ function addEvidenceEdge(
   return context.insertEvidenceEdgeFixture({
     fromNodeId: sourceNodeId,
     toNodeId: claimNodeId,
-    direction: options.direction,
-    strength: options.strength,
+    support: options.support,
   });
 }
 
@@ -119,8 +119,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('grades a node with a single supporting edge above the prior', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-support',
       trustScore: 1.0,
     });
@@ -135,8 +134,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('grades a node with a single contradicting edge below the prior', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'against',
-      strength: 0.6,
+      support: -0.6,
       trustOriginKey: 'origin-contra',
       trustScore: 1.0,
     });
@@ -153,8 +151,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('grades one full-strength, fully-trusted support to the exact formula anchor', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 1.0,
+      support: 1.0,
       trustOriginKey: 'origin-anchor',
       trustScore: 1.0,
     });
@@ -173,8 +170,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('raises belief when a second independent support is added', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-first',
       trustScore: 1.0,
     });
@@ -183,8 +179,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const credenceAfterFirstSupport = db.readNodeBelief(claimNodeId).belief_credence;
 
     addEvidenceEdge(db, claimNodeId, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-second',
       trustScore: 1.0,
     });
@@ -199,8 +194,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('gives the second independent support a smaller increment than the first (saturation)', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-first',
       trustScore: 1.0,
     });
@@ -209,8 +203,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const credenceAfterFirstSupport = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
     addEvidenceEdge(db, claimNodeId, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-second',
       trustScore: 1.0,
     });
@@ -229,8 +222,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const claimNodeId = db.insertNodeFixture({ title: 'heavily supported claim' });
     for (let supportIndex = 0; supportIndex < 10; supportIndex += 1) {
       addEvidenceEdge(db, claimNodeId, {
-        direction: 'for',
-        strength: 1.0,
+        support: 1.0,
         trustOriginKey: `origin-support-${supportIndex}`,
         trustScore: 1.0,
       });
@@ -251,8 +243,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const claimNodeId = db.insertNodeFixture({ title: 'heavily contradicted claim' });
     for (let contradictionIndex = 0; contradictionIndex < 10; contradictionIndex += 1) {
       addEvidenceEdge(db, claimNodeId, {
-        direction: 'against',
-        strength: 1.0,
+        support: -1.0,
         trustOriginKey: `origin-contra-${contradictionIndex}`,
         trustScore: 1.0,
       });
@@ -276,8 +267,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('reinforcement: an equal-strength repeat from the same assessed source raises belief (stacks)', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.7,
+      support: 0.7,
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -286,8 +276,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const credenceBeforeRepeat = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
     addEvidenceEdge(db, claimNodeId, {
-      direction: 'for',
-      strength: 0.7,
+      support: 0.7,
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -304,8 +293,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('reinforcement: a stronger contribution from the same assessed source adds to the weaker (stacks)', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.7,
+      support: 0.7,
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -313,8 +301,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
 
     addEvidenceEdge(db, claimNodeId, {
-      direction: 'for',
-      strength: 0.9,
+      support: 0.9,
       trustOriginKey: 'origin-x',
       trustScore: 1.0,
     });
@@ -334,8 +321,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('grades a 0.9-trust origin to a real credence; an unknown origin is not counted (NULL)', async () => {
     db = await openTempBeliefDatabase();
     const trustedClaim = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 1.0,
+      support: 1.0,
       trustOriginKey: 'origin-trusted',
       trustScore: 0.9,
     });
@@ -343,8 +329,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     // belief_source_trust row, so its only evidence edge is unassessed and
     // excluded from grading entirely.
     const unknownClaim = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 1.0,
+      support: 1.0,
       trustOriginKey: 'origin-unknown',
       // no trustScore: deliberately unseeded
     });
@@ -371,8 +356,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     db.insertEvidenceEdgeFixture({
       fromNodeId: anonymousSourceNodeId,
       toNodeId: claimNodeId,
-      direction: 'for',
-      strength: 1.0,
+      support: 1.0,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
 
@@ -386,8 +370,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('lowers belief below the support-only level when a contradiction is added', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.8,
+      support: 0.8,
       trustOriginKey: 'origin-support',
       trustScore: 1.0,
     });
@@ -396,8 +379,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     const supportOnlyCredence = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
     addEvidenceEdge(db, claimNodeId, {
-      direction: 'against',
-      strength: 0.5,
+      support: -0.5,
       trustOriginKey: 'origin-contra',
       trustScore: 1.0,
     });
@@ -413,8 +395,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('appends one movement row with NULL from_credence on first grading', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-a',
       trustScore: 1.0,
     });
@@ -440,8 +421,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('returns a movement record whose fields are fromCredence, toCredence and trigger', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-movement-shape',
       trustScore: 1.0,
     });
@@ -462,8 +442,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('appends no movement row when a recompute produces an unchanged credence', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-a',
       trustScore: 1.0,
     });
@@ -478,7 +457,7 @@ describe('recomputeNodeBelief grading behavior', () => {
 
   // 10. Edge stamping vs. non-counting: after a recompute, an ASSESSED
   //     evidence edge carries its signed effective contribution
-  //     (strength × trustWeight) in belief_evidence_contribution and is
+  //     (support × trustWeight) in belief_evidence_contribution and is
   //     reported in result.contributions; an UNASSESSED edge (unknown
   //     origin) is excluded from grading, left unstamped (NULL), and does
   //     NOT appear in result.contributions. The node's belief_credence comes
@@ -487,16 +466,14 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('only assessed-source edges are counted and stamped; unassessed edges stay NULL', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId, edgeId: supportEdgeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.8,
+      support: 0.8,
       trustOriginKey: 'origin-trusted',
       trustScore: 0.9,
     });
     // Contradicting edge from an unknown origin: unassessed, excluded from
     // grading and stamping entirely.
     const contradictionEdgeId = addEvidenceEdge(db, claimNodeId, {
-      direction: 'against',
-      strength: 0.5,
+      support: -0.5,
       trustOriginKey: 'origin-unknown',
       // no trustScore: deliberately unseeded
     });
@@ -522,24 +499,22 @@ describe('recomputeNodeBelief grading behavior', () => {
   });
 
   // 10b. Mixed assessed + unassessed support: the node must grade from the
-  //      assessed edge alone (strength 0.8, trust 1.0 -> S = 0.8), and the
+  //      assessed edge alone (support 0.8, trust 1.0 -> S = 0.8), and the
   //      unassessed support edge (no belief_source_trust row) must add
   //      nothing to that mass — so the graded credence is strictly less than
-  //      it would be if the unassessed edge's strength were also counted.
+  //      it would be if the unassessed edge's support were also counted.
   it('grades only from assessed-source support when an unassessed support is also present', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.8,
+      support: 0.8,
       trustOriginKey: 'origin-assessed',
       trustScore: 1.0,
     });
     // Second support edge from a source with no belief_source_trust row:
     // unassessed, must be excluded from the graded mass entirely.
-    const unassessedStrength = 0.6;
+    const unassessedSupport = 0.6;
     addEvidenceEdge(db, claimNodeId, {
-      direction: 'for',
-      strength: unassessedStrength,
+      support: unassessedSupport,
       trustOriginKey: 'origin-unassessed',
       // no trustScore: deliberately unseeded
     });
@@ -552,7 +527,145 @@ describe('recomputeNodeBelief grading behavior', () => {
     // If the unassessed edge's strength had also been counted, the credence
     // would be strictly higher — confirms it was excluded, not just
     // down-weighted.
-    expect(beliefCredence).toBeLessThan(expectedBeliefCredence(0.8 + unassessedStrength, 0));
+    expect(beliefCredence).toBeLessThan(expectedBeliefCredence(0.8 + unassessedSupport, 0));
+  });
+
+  // 13. The evidence marker moves to support: "belief_evidence_support IS NOT
+  //     NULL" is now the ONLY thing that makes an edge evidence. A plain edge
+  //     from a fully assessed source carries no support, so it must be
+  //     invisible to grading — the node stays ungraded and the edge is never
+  //     stamped or reported.
+  it('an edge with NULL belief_evidence_support is not evidence and contributes nothing', async () => {
+    db = await openTempBeliefDatabase();
+    const claimNodeId = db.insertNodeFixture({ title: 'claim with only a plain neighbour' });
+    // Deliberately ASSESSED: if the edge were treated as evidence, this
+    // source's trust row would let it grade — so a NULL credence proves the
+    // edge itself was excluded, not its source.
+    const assessedSourceTrustOriginKey = 'origin-plain-edge-source';
+    const assessedSourceNodeId = db.insertNodeFixture({
+      title: 'assessed source joined by a plain edge',
+      trustOriginKey: assessedSourceTrustOriginKey,
+    });
+    db.seedSourceTrustRow(assessedSourceTrustOriginKey, 1.0);
+    const plainEdgeId = db.insertNonEvidenceEdgeFixture({
+      fromNodeId: assessedSourceNodeId,
+      toNodeId: claimNodeId,
+    });
+    // Precondition: the marker column this test is about actually exists, so
+    // "no credence" below means "support was NULL", not "there is no support
+    // column and every edge is invisible".
+    expect(db.readTableColumns('edges').map(column => column.name)).toContain(
+      'belief_evidence_support'
+    );
+    const { recomputeNodeBelief } = await db.importBeliefService();
+
+    const result = await recomputeNodeBelief(claimNodeId);
+
+    expect(result.beliefCredence).toBeNull();
+    expect(result.contributions).toHaveLength(0);
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
+    expect(db.readEvidenceStamp(plainEdgeId)).toBeNull();
+  });
+
+  // 13b. The other half of the contrast with test 13, and the behavioural
+  //      point of allowing a zero support. Support carries the same two
+  //      states credence does on a node: NULL means never assessed, 0 means
+  //      assessed and leaning neither way. So a support of 0 from an ASSESSED
+  //      source IS evidence — it is counted, reported and stamped — even
+  //      though it adds nothing to either mass. The node is therefore GRADED
+  //      (to the neutral credence), not left ungraded like the NULL case
+  //      immediately above. Collapsing 0 into NULL would lose a real
+  //      judgement: "we looked and it bears neither way".
+  it('an edge with a support of 0 from an assessed source is evidence: counted, stamped, and the node is graded', async () => {
+    db = await openTempBeliefDatabase();
+    const { claimNodeId, edgeId: neutralEvidenceEdgeId } = seedClaimWithOneEvidenceEdge(db, {
+      support: 0,
+      trustOriginKey: 'origin-neutral-assessment',
+      trustScore: 1.0,
+    });
+    const { recomputeNodeBelief } = await db.importBeliefService();
+
+    const result = await recomputeNodeBelief(claimNodeId);
+
+    // Counted: the edge reaches the grading policy and is reported back.
+    expect(result.contributions.map(entry => entry.edgeId)).toEqual([neutralEvidenceEdgeId]);
+    // Graded, NOT ungraded — this is what separates 0 from NULL. toBe(0)
+    // rather than a null-coercing comparison, so a NULL cannot pass here.
+    expect(result.beliefCredence).toBe(NEUTRAL_BELIEF_CREDENCE);
+    const persistedBelief = db.readNodeBelief(claimNodeId);
+    expect(persistedBelief.belief_credence).toBe(0);
+    expect(persistedBelief.belief_credence).not.toBeNull();
+    expect(persistedBelief.belief_computed_at).toBeTruthy();
+    // Stamped with its own zero contribution (0 × 1.0), not left NULL like
+    // an unassessed or non-evidence edge.
+    expect(db.readEvidenceStamp(neutralEvidenceEdgeId)).toBe(0);
+    // Going from ungraded to graded is a real movement and is logged.
+    const movements = db.readBeliefMovements(claimNodeId);
+    expect(movements).toHaveLength(1);
+    expect(movements[0].from_credence).toBeNull();
+    expect(movements[0].to_credence).toBe(0);
+  });
+
+  // 13c. Inert but present: a zero support adds nothing to the supporting or
+  //      the contradicting mass, so a claim carrying a real support plus a
+  //      neutral one must grade to EXACTLY the same credence as the real
+  //      support alone. This is what "counted but contributes nothing" means
+  //      numerically — being counted must not perturb the arithmetic.
+  it('a support of 0 adds nothing to either mass — the credence matches the non-zero evidence alone', async () => {
+    db = await openTempBeliefDatabase();
+    const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
+      support: 0.8,
+      trustOriginKey: 'origin-real-support',
+      trustScore: 1.0,
+    });
+    const { recomputeNodeBelief } = await db.importBeliefService();
+    await recomputeNodeBelief(claimNodeId);
+    const credenceBeforeNeutralEvidence = Number(
+      db.readNodeBelief(claimNodeId).belief_credence
+    );
+
+    // Add an assessed edge that leans neither way.
+    addEvidenceEdge(db, claimNodeId, {
+      support: 0,
+      trustOriginKey: 'origin-neutral-extra',
+      trustScore: 1.0,
+    });
+    const resultWithNeutralEvidence = await recomputeNodeBelief(claimNodeId);
+    const credenceAfterNeutralEvidence = Number(db.readNodeBelief(claimNodeId).belief_credence);
+
+    // Both edges are counted...
+    expect(resultWithNeutralEvidence.contributions).toHaveLength(2);
+    // ...but the mass is unchanged, so the credence is too.
+    expect(credenceAfterNeutralEvidence).toBeCloseTo(credenceBeforeNeutralEvidence, 10);
+    expect(credenceAfterNeutralEvidence).toBeCloseTo(expectedBeliefCredence(0.8, 0), 10);
+    // Nothing moved, so no second movement row is appended.
+    expect(resultWithNeutralEvidence.movement).toBeNull();
+    expect(db.readBeliefMovements(claimNodeId)).toHaveLength(1);
+  });
+
+  // 14. Sign invariant end-to-end: support is the only signed term, so a
+  //     negative support at a POSITIVE trust weight must stamp a negative
+  //     contribution of exactly support × trustScore — the same product the
+  //     old directionSign × strength × trustScore computed, to the same ten
+  //     decimal places.
+  it('stamps a negative support edge with exactly support × trustScore', async () => {
+    db = await openTempBeliefDatabase();
+    const { claimNodeId, edgeId: contradictionEdgeId } = seedClaimWithOneEvidenceEdge(db, {
+      support: -0.4,
+      trustOriginKey: 'origin-signed-stamp',
+      trustScore: 0.9,
+    });
+    const { recomputeNodeBelief } = await db.importBeliefService();
+
+    await recomputeNodeBelief(claimNodeId);
+
+    // -0.4 × 0.9 = -0.36, byte-identical to the pre-merge expectation for
+    // direction 'against' + strength 0.4 at the same trust score.
+    expect(Number(db.readEvidenceStamp(contradictionEdgeId))).toBeCloseTo(-0.36, 10);
+    expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
+      expectedBeliefCredence(0, 0.36),
+      10
+    );
   });
 
   // 12. Origin-key removal at the service boundary: recomputeNodeBelief must
@@ -563,8 +676,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('passes the grading policy contributions with no beliefEvidenceOriginKey field', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 0.6,
+      support: 0.6,
       trustOriginKey: 'origin-policy-shape',
       trustScore: 1.0,
     });
@@ -590,8 +702,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   it('raises belief and appends a movement when the origin trust score increases', async () => {
     db = await openTempBeliefDatabase();
     const { claimNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      direction: 'for',
-      strength: 1.0,
+      support: 1.0,
       trustOriginKey: 'origin-growing',
       trustScore: 0.2,
     });

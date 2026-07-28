@@ -13,12 +13,13 @@ import {
 } from '@/services/belief/beliefGradingPolicy';
 import { getTrustScore } from '@/services/belief/sourceTrustService';
 
-// Signed effective contribution (strength × trustWeight) stamped on one
-// evidence edge during a recompute.
+// Signed effective contribution (support × the source's trust score) stamped
+// on one evidence edge during a recompute.
 export interface BeliefEdgeContribution {
   // The evidence edge this contribution belongs to.
   edgeId: number;
-  // strength × trustWeight, negative for 'against' evidence edges.
+  // support × the source's trust score; negative when the edge's support is
+  // negative, because support is the only signed term in the product.
   effectiveContribution: number;
 }
 
@@ -46,8 +47,9 @@ export interface BeliefRecomputeResult {
 // from-node's metadata JSON (where trustOriginKey lives).
 interface EvidenceEdgeRow {
   id: number;
-  belief_evidence_direction: string;
-  belief_evidence_strength: number;
+  // How this edge bears on its target, as one signed number in -1..+1:
+  // positive supports the target, negative contradicts it.
+  belief_evidence_support: number;
   from_node_metadata: string | null;
 }
 
@@ -72,7 +74,8 @@ function readTrustOriginKeyFromMetadata(metadataJson: string | null): string | n
 }
 
 // Recompute and persist the credence for one node:
-//  - loads its incoming evidence edges (belief_evidence_direction IS NOT NULL),
+//  - loads its incoming evidence edges (belief_evidence_support IS NOT NULL —
+//    a NULL support is the one thing that makes an edge not evidence),
 //  - weights each by the from-node origin's real trust score — an edge whose
 //    origin has no trustOriginKey, or whose key has no belief_source_trust
 //    row, is UNASSESSED and is excluded from grading entirely (no fallback
@@ -91,11 +94,11 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
   // so the origin's trust weight can be resolved.
   const evidenceEdges = sqlite
     .prepare(
-      `SELECT e.id, e.belief_evidence_direction, e.belief_evidence_strength,
+      `SELECT e.id, e.belief_evidence_support,
               n.metadata AS from_node_metadata
        FROM edges e
        JOIN nodes n ON n.id = e.from_node_id
-       WHERE e.to_node_id = ? AND e.belief_evidence_direction IS NOT NULL`
+       WHERE e.to_node_id = ? AND e.belief_evidence_support IS NOT NULL`
     )
     .all(nodeId) as EvidenceEdgeRow[];
 
@@ -107,9 +110,10 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     .get(nodeId) as { belief_credence: number | null } | undefined;
   const previousBeliefCredence = previousBeliefRow?.belief_credence ?? null;
 
-  // Signed effective contribution per ASSESSED edge: strength × origin trust
-  // weight, negative for 'against' evidence. Unassessed edges (no resolvable
-  // trust score) are skipped entirely — never added here, never stamped.
+  // Signed effective contribution per ASSESSED edge: the edge's signed
+  // support × its origin's trust weight, so the sign of the product is the
+  // sign of the support. Unassessed edges (no resolvable trust score) are
+  // skipped entirely — never added here, never stamped.
   const contributions: BeliefEdgeContribution[] = [];
   // Same contributions in the shape the grading policy consumes.
   const policyContributions: BeliefEvidenceContribution[] = [];
@@ -121,8 +125,7 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
       // Unassessed source: not evidence. Skip — no contribution, no stamp.
       continue;
     }
-    const directionSign = evidenceEdge.belief_evidence_direction === 'against' ? -1 : 1;
-    const effectiveContribution = directionSign * evidenceEdge.belief_evidence_strength * trustScore;
+    const effectiveContribution = evidenceEdge.belief_evidence_support * trustScore;
     contributions.push({ edgeId: evidenceEdge.id, effectiveContribution });
     policyContributions.push({
       edgeId: evidenceEdge.id,

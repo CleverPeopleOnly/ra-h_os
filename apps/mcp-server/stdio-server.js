@@ -167,10 +167,19 @@ const createEdgeInputSchema = {
   targetId: z.number().int().positive().describe('Target node ID'),
   explanation: z.string().min(1).describe('REQUIRED: Why does this connection exist? Be specific.'),
   confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.'),
-  // Belief evidence fields (fork addition): optional, forwarded verbatim to
+  // Belief evidence field (fork addition): optional, forwarded verbatim to
   // the app's /api/edges — the app-owned belief engine does the grading.
-  belief_evidence_direction: z.enum(['for', 'against']).optional().describe("Evidence direction: whether the source node argues 'for' or 'against' the target node. Requires belief_evidence_strength."),
-  belief_evidence_strength: z.number().min(0).max(1).optional().describe('Evidence weight in [0, 1].')
+  // Support is ONE signed number, so a direction can never disagree with a
+  // magnitude. Omitting the field says "not evidence at all"; a support of 0
+  // says the edge WAS assessed and bears neither way — a recorded judgement,
+  // never rejected, because a classifier that finds no lean must not have to
+  // invent one.
+  belief_evidence_support: z
+    .number()
+    .min(-1)
+    .max(1)
+    .optional()
+    .describe('How the source node bears on the target node: one signed number in [-1, 1], positive supporting the target and negative contradicting it. Use 0 when the evidence was assessed and bears neither way. Omit the field entirely for a plain non-evidence edge.')
 };
 
 const createEdgeOutputSchema = {
@@ -547,7 +556,7 @@ server.registerTool(
     inputSchema: createEdgeInputSchema,
     outputSchema: createEdgeOutputSchema
   },
-  async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength }) => {
+  async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_support }) => {
     if (!confirmed_by_user) {
       throw new Error('rah_create_edge requires explicit user confirmation before writing the relationship.');
     }
@@ -561,11 +570,10 @@ server.registerTool(
       confirmed_by_user: true
     };
 
-    // Belief evidence pass-through (fork addition): include each evidence
-    // field only when the caller supplied it, so plain relationship edges
+    // Belief evidence pass-through (fork addition): include the signed
+    // support only when the caller supplied it, so plain relationship edges
     // keep an evidence-free payload.
-    if (belief_evidence_direction !== undefined) payload.belief_evidence_direction = belief_evidence_direction;
-    if (belief_evidence_strength !== undefined) payload.belief_evidence_strength = belief_evidence_strength;
+    if (belief_evidence_support !== undefined) payload.belief_evidence_support = belief_evidence_support;
 
     const result = await callRaHApi('/api/edges', {
       method: 'POST',

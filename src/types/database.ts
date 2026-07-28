@@ -105,12 +105,14 @@ export interface EdgeData {
   created_via: EdgeCreatedVia;
   source: EdgeSource;
   skip_inference?: boolean; // reserved for bulk imports / migrations
-  // Belief-engine evidence fields (MR-A). When belief_evidence_direction is set the
-  // edge is evidence for/against the to-node and edge creation triggers a
-  // belief recompute of that node. Stored in dedicated edge columns, never
+  // Belief-engine evidence field (MR-A). When belief_evidence_support is set
+  // the edge is evidence bearing on the to-node and edge creation triggers a
+  // belief recompute of that node. Stored in a dedicated edge column, never
   // in the app-owned context JSON.
-  belief_evidence_direction?: 'for' | 'against'; // how the from-node bears on the to-node
-  belief_evidence_strength?: number;                     // evidence weight in [0, 1]
+  // How the from-node bears on the to-node, as one signed number in [-1, +1]:
+  // positive supports the to-node, negative contradicts it, absent means the
+  // edge is not evidence at all.
+  belief_evidence_support?: number;
 }
 
 export interface ChatData {

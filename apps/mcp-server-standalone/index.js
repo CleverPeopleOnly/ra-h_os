@@ -134,11 +134,20 @@ const createEdgeInputSchema = {
   targetId: z.number().int().positive().describe('Target node ID'),
   explanation: z.string().min(1).describe("Human-readable explanation. Should read as a sentence: 'Alice invented this technique'"),
   confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.'),
-  // Belief evidence fields (fork addition): optional, stored verbatim in the
-  // dedicated belief_ edge columns. This server never grades — the RA-H app
+  // Belief evidence field (fork addition): optional, stored verbatim in the
+  // dedicated belief_ edge column. This server never grades — the RA-H app
   // owns grading (belief_evidence_contribution stays NULL here).
-  belief_evidence_direction: z.enum(['for', 'against']).optional().describe("Evidence direction: whether the source node argues 'for' or 'against' the target node. Requires belief_evidence_strength."),
-  belief_evidence_strength: z.number().optional().describe('Evidence weight in [0, 1].')
+  // Support is ONE signed number, so a direction can never disagree with a
+  // magnitude. Omitting the field says "not evidence at all"; a support of 0
+  // says the edge WAS assessed and bears neither way — a recorded judgement,
+  // never rejected, because a classifier that finds no lean must not have to
+  // invent one.
+  belief_evidence_support: z
+    .number()
+    .min(-1)
+    .max(1)
+    .optional()
+    .describe('How the source node bears on the target node: one signed number in [-1, 1], positive supporting the target and negative contradicting it. Use 0 when the evidence was assessed and bears neither way. Omit the field entirely for a plain non-evidence edge.')
 };
 
 const updateEdgeInputSchema = {
@@ -508,27 +517,20 @@ async function main() {
       description: 'Connect two nodes with an edge only after the user has explicitly confirmed the proposed relationship. Edges are the most valuable part of the graph — they represent understanding, not proximity. Direction matters: reads as sourceId → [explanation] → targetId. The explanation should read as a sentence (e.g. "invented this technique", "contradicts the claim in"). Call queryEdge first to check if a connection already exists between the two nodes.',
       inputSchema: createEdgeInputSchema
     },
-    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_direction, belief_evidence_strength }) => {
+    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_support }) => {
       if (!confirmed_by_user) {
         throw new Error('createEdge requires explicit user confirmation before writing the relationship.');
       }
 
-      // Malformed evidence must never reach the database: a direction without
-      // a strength is ungradeable, and a strength outside [0, 1] is invalid.
-      if (belief_evidence_direction !== undefined && belief_evidence_strength === undefined) {
-        throw new Error('belief_evidence_direction requires belief_evidence_strength — evidence without a weight cannot be graded.');
-      }
-      if (belief_evidence_strength !== undefined && (belief_evidence_strength < 0 || belief_evidence_strength > 1)) {
-        throw new Error('belief_evidence_strength must be within [0, 1].');
-      }
-
+      // Meaningless evidence never reaches the database: the input schema
+      // above rejects a support outside [-1, 1] or exactly 0 before this
+      // handler runs, so no row is written for either case.
       const edge = edgeService.createEdge({
         from_node_id: sourceId,
         to_node_id: targetId,
         explanation: explanation.trim(),
         source: 'mcp',
-        belief_evidence_direction,
-        belief_evidence_strength
+        belief_evidence_support
       });
 
       return {

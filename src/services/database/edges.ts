@@ -273,14 +273,15 @@ export class EdgeService {
       created_via: createdVia,
     };
 
-    // Whether this edge carries belief-engine evidence for the target node.
-    // Evidence lives in dedicated columns; the context JSON stays app-owned.
-    const hasBeliefEvidenceFields = edgeData.belief_evidence_direction != null;
+    // Whether this edge carries belief-engine evidence for the target node: a
+    // signed support value is the one thing that makes an edge evidence.
+    // Evidence lives in a dedicated column; the context JSON stays app-owned.
+    const hasBeliefEvidenceFields = edgeData.belief_evidence_support != null;
 
     const result = sqlite.prepare(`
       INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
-                         belief_evidence_direction, belief_evidence_strength)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         belief_evidence_support)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       finalFromId,
       finalToId,
@@ -288,8 +289,7 @@ export class EdgeService {
       edgeData.source,
       now,
       explanation,
-      edgeData.belief_evidence_direction ?? null,
-      edgeData.belief_evidence_strength ?? null
+      edgeData.belief_evidence_support ?? null
     );
 
     const edgeId = Number(result.lastInsertRowid);

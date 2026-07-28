@@ -24,7 +24,8 @@ export const SATURATION_RATE = 1.0;
 export interface BeliefEvidenceContribution {
   // Edge the contribution came from, so callers can trace results back.
   edgeId: number;
-  // strength × trustWeight; negative when the edge direction is 'against'.
+  // support × the source's trust score; negative when the edge's support is
+  // negative, because support is the only signed term in the product.
   signedContribution: number;
 }
 
