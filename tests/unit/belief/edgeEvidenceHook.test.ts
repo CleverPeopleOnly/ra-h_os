@@ -5,8 +5,8 @@
  *  - stores the optional evidence fields (belief_evidence_direction,
  *    belief_evidence_strength) in the dedicated edge columns,
  *  - triggers recomputeNodeBelief(to_node_id) so the target node's
- *    belief_value becomes non-NULL WITHOUT any explicit belief call,
- *  - leaves belief_value NULL and the evidence columns NULL when called
+ *    belief_credence becomes non-NULL WITHOUT any explicit belief call,
+ *  - leaves belief_credence NULL and the evidence columns NULL when called
  *    without evidence fields,
  *  - IGNORES a belief_evidence_origin_key field from a stale caller rather
  *    than erroring: the column is removed, so there is nothing to store,
@@ -127,7 +127,7 @@ describe('EdgeService evidence hook', () => {
   });
 
   // Creating an evidence edge must, by itself, grade the target node: its
-  // belief_value becomes non-NULL with no explicit belief-service call.
+  // belief_credence becomes non-NULL with no explicit belief-service call.
   it('triggers a belief recompute of the target node when an evidence edge is created', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
@@ -157,7 +157,7 @@ describe('EdgeService evidence hook', () => {
     // Poll briefly in case the implementation recomputes asynchronously.
     await vi.waitFor(
       () => {
-        expect(db!.readNodeBelief(claimNodeId).belief_value).not.toBeNull();
+        expect(db!.readNodeBelief(claimNodeId).belief_credence).not.toBeNull();
       },
       { timeout: 1500, interval: 25 }
     );
@@ -165,7 +165,7 @@ describe('EdgeService evidence hook', () => {
 
   // A plain (non-evidence) edge must change nothing belief-wise: target
   // stays ungraded and all evidence columns stay NULL.
-  it('leaves belief_value NULL and evidence columns NULL for a non-evidence createEdge', async () => {
+  it('leaves belief_credence NULL and evidence columns NULL for a non-evidence createEdge', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
     const sourceNodeId = db.insertNodeFixture({ title: 'plain neighbor node' });
@@ -185,7 +185,7 @@ describe('EdgeService evidence hook', () => {
     // before asserting that nothing happened.
     await new Promise(resolve => setTimeout(resolve, 250));
 
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
     const storedEvidence = readEvidenceColumns(db, createdEdge.id);
     expect(storedEvidence.belief_evidence_direction).toBeNull();
     expect(storedEvidence.belief_evidence_strength).toBeNull();

@@ -37,7 +37,7 @@ function importBeliefRecoveryService() {
 
 describe('belief recovery sweep (MR-B)', () => {
   // The core recovery case: a node whose evidence edge was written offline
-  // (contribution stamp NULL) must be regraded — belief value persisted,
+  // (contribution stamp NULL) must be regraded — credence persisted,
   // stamps written, movement appended, and its id reported.
   it('regrades a node whose evidence edges have a NULL effective-contribution stamp', async () => {
     db = await openTempBeliefDatabase();
@@ -66,9 +66,9 @@ describe('belief recovery sweep (MR-B)', () => {
     // The regraded node is reported.
     expect(recoveryResult.regradedNodeIds).toContain(claimNodeId);
 
-    // Belief value and timestamp are persisted on the node.
+    // Credence and timestamp are persisted on the node.
     const nodeBelief = db.readNodeBelief(claimNodeId);
-    expect(nodeBelief.belief_value).not.toBeNull();
+    expect(nodeBelief.belief_credence).not.toBeNull();
     expect(nodeBelief.belief_computed_at).not.toBeNull();
 
     // The evidence edge is now stamped.
@@ -77,8 +77,8 @@ describe('belief recovery sweep (MR-B)', () => {
     // Exactly one movement row records the ungraded -> graded transition.
     const movements = db.readBeliefMovements(claimNodeId);
     expect(movements).toHaveLength(1);
-    expect(movements[0].from_value).toBeNull();
-    expect(movements[0].to_value).toBe(nodeBelief.belief_value);
+    expect(movements[0].from_credence).toBeNull();
+    expect(movements[0].to_credence).toBe(nodeBelief.belief_credence);
   });
 
   // Idempotence: a node whose evidence is already fully stamped was graded
@@ -122,8 +122,8 @@ describe('belief recovery sweep (MR-B)', () => {
   // The sweep's NULL-stamp query still matches this node every run (the
   // edge's stamp never clears) and recomputes it — matching the current
   // recovery contract, the node IS visited/reported — but the recomputed
-  // belief_value must stay NULL since there is no counted evidence.
-  it('recomputes a node with only unassessed-source evidence but leaves belief_value NULL', async () => {
+  // belief_credence must stay NULL since there is no counted evidence.
+  it('recomputes a node with only unassessed-source evidence but leaves belief_credence NULL', async () => {
     db = await openTempBeliefDatabase();
     const unassessedSourceNodeId = db.insertNodeFixture({ title: 'unassessed evidence source' });
     const claimNodeId = db.insertNodeFixture({
@@ -142,7 +142,7 @@ describe('belief recovery sweep (MR-B)', () => {
     const recoveryResult = await recoverUngradedEvidence();
 
     expect(recoveryResult.regradedNodeIds).toContain(claimNodeId);
-    expect(db.readNodeBelief(claimNodeId).belief_value).toBeNull();
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
   });
 
   // Nodes without any evidence edges have nothing to recover: the sweep
@@ -156,7 +156,7 @@ describe('belief recovery sweep (MR-B)', () => {
 
     expect(recoveryResult.regradedNodeIds).not.toContain(plainNodeId);
     const nodeBelief = db.readNodeBelief(plainNodeId);
-    expect(nodeBelief.belief_value).toBeNull();
+    expect(nodeBelief.belief_credence).toBeNull();
     expect(nodeBelief.belief_computed_at).toBeNull();
     expect(db.readBeliefMovements(plainNodeId)).toHaveLength(0);
   });

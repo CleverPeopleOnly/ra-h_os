@@ -6,7 +6,7 @@
  *  - createEdge accepts and stores the two writable evidence fields
  *    (belief_evidence_contribution stays NULL — grading is app-owned), and
  *    ignores a stale belief_evidence_origin_key argument instead of failing,
- *  - getNodesById exposes belief_value / belief_computed_at,
+ *  - getNodesById exposes belief_credence / belief_computed_at,
  *  - new setBeliefSourceTrust / getBeliefSourceTrust tools upsert and read belief_source_trust,
  *  - createEdge rejects malformed evidence (direction without strength,
  *    strength outside [0,1]) with a tool error and writes no row.
@@ -65,7 +65,7 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
       embedding_updated_at TEXT,
       embedding_text TEXT,
       chunk_status TEXT DEFAULT 'not_chunked',
-      belief_value REAL,
+      belief_credence REAL,
       belief_computed_at TEXT
     );
 
@@ -101,8 +101,8 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
     CREATE TABLE belief_movements (
       id INTEGER PRIMARY KEY,
       node_id INTEGER NOT NULL,
-      from_value REAL,
-      to_value REAL NOT NULL,
+      from_credence REAL,
+      to_credence REAL NOT NULL,
       "trigger" TEXT NOT NULL,
       occurred_at TEXT NOT NULL
     );
@@ -282,7 +282,11 @@ describe('standalone MCP server belief surface (MR-B)', () => {
             .all() as Array<{ name: string }>
         ).map(row => row.name);
 
-        expect(nodeColumnNames).toContain('belief_value');
+        // EDITED from belief_value: the standalone init-db path must create
+        // the graded quantity under its one name, credence, and must not
+        // create the old name beside it.
+        expect(nodeColumnNames).toContain('belief_credence');
+        expect(nodeColumnNames).not.toContain('belief_value');
         expect(nodeColumnNames).toContain('belief_computed_at');
         expect(edgeColumnNames).toContain('belief_evidence_direction');
         expect(edgeColumnNames).toContain('belief_evidence_strength');
@@ -292,6 +296,15 @@ describe('standalone MCP server belief surface (MR-B)', () => {
         expect(edgeColumnNames).not.toContain('belief_evidence_origin_key');
         expect(tableNames).toContain('belief_source_trust');
         expect(tableNames).toContain('belief_movements');
+        // The movement log records the same quantity, so it uses the same
+        // word on both of its numeric columns.
+        const movementColumnNames = (
+          directDb.prepare('PRAGMA table_info(belief_movements)').all() as Array<{ name: string }>
+        ).map(column => column.name);
+        expect(movementColumnNames).toContain('from_credence');
+        expect(movementColumnNames).toContain('to_credence');
+        expect(movementColumnNames).not.toContain('from_value');
+        expect(movementColumnNames).not.toContain('to_value');
       } finally {
         directDb.close();
       }
@@ -403,13 +416,13 @@ describe('standalone MCP server belief surface (MR-B)', () => {
 
   // Belief read path: getNodesById must surface a node's persisted belief
   // state so external agents can read what the app-owned engine graded.
-  it('getNodesById returns belief_value and belief_computed_at for a graded node', async () => {
+  it('getNodesById returns belief_credence and belief_computed_at for a graded node', async () => {
     // Seed a graded node directly via SQL (the app is what grades in real
     // life; here we only pin the standalone READ path).
     const gradedAt = '2026-07-01T12:00:00.000Z';
     const directDb = new Database(dbPath);
     directDb
-      .prepare('UPDATE nodes SET belief_value = ?, belief_computed_at = ? WHERE id = ?')
+      .prepare('UPDATE nodes SET belief_credence = ?, belief_computed_at = ? WHERE id = ?')
       .run(0.42, gradedAt, 1);
     directDb.close();
 
@@ -420,11 +433,11 @@ describe('standalone MCP server belief surface (MR-B)', () => {
       });
 
       const structured = getStructured<{
-        nodes: Array<{ id: number; belief_value: number | null; belief_computed_at: string | null }>;
+        nodes: Array<{ id: number; belief_credence: number | null; belief_computed_at: string | null }>;
       }>(result);
       const gradedNode = structured.nodes.find(node => node.id === 1);
       expect(gradedNode).toBeDefined();
-      expect(gradedNode?.belief_value).toBeCloseTo(0.42, 10);
+      expect(gradedNode?.belief_credence).toBeCloseTo(0.42, 10);
       expect(gradedNode?.belief_computed_at).toBe(gradedAt);
     });
   });

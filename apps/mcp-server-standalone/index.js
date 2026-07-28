@@ -440,7 +440,7 @@ async function main() {
             created_at: node.created_at,
             updated_at: node.updated_at,
             event_date: node.event_date ?? null,
-            belief_value: nodeBeliefState.belief_value ?? null,
+            belief_credence: nodeBeliefState.belief_credence ?? null,
             belief_computed_at: nodeBeliefState.belief_computed_at ?? null
           });
         }

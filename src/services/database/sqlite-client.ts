@@ -404,7 +404,7 @@ class SQLiteClient {
         embedding_updated_at TEXT,
         embedding_text TEXT,
         chunk_status TEXT DEFAULT 'not_chunked',
-        belief_value REAL,
+        belief_credence REAL,
         belief_computed_at TEXT
       );
 
@@ -432,8 +432,8 @@ class SQLiteClient {
       CREATE TABLE IF NOT EXISTS belief_movements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         node_id INTEGER NOT NULL,
-        from_value REAL,
-        to_value REAL NOT NULL,
+        from_credence REAL,
+        to_credence REAL NOT NULL,
         "trigger" TEXT NOT NULL,
         occurred_at TEXT NOT NULL
       );
@@ -485,16 +485,56 @@ class SQLiteClient {
   // Belief-engine migration (MR-A): legacy databases were created before the
   // belief columns existed, and CREATE TABLE IF NOT EXISTS never alters an
   // existing table — so mirror the ensureNodeCol pattern and ALTER the
-  // missing columns in. The belief_source_trust / belief_movements tables are
-  // already covered by CREATE TABLE IF NOT EXISTS in ensureCoreSchema.
-  // Must run inside the startup write lock.
+  // missing columns in. CREATE TABLE IF NOT EXISTS in ensureCoreSchema brings
+  // belief_source_trust / belief_movements into being on a fresh database, but
+  // is a no-op on an existing one, so their column-level migrations live here
+  // too. Must run inside the startup write lock.
   private ensureBeliefSchemaLocked(): void {
-    // nodes: graded belief value (NULL = ungraded) + when it was computed.
+    // nodes: the graded credence (NULL = ungraded) + when it was computed.
     try {
-      const nodeCols = this.db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>;
+      // Column list as it stands BEFORE the credence migration below.
+      const nodeColsBeforeCredenceMigration = this.db
+        .prepare('PRAGMA table_info(nodes)')
+        .all() as Array<{ name: string }>;
+      // True while the graded quantity is still stored under its old name.
+      const hasLegacyBeliefValueColumn = nodeColsBeforeCredenceMigration.some(
+        col => col.name === 'belief_value'
+      );
+      // True when the settled credence column is already present.
+      const hasBeliefCredenceColumn = nodeColsBeforeCredenceMigration.some(
+        col => col.name === 'belief_credence'
+      );
+
+      // Vocabulary migration: credence is the one word for the graded
+      // quantity, so a database still calling it belief_value is renamed in
+      // place. When standalone init-db has already ADDed an empty
+      // belief_credence beside it, renaming would collide and the quantity
+      // would sit under two names at once — so the orphan belief_value is
+      // dropped outright instead, copying nothing out of it (the fork has no
+      // production data to carry across). Both branches are in-place ALTER
+      // TABLE statements: a copy-into-a-new-table rebuild would destroy the
+      // indexes and the ON DELETE CASCADE foreign keys ensureCoreSchema
+      // created before this migration runs, with nothing left to recreate them.
+      if (hasLegacyBeliefValueColumn) {
+        try {
+          this.db.exec(
+            hasBeliefCredenceColumn
+              ? 'ALTER TABLE nodes DROP COLUMN belief_value;'
+              : 'ALTER TABLE nodes RENAME COLUMN belief_value TO belief_credence;'
+          );
+        } catch (credenceMigrationErr) {
+          console.warn('Failed to migrate nodes.belief_value to belief_credence:', credenceMigrationErr);
+        }
+      }
+
+      // Column list after the credence migration — the basis for the
+      // ensure-column loop below, which must not re-add what was just renamed.
+      const nodeColsAfterCredenceMigration = this.db
+        .prepare('PRAGMA table_info(nodes)')
+        .all() as Array<{ name: string }>;
       // Adds one missing belief column to nodes; no-op when it already exists.
       const ensureNodeBeliefCol = (name: string, ddl: string) => {
-        if (!nodeCols.some(col => col.name === name)) {
+        if (!nodeColsAfterCredenceMigration.some(col => col.name === name)) {
           try {
             this.db.exec(ddl);
           } catch (colErr) {
@@ -502,10 +542,37 @@ class SQLiteClient {
           }
         }
       };
-      ensureNodeBeliefCol('belief_value', 'ALTER TABLE nodes ADD COLUMN belief_value REAL;');
+      ensureNodeBeliefCol('belief_credence', 'ALTER TABLE nodes ADD COLUMN belief_credence REAL;');
       ensureNodeBeliefCol('belief_computed_at', 'ALTER TABLE nodes ADD COLUMN belief_computed_at TEXT;');
     } catch (nodeErr) {
       console.warn('Failed to ensure nodes belief columns:', nodeErr);
+    }
+
+    // belief_movements: a movement records the SAME quantity as
+    // nodes.belief_credence — the node's credence before and after a
+    // recompute — so both numeric columns carry that one word. ensureCoreSchema
+    // creates the table with CREATE TABLE IF NOT EXISTS, which is a no-op on a
+    // database that already has it, so an existing log only reaches the new
+    // names through the explicit in-place renames below.
+    try {
+      const movementCols = this.db
+        .prepare('PRAGMA table_info(belief_movements)')
+        .all() as Array<{ name: string }>;
+      const beliefMovementCredenceRenames: Array<[string, string]> = [
+        ['from_value', 'from_credence'],
+        ['to_value', 'to_credence'],
+      ];
+      for (const [legacyName, credenceName] of beliefMovementCredenceRenames) {
+        if (movementCols.some(col => col.name === legacyName)) {
+          try {
+            this.db.exec(`ALTER TABLE belief_movements RENAME COLUMN ${legacyName} TO ${credenceName};`);
+          } catch (renameErr) {
+            console.warn(`Failed to migrate belief_movements.${legacyName} to ${credenceName}:`, renameErr);
+          }
+        }
+      }
+    } catch (movementErr) {
+      console.warn('Failed to ensure belief_movements credence columns:', movementErr);
     }
 
     // edges: the three evidence columns the belief engine reads and stamps.

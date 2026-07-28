@@ -5,7 +5,7 @@
  * was closed carry NULL belief_evidence_contribution (the standalone
  * server never grades — grading is app-owned). At app startup this sweep
  * finds every node with such ungraded evidence and regrades it via
- * recomputeNodeBelief, so belief values catch up with offline writes.
+ * recomputeNodeBelief, so node credences catch up with offline writes.
  */
 
 import { getSQLiteClient } from '@/services/database/sqlite-client';

@@ -39,11 +39,18 @@ export interface SqliteTableColumn {
   pk: number;
 }
 
-// Row shape of the belief_movements audit table as read by the tests.
+// Row shape of the belief_movements audit table as read by the tests. The
+// two numeric columns record the SAME quantity as nodes.belief_credence —
+// the node's credence before and after a recompute — so they carry the
+// vocabulary's one word for it.
 export interface BeliefMovementRow {
-  from_value: number | null;
-  to_value: number;
+  // Credence before the recompute; NULL when the node was previously ungraded.
+  from_credence: number | null;
+  // Credence after the recompute.
+  to_credence: number;
+  // What caused the recompute.
   trigger: string;
+  // When the recompute happened.
   occurred_at: string;
 }
 
@@ -82,8 +89,12 @@ export interface TempBeliefDatabase {
   }): number;
   // Seed or overwrite a belief_source_trust row directly via SQL.
   seedSourceTrustRow(trustOriginKey: string, score: number): void;
-  // Read a node's persisted belief state.
-  readNodeBelief(nodeId: number): { belief_value: number | null; belief_computed_at: string | null };
+  // Read a node's persisted belief state: its graded credence (NULL when
+  // ungraded) and when that credence was computed.
+  readNodeBelief(nodeId: number): {
+    belief_credence: number | null;
+    belief_computed_at: string | null;
+  };
   // Read a node's belief movement rows, oldest first.
   readBeliefMovements(nodeId: number): BeliefMovementRow[];
   // Read the stamped effective contribution of one evidence edge.
@@ -187,14 +198,14 @@ export async function openTempBeliefDatabase(
 
     readNodeBelief(nodeId) {
       return sqlite
-        .prepare('SELECT belief_value, belief_computed_at FROM nodes WHERE id = ?')
-        .get(nodeId) as { belief_value: number | null; belief_computed_at: string | null };
+        .prepare('SELECT belief_credence, belief_computed_at FROM nodes WHERE id = ?')
+        .get(nodeId) as { belief_credence: number | null; belief_computed_at: string | null };
     },
 
     readBeliefMovements(nodeId) {
       return sqlite
         .prepare(
-          `SELECT from_value, to_value, "trigger", occurred_at
+          `SELECT from_credence, to_credence, "trigger", occurred_at
            FROM belief_movements WHERE node_id = ? ORDER BY id ASC`
         )
         .all(nodeId) as BeliefMovementRow[];

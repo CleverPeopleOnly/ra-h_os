@@ -9,7 +9,7 @@
  * largest-|value| collapse rule has been removed from grading, and with it
  * the beliefEvidenceOriginKey field it keyed off: a contribution is now
  * edge id + signed value only).
- * NEUTRAL_BELIEF (0) replaces the old PRIOR_BELIEF (0.5) as the anchor for
+ * NEUTRAL_BELIEF_CREDENCE (0) replaces the old PRIOR_BELIEF (0.5) as the anchor for
  * "balanced/torn" evidence; the range is open and never reaches +/-1.
  *
  * Static import here is safe: beliefGradingPolicy has no side effects and
@@ -18,7 +18,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  NEUTRAL_BELIEF,
+  NEUTRAL_BELIEF_CREDENCE,
   SATURATION_RATE,
   beliefGradingPolicyV1,
   type BeliefEvidenceContribution,
@@ -41,11 +41,14 @@ function contribution(edgeId: number, signedContribution: number): BeliefEvidenc
 }
 
 describe('beliefGradingPolicyV1', () => {
-  // Pins the published constant values so implementations and tests agree
-  // on the same anchors. NEUTRAL_BELIEF (0) is the open-scale replacement
-  // for the removed PRIOR_BELIEF (0.5). (Intentionally green from day one.)
+  // Pins the published constant values so implementations and tests agree on
+  // the same anchors. NEUTRAL_BELIEF_CREDENCE (0) is the open-scale
+  // replacement for the removed PRIOR_BELIEF (0.5); it is EDITED from
+  // NEUTRAL_BELIEF because the anchor is a value of the graded quantity, and
+  // that quantity is credence — the name has to say which quantity it anchors
+  // while still carrying the belief namespace marker.
   it('publishes the pinned policy constants', () => {
-    expect(NEUTRAL_BELIEF).toBe(0);
+    expect(NEUTRAL_BELIEF_CREDENCE).toBe(0);
     expect(SATURATION_RATE).toBe(1.0);
   });
 
@@ -109,13 +112,13 @@ describe('beliefGradingPolicyV1', () => {
   });
 
   // Balanced evidence (equal support and contradiction mass on independent
-  // keys) must land exactly on NEUTRAL_BELIEF (0), not the old 0.5 prior.
-  it('grades balanced equal-mass support and contradiction to exactly NEUTRAL_BELIEF', () => {
+  // keys) must land exactly on NEUTRAL_BELIEF_CREDENCE (0), not the old 0.5 prior.
+  it('grades balanced equal-mass support and contradiction to exactly NEUTRAL_BELIEF_CREDENCE', () => {
     const value = beliefGradingPolicyV1.gradeBelief([
       contribution(1, 0.9),
       contribution(2, -0.9),
     ]);
-    expect(value).toBeCloseTo(NEUTRAL_BELIEF, 10);
+    expect(value).toBeCloseTo(NEUTRAL_BELIEF_CREDENCE, 10);
   });
 
   // An empty contribution list (no evidence collapsed in) must grade to
