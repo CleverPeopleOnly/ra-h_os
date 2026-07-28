@@ -210,8 +210,7 @@ function ensureBeliefSchema(db) {
   const beliefColumnAdditions = [
     ['nodes', 'belief_credence', 'REAL'],
     ['nodes', 'belief_computed_at', 'TEXT'],
-    ['edges', 'belief_evidence_direction', 'TEXT'],
-    ['edges', 'belief_evidence_strength', 'REAL'],
+    ['edges', 'belief_evidence_support', 'REAL'],
     ['edges', 'belief_evidence_contribution', 'REAL'],
   ];
 

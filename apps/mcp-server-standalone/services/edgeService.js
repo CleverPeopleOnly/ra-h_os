@@ -45,11 +45,11 @@ function createEdge(edgeData) {
     to_node_id,
     explanation,
     source = 'mcp',
-    // Belief evidence fields (fork addition): stored verbatim in the
-    // dedicated belief_ edge columns. The standalone server stores evidence
-    // but NEVER grades — belief_evidence_contribution is never written here.
-    belief_evidence_direction,
-    belief_evidence_strength
+    // Belief evidence field (fork addition): one signed support value in
+    // [-1, +1], stored verbatim in the dedicated belief_ edge column. The
+    // standalone server stores evidence but NEVER grades —
+    // belief_evidence_contribution is never written here.
+    belief_evidence_support
   } = edgeData;
   const now = new Date().toISOString();
   const db = getDb();
@@ -74,18 +74,16 @@ function createEdge(edgeData) {
     created_via: 'mcp'
   };
 
-  // True when the caller supplied any belief evidence field; only then does
-  // the INSERT name the belief columns, so plain relationship edges keep
+  // True when the caller supplied the belief evidence field; only then does
+  // the INSERT name the belief column, so plain relationship edges keep
   // working against databases that predate the belief schema.
-  const hasBeliefEvidenceFields =
-    belief_evidence_direction !== undefined ||
-    belief_evidence_strength !== undefined;
+  const hasBeliefEvidenceFields = belief_evidence_support !== undefined;
 
   const stmt = hasBeliefEvidenceFields
     ? db.prepare(`
         INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
-                           belief_evidence_direction, belief_evidence_strength)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           belief_evidence_support)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
     : db.prepare(`
         INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation)
@@ -100,8 +98,7 @@ function createEdge(edgeData) {
           source,
           now,
           cleanExplanation,
-          belief_evidence_direction ?? null,
-          belief_evidence_strength ?? null
+          belief_evidence_support ?? null
         )
       : stmt.run(
           from_node_id,

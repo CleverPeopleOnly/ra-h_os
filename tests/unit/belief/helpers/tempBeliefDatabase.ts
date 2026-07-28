@@ -78,15 +78,19 @@ export interface TempBeliefDatabase {
   // node's metadata JSON, which is where the belief engine reads it from.
   insertNodeFixture(options: { title: string; trustOriginKey?: string }): number;
   // Insert an evidence edge fixture directly (bypasses EdgeService and its
-  // LLM inference paths); fails while the evidence columns do not exist yet.
-  // There is no origin-key argument: belief_evidence_origin_key is removed
-  // from the schema, so an evidence edge is direction + strength only.
+  // LLM inference paths); fails while belief_evidence_support does not exist
+  // yet. An evidence edge is now ONE signed number: support runs -1..+1,
+  // positive supporting the to-node and negative contradicting it, so there
+  // is no separate direction argument that could disagree with a magnitude.
   insertEvidenceEdgeFixture(options: {
     fromNodeId: number;
     toNodeId: number;
-    direction: 'for' | 'against';
-    strength: number;
+    support: number;
   }): number;
+  // Insert a plain, NON-evidence edge fixture: belief_evidence_support is
+  // left NULL, which is the one thing that makes an edge not evidence. Used
+  // to prove such an edge is invisible to grading and to the recovery sweep.
+  insertNonEvidenceEdgeFixture(options: { fromNodeId: number; toNodeId: number }): number;
   // Seed or overwrite a belief_source_trust row directly via SQL.
   seedSourceTrustRow(trustOriginKey: string, score: number): void;
   // Read a node's persisted belief state: its graded credence (NULL when
@@ -174,15 +178,25 @@ export async function openTempBeliefDatabase(
       return Number(result.lastInsertRowid);
     },
 
-    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, direction, strength }) {
+    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, support }) {
       const result = sqlite
         .prepare(
           `INSERT INTO edges
              (from_node_id, to_node_id, source, explanation,
-              belief_evidence_direction, belief_evidence_strength)
-           VALUES (?, ?, 'user', 'evidence edge fixture', ?, ?)`
+              belief_evidence_support)
+           VALUES (?, ?, 'user', 'evidence edge fixture', ?)`
         )
-        .run(fromNodeId, toNodeId, direction, strength);
+        .run(fromNodeId, toNodeId, support);
+      return Number(result.lastInsertRowid);
+    },
+
+    insertNonEvidenceEdgeFixture({ fromNodeId, toNodeId }) {
+      const result = sqlite
+        .prepare(
+          `INSERT INTO edges (from_node_id, to_node_id, source, explanation)
+           VALUES (?, ?, 'user', 'plain non-evidence edge fixture')`
+        )
+        .run(fromNodeId, toNodeId);
       return Number(result.lastInsertRowid);
     },
 
