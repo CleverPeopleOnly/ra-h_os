@@ -2,8 +2,12 @@
  * Tests for the EdgeService evidence hook (MR-A).
  *
  * Pins that EdgeService.createEdge:
- *  - stores the one signed evidence field (belief_evidence_support) in its
- *    dedicated edge column,
+ *  - stores the one UNSIGNED evidence field (belief_evidence_support, 0..1)
+ *    in its dedicated edge column,
+ *  - is a WRITE DOOR for the support range: it accepts 0, 1 and values
+ *    between, and REJECTS a negative or greater-than-1 support without
+ *    writing a row — support is unsigned, the sign of a contribution comes
+ *    only from the source node's credence,
  *  - triggers recomputeNodeBelief(to_node_id) so the target node's
  *    belief_credence becomes non-NULL WITHOUT any explicit belief call,
  *  - leaves belief_credence NULL and belief_evidence_support NULL when called
@@ -74,6 +78,19 @@ function readEdgeTableColumnNames(context: TempBeliefDatabase): string[] {
   return context.readTableColumns('edges').map(column => column.name);
 }
 
+// Count the edges rows between one node pair, straight from SQLite — used to
+// prove a rejected out-of-range support wrote no row at all.
+function countEdgesBetween(
+  context: TempBeliefDatabase,
+  fromNodeId: number,
+  toNodeId: number
+): number {
+  const countRow = context.sqlite
+    .prepare('SELECT COUNT(*) AS edge_count FROM edges WHERE from_node_id = ? AND to_node_id = ?')
+    .get(fromNodeId, toNodeId) as { edge_count: number };
+  return countRow.edge_count;
+}
+
 describe('EdgeService evidence hook', () => {
   // The EdgeData contract itself: one signed belief-evidence field, no pair.
   it('EdgeData declares belief_evidence_support as its only belief-evidence field', () => {
@@ -108,29 +125,87 @@ describe('EdgeService evidence hook', () => {
     expect(edgeColumnNames).not.toContain('belief_evidence_strength');
   });
 
-  // Sign carries through the write path unchanged: a negative support is a
-  // contradiction and must be stored as-is, never normalised to a magnitude.
-  it('stores a negative belief_evidence_support as a contradiction without changing its sign', async () => {
+  // REWRITTEN from "stores a negative support without changing its sign".
+  // Support is now UNSIGNED (0..1): a negative value is not a contradiction,
+  // it is an invalid write, and this door must refuse it — no edge row, no
+  // recompute of the target. Contradiction is expressed by the SOURCE NODE's
+  // negative credence, never by the support.
+  it('rejects a negative belief_evidence_support and writes no edge row', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
-    const sourceNodeId = db.insertNodeFixture({ title: 'contradicting source node' });
+    const sourceNodeId = db.insertNodeFixture({
+      title: 'source attempting a negative support',
+      beliefCredence: 0.9,
+    });
     const { edgeService } = await db.importEdgeService();
 
-    const contradictionInput: EvidenceEdgeInput = {
+    // Both a plainly negative value and the old range's -1 boundary must be
+    // refused: nothing below 0 is a support any more.
+    for (const rejectedNegativeSupport of [-0.4, -1]) {
+      const negativeSupportInput: EvidenceEdgeInput = {
+        from_node_id: sourceNodeId,
+        to_node_id: claimNodeId,
+        explanation: 'Evidence fixture carrying an invalid negative support.',
+        created_via: 'workflow',
+        source: 'user',
+        skip_inference: true,
+        belief_evidence_support: rejectedNegativeSupport,
+      };
+      await expect(
+        edgeService.createEdge(negativeSupportInput),
+        `a support of ${rejectedNegativeSupport} must be rejected at the EdgeService door`
+      ).rejects.toThrow(/belief_evidence_support/);
+    }
+
+    // No row was written for either attempt...
+    expect(countEdgesBetween(db, sourceNodeId, claimNodeId)).toBe(0);
+    // ...and no recompute ran, so the target is still ungraded.
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
+  });
+
+  // The upper boundary of the unsigned range is in range: a support of
+  // exactly 1 (full-strength evidence) must be stored verbatim.
+  it('accepts a belief_evidence_support of exactly 1 and stores it', async () => {
+    db = await openTempBeliefDatabase();
+    const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
+    const sourceNodeId = db.insertNodeFixture({ title: 'full-strength evidence source' });
+    const { edgeService } = await db.importEdgeService();
+
+    const fullStrengthInput: EvidenceEdgeInput = {
       from_node_id: sourceNodeId,
       to_node_id: claimNodeId,
-      explanation: 'Evidence fixture contradicting the claim node.',
+      explanation: 'Evidence fixture at the full-strength boundary of the range.',
       created_via: 'workflow',
       source: 'user',
       skip_inference: true,
-      belief_evidence_support: -0.4,
+      belief_evidence_support: 1,
     };
-    const createdEdge = await edgeService.createEdge(contradictionInput);
+    const createdEdge = await edgeService.createEdge(fullStrengthInput);
 
-    expect(Number(readEvidenceSupportColumn(db, createdEdge.id).belief_evidence_support)).toBeCloseTo(
-      -0.4,
-      10
+    expect(Number(readEvidenceSupportColumn(db, createdEdge.id).belief_evidence_support)).toBe(1);
+  });
+
+  // The other invalid side: a support greater than 1 must be refused with no
+  // row written, exactly like a negative one.
+  it('rejects a belief_evidence_support greater than 1 and writes no edge row', async () => {
+    db = await openTempBeliefDatabase();
+    const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
+    const sourceNodeId = db.insertNodeFixture({ title: 'source attempting an oversized support' });
+    const { edgeService } = await db.importEdgeService();
+
+    const oversizedSupportInput: EvidenceEdgeInput = {
+      from_node_id: sourceNodeId,
+      to_node_id: claimNodeId,
+      explanation: 'Evidence fixture carrying an invalid oversized support.',
+      created_via: 'workflow',
+      source: 'user',
+      skip_inference: true,
+      belief_evidence_support: 1.5,
+    };
+    await expect(edgeService.createEdge(oversizedSupportInput)).rejects.toThrow(
+      /belief_evidence_support/
     );
+    expect(countEdgesBetween(db, sourceNodeId, claimNodeId)).toBe(0);
   });
 
   // A support of exactly 0 must survive the write path as 0, never collapse
@@ -142,13 +217,12 @@ describe('EdgeService evidence hook', () => {
   it('stores a belief_evidence_support of exactly 0 as 0, not NULL, and still grades the target node', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
-    // ASSESSED source, so the triggered recompute can actually grade.
-    const sourceTrustOriginKey = 'trust:neutral-evidence-source';
+    // The source needs a credence of its own, so the triggered recompute can
+    // actually grade: that credence IS the weight its evidence carries.
     const sourceNodeId = db.insertNodeFixture({
       title: 'source that leans neither way',
-      trustOriginKey: sourceTrustOriginKey,
+      beliefCredence: 0.9,
     });
-    db.seedSourceTrustRow(sourceTrustOriginKey, 0.9);
     const { edgeService } = await db.importEdgeService();
 
     const neutralEvidenceInput: EvidenceEdgeInput = {
@@ -212,15 +286,13 @@ describe('EdgeService evidence hook', () => {
   it('triggers a belief recompute of the target node when an evidence edge is created', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
-    // The source must be ASSESSED (trustOriginKey + a seeded
-    // belief_source_trust row) — an unassessed source's evidence is
+    // The source must itself be GRADED — its own belief_credence is the
+    // weight its evidence carries, and an ungraded source's evidence is
     // excluded from grading entirely, so the recompute would stay NULL.
-    const sourceTrustOriginKey = 'trust:evidence-hook-source';
     const sourceNodeId = db.insertNodeFixture({
       title: 'evidence source node',
-      trustOriginKey: sourceTrustOriginKey,
+      beliefCredence: 0.9,
     });
-    db.seedSourceTrustRow(sourceTrustOriginKey, 0.9);
     const { edgeService } = await db.importEdgeService();
 
     const evidenceInput: EvidenceEdgeInput = {

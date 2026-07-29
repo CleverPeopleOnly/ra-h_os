@@ -1,12 +1,14 @@
 /**
  * Tests for the /api/edges POST route's belief-evidence pass-through: a
- * request body carrying the one signed evidence field
- * (belief_evidence_support) must reach edgeService.createEdge with that field
- * intact, because the route rebuilds the createEdge argument from an explicit
- * field list.
+ * request body carrying the one evidence field (belief_evidence_support,
+ * UNSIGNED 0..1) must reach edgeService.createEdge with that field intact,
+ * because the route rebuilds the createEdge argument from an explicit field
+ * list. The route is a pure pass-through: range validation is the
+ * EdgeService write door's job (see tests/unit/belief/edgeEvidenceHook.test.ts),
+ * so nothing here pretends the route validates the range itself.
  *
  * belief_evidence_direction and belief_evidence_strength are MERGED AWAY into
- * that signed field: the route must no longer name either in the rebuild, so
+ * that field: the route must no longer name either in the rebuild, so
  * a stale client that still sends them gets a normal 201 with both fields
  * simply absent from the createEdge argument (ignored, not an error, and
  * never invented for bodies that omit them). The resulting edge carries no
@@ -74,7 +76,7 @@ beforeEach(() => {
 });
 
 describe('/api/edges POST evidence forwarding', () => {
-  // EDITED from the two-field forwarding case: the one signed evidence field
+  // EDITED from the two-field forwarding case: the one evidence field
   // must reach createEdge intact, while stale belief_evidence_direction /
   // belief_evidence_strength values in the same body are ignored — the
   // request still succeeds and neither merged-away name appears on the
@@ -100,7 +102,7 @@ describe('/api/edges POST evidence forwarding', () => {
       to_node_id: 1,
       explanation: 'Reports a measured result that supports the claim node.',
     });
-    // The signed evidence field must reach createEdge intact.
+    // The evidence field must reach createEdge intact.
     expect(createEdgeArgument.belief_evidence_support).toBeCloseTo(0.8, 10);
     // Neither merged-away field may be rebuilt onto the createEdge argument
     // at all — not even as an explicit undefined key. Note the stale pair
@@ -109,20 +111,22 @@ describe('/api/edges POST evidence forwarding', () => {
     expect(Object.keys(createEdgeArgument)).not.toContain('belief_evidence_strength');
   });
 
-  // Sign pass-through: a negative support is a contradiction and must reach
-  // createEdge with its sign intact — support is the only signed term, so the
-  // route must never normalise it to a magnitude.
-  it('forwards a negative belief_evidence_support with its sign intact', async () => {
+  // REWRITTEN from "forwards a negative belief_evidence_support with its
+  // sign intact" — support is unsigned now, so a negative fixture would
+  // encode the old model. The intent this test keeps is the pass-through
+  // itself: an in-range support must reach createEdge verbatim, never
+  // clamped, rounded or otherwise touched by the route.
+  it('forwards an in-range belief_evidence_support verbatim', async () => {
     const response = await POST(
       buildEdgesPostRequest({
         ...confirmedMcpEdgeBody,
-        belief_evidence_support: -0.6,
+        belief_evidence_support: 0.6,
       })
     );
 
     expect(response.status).toBe(201);
     const createEdgeArgument = vi.mocked(edgeService.createEdge).mock.calls[0][0];
-    expect(createEdgeArgument.belief_evidence_support).toBeCloseTo(-0.6, 10);
+    expect(createEdgeArgument.belief_evidence_support).toBeCloseTo(0.6, 10);
   });
 
   // GUARD: an evidence-free body must keep producing an evidence-free

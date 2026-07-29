@@ -405,7 +405,8 @@ class SQLiteClient {
         embedding_text TEXT,
         chunk_status TEXT DEFAULT 'not_chunked',
         belief_credence REAL,
-        belief_computed_at TEXT
+        belief_computed_at TEXT,
+        belief_credence_is_fixed INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS edges (
@@ -420,12 +421,6 @@ class SQLiteClient {
         belief_evidence_contribution REAL,
         FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
         FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS belief_source_trust (
-        trust_origin_key TEXT PRIMARY KEY,
-        score REAL NOT NULL,
-        updated_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS belief_movements (
@@ -485,9 +480,9 @@ class SQLiteClient {
   // belief columns existed, and CREATE TABLE IF NOT EXISTS never alters an
   // existing table — so mirror the ensureNodeCol pattern and ALTER the
   // missing columns in. CREATE TABLE IF NOT EXISTS in ensureCoreSchema brings
-  // belief_source_trust / belief_movements into being on a fresh database, but
-  // is a no-op on an existing one, so their column-level migrations live here
-  // too. Must run inside the startup write lock.
+  // belief_movements into being on a fresh database, but is a no-op on an
+  // existing one, so its column-level migration lives here too. Must run
+  // inside the startup write lock.
   private ensureBeliefSchemaLocked(): void {
     // nodes: the graded credence (NULL = ungraded) + when it was computed.
     try {
@@ -543,6 +538,15 @@ class SQLiteClient {
       };
       ensureNodeBeliefCol('belief_credence', 'ALTER TABLE nodes ADD COLUMN belief_credence REAL;');
       ensureNodeBeliefCol('belief_computed_at', 'ALTER TABLE nodes ADD COLUMN belief_computed_at TEXT;');
+      // A node with this flag set has its credence ASSERTED by a human rather
+      // than derived from its incoming evidence — the bootstrap a derived-only
+      // graph needs before anything in it can be graded. NOT NULL DEFAULT 0
+      // makes "derived" the state every node is in without any write, and
+      // backfills every existing row of a legacy database with it.
+      ensureNodeBeliefCol(
+        'belief_credence_is_fixed',
+        'ALTER TABLE nodes ADD COLUMN belief_credence_is_fixed INTEGER NOT NULL DEFAULT 0;'
+      );
     } catch (nodeErr) {
       console.warn('Failed to ensure nodes belief columns:', nodeErr);
     }
@@ -575,13 +579,14 @@ class SQLiteClient {
     }
 
     // edges: the two evidence columns the belief engine reads and stamps —
-    // the signed support and the grading stamp.
+    // the unsigned support and the grading stamp.
     try {
       // Vocabulary migration: databases created while the field was named
       // evidence_relation (with values supports/contradicts) get the column
       // renamed to belief_evidence_direction and the values mapped to
       // for/against. That intermediate direction column is itself merged into
-      // the signed belief_evidence_support column further down, so mapping the
+      // the unsigned belief_evidence_support column further down (magnitude
+      // only — the direction reading is discarded there), so mapping the
       // legacy values here is what carries supports/contradicts through to a
       // sign.
       const preMigrationEdgeCols = this.db.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
@@ -645,16 +650,21 @@ class SQLiteClient {
         }
       }
 
-      // Merge migration: how an edge bears on its target is ONE signed number,
-      // belief_evidence_support (-1..+1, positive supporting the target,
-      // negative contradicting it, NULL meaning the edge is not evidence).
-      // While it was stored as a direction beside a magnitude the two could
-      // disagree — an edge could carry a strength with no direction, storable
-      // but impossible to grade — so the pair is folded into one column and
-      // both halves are dropped. This runs AFTER the vocabulary renames above
-      // because older databases only reach the direction/strength shape (and
-      // the for/against values) through those renames. Column list read fresh
-      // so the origin-key drops above are already reflected.
+      // Merge migration: how strongly an edge's source talks about the target
+      // is ONE UNSIGNED number, belief_evidence_support (0..1, NULL meaning
+      // the edge is not evidence). Which way the evidence cuts lives on the
+      // source NODE's signed credence, never on the edge — so the legacy
+      // direction reading ('for'/'against') is deliberately DISCARDED and
+      // every gradeable row keeps only its strength's MAGNITUDE: the
+      // relatedness survives, the direction does not, and the edge stays
+      // evidence. While support was stored as a direction beside a magnitude
+      // the two could disagree — an edge could carry a strength with no
+      // direction, storable but impossible to grade — so the pair is folded
+      // into one column and both halves are dropped. This runs AFTER the
+      // vocabulary renames above because older databases only reach the
+      // direction/strength shape (and the for/against values) through those
+      // renames. Column list read fresh so the origin-key drops above are
+      // already reflected.
       const edgeColsBeforeSupportMerge = this.db
         .prepare('PRAGMA table_info(edges)')
         .all() as Array<{ name: string }>;
@@ -671,19 +681,20 @@ class SQLiteClient {
           if (!edgeColsBeforeSupportMerge.some(col => col.name === 'belief_evidence_support')) {
             this.db.exec('ALTER TABLE edges ADD COLUMN belief_evidence_support REAL;');
           }
-          // Only a row with BOTH halves was ever gradeable, so only such a row
-          // gets a support value: 'for' keeps the magnitude's sign, 'against'
-          // negates it. The WHERE leaves every NULL-direction row's support
-          // NULL, which is exactly what "not evidence" means — an orphan
-          // magnitude with no direction never became evidence and must not
-          // become evidence now.
+          // Only a row with BOTH halves was ever gradeable, so only such a
+          // row gets a support value — and BOTH directions get the strength's
+          // MAGNITUDE, because support is unsigned: the direction reading is
+          // discarded (it now lives on the source node's credence) while the
+          // relatedness survives and the edge stays evidence. Existing
+          // belief_evidence_contribution stamps are left untouched —
+          // historical data, not remapped. The WHERE leaves every
+          // NULL-direction row's support NULL, which is exactly what "not
+          // evidence" means — an orphan magnitude with no direction never
+          // became evidence and must not become evidence now.
           if (hasMergedAwayEvidenceDirectionColumn && hasMergedAwayEvidenceStrengthColumn) {
             this.db.exec(
               `UPDATE edges
-                 SET belief_evidence_support = CASE belief_evidence_direction
-                       WHEN 'for' THEN belief_evidence_strength
-                       WHEN 'against' THEN -belief_evidence_strength
-                     END
+                 SET belief_evidence_support = ABS(belief_evidence_strength)
                WHERE belief_evidence_direction IS NOT NULL;`
             );
           }
@@ -728,32 +739,20 @@ class SQLiteClient {
       console.warn('Failed to ensure edges evidence columns:', edgeErr);
     }
 
-    // Trust-table migration: the table shipped briefly as source_trust (keyed
-    // first by origin_key, then trust_origin_key); it is now
-    // belief_source_trust so belief code is recognisable on sight. By this
-    // point ensureCoreSchema has already created a fresh empty
-    // belief_source_trust, so a legacy table's rows are copied across and the
-    // legacy table dropped.
+    // Sources-as-nodes migration: a source is just a node and its influence
+    // over the evidence it supplies IS its own nodes.belief_credence, so the
+    // separate lookup table that used to hold that number has nothing left to
+    // hold. It is dropped under both names it ever shipped under (source_trust
+    // first, belief_source_trust after the prefix rule), and its rows are
+    // deliberately carried nowhere — a number keyed by a metadata string
+    // cannot be mapped onto a node. ensureCoreSchema no longer creates it, so
+    // nothing puts it back. DROP TABLE IF EXISTS touches neither nodes nor
+    // edges, so every index and foreign key on them survives.
     try {
-      const hasLegacySourceTrust = this.db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='source_trust'")
-        .get();
-      if (hasLegacySourceTrust) {
-        const legacyTrustCols = this.db.prepare('PRAGMA table_info(source_trust)').all() as Array<{ name: string }>;
-        // The key naming WHO is trusted (author/domain) shipped briefly as
-        // origin_key; normalise to trust_origin_key before copying so its
-        // subject — the trusted source — is unmistakable on sight.
-        if (legacyTrustCols.some(col => col.name === 'origin_key')) {
-          this.db.exec('ALTER TABLE source_trust RENAME COLUMN origin_key TO trust_origin_key;');
-        }
-        this.db.exec(
-          `INSERT OR IGNORE INTO belief_source_trust (trust_origin_key, score, updated_at)
-           SELECT trust_origin_key, score, updated_at FROM source_trust;`
-        );
-        this.db.exec('DROP TABLE source_trust;');
-      }
-    } catch (trustRenameErr) {
-      console.warn('Failed to migrate source_trust to belief_source_trust:', trustRenameErr);
+      this.db.exec('DROP TABLE IF EXISTS source_trust;');
+      this.db.exec('DROP TABLE IF EXISTS belief_source_trust;');
+    } catch (sourceTrustDropErr) {
+      console.warn('Failed to drop the removed source trust tables:', sourceTrustDropErr);
     }
   }
 

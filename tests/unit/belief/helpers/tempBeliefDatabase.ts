@@ -18,6 +18,12 @@
  * helper first, then load product modules through the context's import*
  * methods (or a dynamic import made AFTER openTempBeliefDatabase resolves),
  * so they bind to the same fresh client generation.
+ *
+ * SOURCES ARE NODES: a source's influence over the evidence it supplies is
+ * its OWN nodes.belief_credence — the same number and the same word as the
+ * belief of any other node. There is no separate trust table and no
+ * trustOriginKey in node metadata any more, so the fixtures below give a
+ * source node a credence directly.
  */
 
 import fs from 'fs';
@@ -31,11 +37,15 @@ import { vi } from 'vitest';
 const sentinelTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rah-belief-sentinel-'));
 process.env.SQLITE_DB_PATH = path.join(sentinelTempDir, 'rah-sentinel.sqlite');
 
-// Column row shape returned by "PRAGMA table_info(<table>)".
+// Column row shape returned by "PRAGMA table_info(<table>)". dflt_value is
+// included so a test can pin a column's DEFAULT clause (belief_credence_is_fixed
+// is INTEGER NOT NULL DEFAULT 0, and the default is what makes an ordinary node
+// ordinary without any write).
 export interface SqliteTableColumn {
   name: string;
   type: string;
   notnull: number;
+  dflt_value: string | null;
   pk: number;
 }
 
@@ -53,6 +63,10 @@ export interface BeliefMovementRow {
   // When the recompute happened.
   occurred_at: string;
 }
+
+// Timestamp stamped on a fixture node that is seeded with a credence, so a
+// seeded source looks like a node the engine (or a human) has already graded.
+const SEEDED_BELIEF_COMPUTED_AT = '2026-07-01T00:00:00.000Z';
 
 // Throws unless the given path resolves (symlinks included — macOS tmpdir is
 // a /var -> /private/var symlink) to somewhere inside the OS temp directory.
@@ -72,16 +86,28 @@ function assertPathIsUnderOsTmpDir(candidatePath: string): void {
 export interface TempBeliefDatabase {
   // Absolute path of the temp SQLite file the client under test has open.
   tempDbPath: string;
-  // The live SQLiteClient instance bound to tempDbPath.
-  sqlite: import('@/services/database/sqlite-client').SQLiteClient;
-  // Insert a node fixture; trustOriginKey (if given) is written into the
-  // node's metadata JSON, which is where the belief engine reads it from.
-  insertNodeFixture(options: { title: string; trustOriginKey?: string }): number;
+  // The live SQLiteClient instance bound to tempDbPath. It is a getter, not a
+  // fixed reference, because reopenBeliefDatabase() replaces the client.
+  readonly sqlite: import('@/services/database/sqlite-client').SQLiteClient;
+  // Insert a node fixture. beliefCredence (if given) is written straight into
+  // nodes.belief_credence — for a source node that IS the weight its evidence
+  // carries; omit it for a node nobody has graded (credence NULL).
+  insertNodeFixture(options: { title: string; beliefCredence?: number }): number;
+  // Insert a node whose credence is ASSERTED by a human rather than derived
+  // from the graph: belief_credence is set and belief_credence_is_fixed is 1.
+  // This is the bootstrap node — without at least one, a derived-only graph
+  // can never grade anything.
+  insertFixedBeliefCredenceNodeFixture(options: { title: string; beliefCredence: number }): number;
+  // Overwrite one node's own credence (NULL puts it back to ungraded), so a
+  // test can move a source's credence between two recomputes.
+  setNodeBeliefCredence(nodeId: number, beliefCredence: number | null): void;
+  // Read the raw belief_credence_is_fixed flag of one node (0/1).
+  readNodeBeliefCredenceIsFixed(nodeId: number): number | null;
   // Insert an evidence edge fixture directly (bypasses EdgeService and its
-  // LLM inference paths); fails while belief_evidence_support does not exist
-  // yet. An evidence edge is now ONE signed number: support runs -1..+1,
-  // positive supporting the to-node and negative contradicting it, so there
-  // is no separate direction argument that could disagree with a magnitude.
+  // LLM inference paths — and therefore bypasses every write-door range
+  // check, which have their own tests). Support is UNSIGNED, 0..1: it says
+  // how strongly the source node talks about the to-node. The sign of a
+  // contribution comes from the SOURCE NODE's credence, never from support.
   insertEvidenceEdgeFixture(options: {
     fromNodeId: number;
     toNodeId: number;
@@ -91,8 +117,6 @@ export interface TempBeliefDatabase {
   // left NULL, which is the one thing that makes an edge not evidence. Used
   // to prove such an edge is invisible to grading and to the recovery sweep.
   insertNonEvidenceEdgeFixture(options: { fromNodeId: number; toNodeId: number }): number;
-  // Seed or overwrite a belief_source_trust row directly via SQL.
-  seedSourceTrustRow(trustOriginKey: string, score: number): void;
   // Read a node's persisted belief state: its graded credence (NULL when
   // ungraded) and when that credence was computed.
   readNodeBelief(nodeId: number): {
@@ -105,6 +129,12 @@ export interface TempBeliefDatabase {
   readEvidenceStamp(edgeId: number): number | null;
   // Read the column list of a table via PRAGMA table_info.
   readTableColumns(tableName: string): SqliteTableColumn[];
+  // True when the named table exists in this database.
+  hasTable(tableName: string): boolean;
+  // Close the client and open the SAME file again through a fresh module
+  // generation, so the schema migration runs a second time over its own
+  // output. This is how the idempotence tests prove a rerun is safe.
+  reopenBeliefDatabase(): Promise<void>;
   // Import the belief service bound to this database generation.
   importBeliefService(): Promise<typeof import('@/services/belief/beliefService')>;
   // Import the grading-policy module from the SAME module-registry generation
@@ -112,8 +142,6 @@ export interface TempBeliefDatabase {
   // beliefGradingPolicyV1.gradeBelief and inspect the contribution objects
   // recomputeNodeBelief actually hands the policy.
   importBeliefGradingPolicyModule(): Promise<typeof import('@/services/belief/beliefGradingPolicy')>;
-  // Import the source trust service bound to this database generation.
-  importSourceTrustService(): Promise<typeof import('@/services/belief/sourceTrustService')>;
   // Import the edge service bound to this database generation.
   importEdgeService(): Promise<typeof import('@/services/database/edges')>;
   // Import the auto-embed queue module bound to this database generation.
@@ -145,41 +173,82 @@ export async function openTempBeliefDatabase(
   // Let migration tests pre-create a legacy database file at this path.
   options.prepareExistingDbFile?.(tempDbPath);
 
-  // Point the client's config seam at the temp file, then force a fresh
-  // module registry so the singleton client re-initializes against it.
-  process.env.SQLITE_DB_PATH = tempDbPath;
-  vi.resetModules();
-  const sqliteClientModule = await import('@/services/database/sqlite-client');
-  const sqlite = sqliteClientModule.getSQLiteClient();
+  // Open the temp file through a fresh module registry and verify the client
+  // really landed on it. Shared by the first open and by every reopen.
+  async function openSqliteClientOnTempFile(): Promise<
+    import('@/services/database/sqlite-client').SQLiteClient
+  > {
+    process.env.SQLITE_DB_PATH = tempDbPath;
+    vi.resetModules();
+    const sqliteClientModule = await import('@/services/database/sqlite-client');
+    const openedClient = sqliteClientModule.getSQLiteClient();
 
-  // Post-open guard: verify the file the client ACTUALLY opened is our temp
-  // file, and bail out immediately if it is anything else.
-  const attachedDatabases = sqlite.prepare('PRAGMA database_list').all() as Array<{
-    name: string;
-    file: string;
-  }>;
-  const mainDatabaseFile = attachedDatabases.find(row => row.name === 'main')?.file ?? '';
-  if (fs.realpathSync(mainDatabaseFile) !== fs.realpathSync(tempDbPath)) {
-    sqlite.close();
-    throw new Error(
-      `SAFETY: SQLite client opened "${mainDatabaseFile}" instead of the temp file "${tempDbPath}"`
-    );
+    // Post-open guard: verify the file the client ACTUALLY opened is our temp
+    // file, and bail out immediately if it is anything else.
+    const attachedDatabases = openedClient.prepare('PRAGMA database_list').all() as Array<{
+      name: string;
+      file: string;
+    }>;
+    const mainDatabaseFile = attachedDatabases.find(row => row.name === 'main')?.file ?? '';
+    if (fs.realpathSync(mainDatabaseFile) !== fs.realpathSync(tempDbPath)) {
+      openedClient.close();
+      throw new Error(
+        `SAFETY: SQLite client opened "${mainDatabaseFile}" instead of the temp file "${tempDbPath}"`
+      );
+    }
+    return openedClient;
   }
+
+  // The client generation the context currently reads and writes through;
+  // replaced wholesale by reopenBeliefDatabase().
+  let activeSqliteClient = await openSqliteClientOnTempFile();
 
   return {
     tempDbPath,
-    sqlite,
 
-    insertNodeFixture({ title, trustOriginKey }) {
-      const metadataJson = trustOriginKey ? JSON.stringify({ trustOriginKey }) : null;
-      const result = sqlite
-        .prepare('INSERT INTO nodes (title, source, metadata) VALUES (?, ?, ?)')
-        .run(title, `${title} fixture content`, metadataJson);
+    get sqlite() {
+      return activeSqliteClient;
+    },
+
+    insertNodeFixture({ title, beliefCredence }) {
+      const result = activeSqliteClient
+        .prepare(
+          'INSERT INTO nodes (title, source, belief_credence, belief_computed_at) VALUES (?, ?, ?, ?)'
+        )
+        .run(
+          title,
+          `${title} fixture content`,
+          beliefCredence ?? null,
+          beliefCredence === undefined ? null : SEEDED_BELIEF_COMPUTED_AT
+        );
       return Number(result.lastInsertRowid);
     },
 
+    insertFixedBeliefCredenceNodeFixture({ title, beliefCredence }) {
+      const result = activeSqliteClient
+        .prepare(
+          `INSERT INTO nodes (title, source, belief_credence, belief_computed_at, belief_credence_is_fixed)
+           VALUES (?, ?, ?, ?, 1)`
+        )
+        .run(title, `${title} fixture content`, beliefCredence, SEEDED_BELIEF_COMPUTED_AT);
+      return Number(result.lastInsertRowid);
+    },
+
+    setNodeBeliefCredence(nodeId, beliefCredence) {
+      activeSqliteClient
+        .prepare('UPDATE nodes SET belief_credence = ? WHERE id = ?')
+        .run(beliefCredence, nodeId);
+    },
+
+    readNodeBeliefCredenceIsFixed(nodeId) {
+      const row = activeSqliteClient
+        .prepare('SELECT belief_credence_is_fixed FROM nodes WHERE id = ?')
+        .get(nodeId) as { belief_credence_is_fixed: number | null } | undefined;
+      return row?.belief_credence_is_fixed ?? null;
+    },
+
     insertEvidenceEdgeFixture({ fromNodeId, toNodeId, support }) {
-      const result = sqlite
+      const result = activeSqliteClient
         .prepare(
           `INSERT INTO edges
              (from_node_id, to_node_id, source, explanation,
@@ -191,7 +260,7 @@ export async function openTempBeliefDatabase(
     },
 
     insertNonEvidenceEdgeFixture({ fromNodeId, toNodeId }) {
-      const result = sqlite
+      const result = activeSqliteClient
         .prepare(
           `INSERT INTO edges (from_node_id, to_node_id, source, explanation)
            VALUES (?, ?, 'user', 'plain non-evidence edge fixture')`
@@ -200,24 +269,14 @@ export async function openTempBeliefDatabase(
       return Number(result.lastInsertRowid);
     },
 
-    seedSourceTrustRow(trustOriginKey, score) {
-      sqlite
-        .prepare(
-          `INSERT INTO belief_source_trust (trust_origin_key, score, updated_at)
-           VALUES (?, ?, datetime('now'))
-           ON CONFLICT(trust_origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`
-        )
-        .run(trustOriginKey, score);
-    },
-
     readNodeBelief(nodeId) {
-      return sqlite
+      return activeSqliteClient
         .prepare('SELECT belief_credence, belief_computed_at FROM nodes WHERE id = ?')
         .get(nodeId) as { belief_credence: number | null; belief_computed_at: string | null };
     },
 
     readBeliefMovements(nodeId) {
-      return sqlite
+      return activeSqliteClient
         .prepare(
           `SELECT from_credence, to_credence, "trigger", occurred_at
            FROM belief_movements WHERE node_id = ? ORDER BY id ASC`
@@ -226,26 +285,39 @@ export async function openTempBeliefDatabase(
     },
 
     readEvidenceStamp(edgeId) {
-      const row = sqlite
+      const row = activeSqliteClient
         .prepare('SELECT belief_evidence_contribution FROM edges WHERE id = ?')
         .get(edgeId) as { belief_evidence_contribution: number | null } | undefined;
       return row?.belief_evidence_contribution ?? null;
     },
 
     readTableColumns(tableName) {
-      return sqlite.prepare(`PRAGMA table_info(${tableName})`).all() as SqliteTableColumn[];
+      return activeSqliteClient
+        .prepare(`PRAGMA table_info(${tableName})`)
+        .all() as SqliteTableColumn[];
+    },
+
+    hasTable(tableName) {
+      const tableRow = activeSqliteClient
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+        .get(tableName) as { name: string } | undefined;
+      return tableRow !== undefined;
+    },
+
+    async reopenBeliefDatabase() {
+      activeSqliteClient.close();
+      activeSqliteClient = await openSqliteClientOnTempFile();
     },
 
     importBeliefService: () => import('@/services/belief/beliefService'),
     importBeliefGradingPolicyModule: () => import('@/services/belief/beliefGradingPolicy'),
-    importSourceTrustService: () => import('@/services/belief/sourceTrustService'),
     importEdgeService: () => import('@/services/database/edges'),
     importAutoEmbedQueueModule: () => import('@/services/embedding/autoEmbedQueue'),
     importIngestionModule: () => import('@/services/embedding/ingestion'),
 
     close() {
       try {
-        sqlite.close();
+        activeSqliteClient.close();
       } finally {
         // Delete only this test's own mkdtemp directory.
         fs.rmSync(tempDbDir, { recursive: true, force: true });

@@ -27,7 +27,8 @@ One word per concept, and no synonyms. This exists because the belief system's c
 | How much we believe a node | **credence** | `nodes.belief_credence` |
 | A source node's influence over evidence it supplies | **credence** | the same number — deliberately the same word |
 | What one edge adds to its target | **contribution** | `edges.belief_evidence_contribution` |
-| How an edge bears on its target — which way and how hard, in one signed number | **support** | `edges.belief_evidence_support` |
+| How strongly a source node talks about the neighbour — one unsigned number | **support** | `edges.belief_evidence_support` |
+| A credence a human asserts by hand instead of the engine deriving it | **fixed credence** | `nodes.belief_credence_is_fixed` |
 | The log of a node's credence changing | **movement** | `belief_movements` |
 | Future: learning a source's credence from confirmed outcomes | **calibration** | produces credence; not a new quantity |
 
@@ -35,13 +36,11 @@ The load-bearing row is the second. A source's influence and a node's belief are
 
 The vocabulary in one sentence: an edge's **contribution** is its **support** × the source node's **credence**; a node's **credence** is the graded sum of its incoming contributions; a node nobody has grounded has no credence (NULL).
 
-**Sign invariant: `belief_evidence_support` is the only signed term in the formula.** Support runs −1..+1 (positive supports the target, negative contradicts it).
+**Sign invariant: `nodes.belief_credence` is the only signed quantity in the system.** Support runs 0..1, unsigned — it says how strongly the source node talks about the neighbour, never which way. An edge's contribution is negative exactly when its source's credence is negative: a disbelieved source's evidence counts against what it talks about, feeding the C side of the grading formula.
 
-Support distinguishes two states exactly as credence does on a node. **NULL means the edge is not evidence at all** — a plain relationship edge, never assessed. **0 means it was assessed and bears neither way** — inert in the grading sum, but a recorded judgement rather than an absence of one. Never reject a support of 0: a classifier that genuinely finds no lean would otherwise have to invent one, manufacturing signal that isn't there. A source's credence enters the multiplication clamped at zero — a source we disbelieve does not get its testimony inverted, it simply gets no vote, because "we do not believe what you say" is not the same claim as "you reliably point away from the truth". Inverting would require measuring anti-correlation against confirmed outcomes, which is calibration's job and a different quantity.
+Support distinguishes two states exactly as credence does on a node. **NULL means the edge is not evidence at all** — a plain relationship edge, never assessed. **0 means it was assessed and carries nothing** — inert in the grading sum, but a recorded judgement rather than an absence of one. Never reject a support of 0: a classifier that genuinely finds no bearing would otherwise have to invent one, manufacturing signal that isn't there.
 
 This invariant is structural, not a convention to remember: there is exactly one field in the schema that can carry a minus sign. A separate direction field alongside a magnitude field would let the two disagree — which is how an edge could once be written with a strength and no direction, storable but impossible to grade.
-
-(The `belief_source_trust` table and its `trust_origin_key` are the last code contradicting this rule. They are removed by the sources-as-nodes MR, which replaces the lookup with the source node's own credence.)
 
 CI (.github/workflows/ci.yml) gates every push/PR on the full test suite, full typecheck, and `npm run lint:belief-surface` — everything the belief system owns must lint clean. Upstream's pre-existing lint debt is out of scope and not gated; new belief-owned files must be added to the `lint:belief-surface` script.
 

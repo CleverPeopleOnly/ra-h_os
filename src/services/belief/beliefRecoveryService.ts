@@ -29,13 +29,19 @@ export async function recoverUngradedEvidence(): Promise<BeliefRecoveryResult> {
   // Distinct target nodes carrying at least one evidence edge that was never
   // graded (support set, contribution stamp NULL) — i.e. offline writes. A
   // NULL support means the edge is not evidence, so it is never pending work.
+  // A node whose credence is human-asserted (belief_credence_is_fixed) is
+  // excluded outright: a recompute would leave it untouched anyway, and its
+  // unstamped incoming evidence matches the pending-work condition on every
+  // run, so without this filter it would be reported as work forever.
   const ungradedEvidenceNodeRows = sqlite
     .prepare(
-      `SELECT DISTINCT to_node_id AS node_id
-       FROM edges
-       WHERE belief_evidence_support IS NOT NULL
-         AND belief_evidence_contribution IS NULL
-       ORDER BY to_node_id ASC`
+      `SELECT DISTINCT e.to_node_id AS node_id
+       FROM edges e
+       JOIN nodes n ON n.id = e.to_node_id
+       WHERE e.belief_evidence_support IS NOT NULL
+         AND e.belief_evidence_contribution IS NULL
+         AND n.belief_credence_is_fixed = 0
+       ORDER BY e.to_node_id ASC`
     )
     .all() as Array<{ node_id: number }>;
 
