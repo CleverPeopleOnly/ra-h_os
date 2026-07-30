@@ -437,6 +437,52 @@ export class EdgeService {
     const updateFields: string[] = [];
     const params: any[] = [];
 
+    // The support this update writes, if it writes one at all. Read once here
+    // because it decides three things: whether the write is allowed, whether
+    // the edge stops being evidence, and whether the write must regrade the
+    // node the edge points at.
+    const writtenBeliefEvidenceSupport = updates.belief_evidence_support;
+
+    // Whether this update TOUCHES the support column at all. The dynamic UPDATE
+    // loop below treats undefined as "not part of this update", so the trigger
+    // is the presence of any other value — including null, and including 0.
+    // Deliberately WIDER than the range check just below: writing NULL is a
+    // legitimate support write, not an out-of-range one.
+    const updateWritesBeliefEvidenceSupport = writtenBeliefEvidenceSupport !== undefined;
+
+    // Whether this update UN-ASSESSES the edge: a support written as NULL is
+    // the one thing that makes an edge not evidence at all, so an edge that WAS
+    // evidence stops being evidence. On create there is no such case (a new
+    // edge with NULL support never was evidence), which is why this distinction
+    // does not exist in createEdge.
+    const updateUnassessesBeliefEvidence =
+      updateWritesBeliefEvidenceSupport && writtenBeliefEvidenceSupport === null;
+
+    // Belief-evidence door check: the dynamic UPDATE below writes whatever it
+    // is given straight to the REAL belief_evidence_support column, so the
+    // value is checked before anything at all is written. Support is UNSIGNED,
+    // 0..1 — contradiction is expressed by the source NODE's negative credence,
+    // never by the edge. NULL passes (it un-assesses the edge, which is a
+    // legitimate write) and 0 passes (assessed, carries nothing). The number
+    // test is first and separate because a range test alone cannot refuse a
+    // non-number: every NaN comparison is false, and bound to a REAL column
+    // better-sqlite3 stores a string as TEXT and turns NaN into NULL — which
+    // would silently un-assess an edge instead of refusing the write, and hide
+    // it from the recovery sweep, since that sweep only looks for a NULL
+    // contribution.
+    if (
+      writtenBeliefEvidenceSupport != null &&
+      (typeof writtenBeliefEvidenceSupport !== 'number' ||
+        !Number.isFinite(writtenBeliefEvidenceSupport) ||
+        writtenBeliefEvidenceSupport < 0 ||
+        writtenBeliefEvidenceSupport > 1)
+    ) {
+      throw new Error(
+        `belief_evidence_support must be a number between 0 and 1 (got ${String(writtenBeliefEvidenceSupport)}). ` +
+          'Support is unsigned; a contradicting source is expressed by that source node\'s negative belief_credence.'
+      );
+    }
+
     // If explanation changes, re-infer classification and write full EdgeContext
     if (Object.prototype.hasOwnProperty.call(updates, 'context') && updates.context && typeof updates.context === 'object') {
       const incomingContext = updates.context as Partial<EdgeContext> & { explanation?: unknown };
@@ -536,6 +582,61 @@ export class EdgeService {
       throw new Error(`Failed to retrieve updated edge with ID ${id}`);
     }
 
+    // Evidence hook: any write to the support must regrade the node this edge
+    // points at, which is why the row is re-read above before returning — an
+    // update receives only an id, so to_node_id has to be loaded to be
+    // regraded. Without this the edge keeps the belief_evidence_contribution
+    // stamped from the OLD support: stale and still NON-NULL, so invisible to
+    // beliefRecoveryService (which finds ungraded evidence by looking for a
+    // NULL contribution), leaving the target's credence wrong permanently
+    // rather than until the next sweep. A correction to exactly 0 regrades:
+    // assessed-carries-nothing is a recorded judgement, not an absence of one.
+    // Un-assessing to NULL regrades too, from the evidence that is LEFT — and
+    // when nothing is left recomputeNodeBelief clears the credence to NULL,
+    // because a node with no evidence is ungraded rather than balanced at 0.
+    // Rewording an explanation is NOT new evidence and deliberately regrades
+    // nothing. Exactly ONE target ever needs regrading, because a support
+    // write cannot swap the edge's direction today — swaps happen only on the
+    // context.explanation inference path above. If a support write ever gains
+    // that power, both the old and the new target would need it.
+    if (updateWritesBeliefEvidenceSupport) {
+      // An edge that is no longer evidence must not keep a contribution: it
+      // would be a lying column, and a trap — were support later restored, the
+      // recovery sweep would read the surviving stamp as already graded and
+      // skip the edge. The stamp belongs to the edge, so the write that
+      // invalidates it clears it: recomputeNodeBelief cannot, because its query
+      // selects only edges whose support IS NOT NULL, putting an edge whose
+      // support has just gone NULL outside its result set for good. Cleared on
+      // THIS edge alone, so the other edges pointing at the same node keep
+      // their own contributions, and cleared BEFORE the regrade so the
+      // recompute cannot re-observe a stale stamp.
+      if (updateUnassessesBeliefEvidence) {
+        sqlite
+          .prepare('UPDATE edges SET belief_evidence_contribution = NULL WHERE id = ?')
+          .run(id);
+      }
+      await recomputeNodeBelief(updatedEdge.to_node_id);
+
+      // The edge as it stands once the regrade has finished with it. Everything
+      // above — the clear on the un-assessment path, and the re-stamp the
+      // recompute performs — wrote to THIS row after it was read, so the object
+      // read above now disagrees with the database about
+      // belief_evidence_contribution. Re-read rather than patching that one
+      // field onto the object in hand: the guarantee being made is that the
+      // returned edge agrees with the row, and only reading the row can give
+      // that — a patched field would drift the moment anything else about
+      // grading changes. The read is deliberately AFTER the whole hook,
+      // including the clear, since a read between the clear and the recompute
+      // would only swap one stale value for another.
+      const regradedEdge = await this.getEdgeById(id);
+      if (!regradedEdge) {
+        throw new Error(`Failed to retrieve updated edge with ID ${id}`);
+      }
+      return regradedEdge;
+    }
+
+    // No regrade ran, so nothing has touched the row since it was read and
+    // there is nothing fresher to fetch.
     return updatedEdge;
   }
 

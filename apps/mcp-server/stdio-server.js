@@ -143,6 +143,13 @@ const getNodesOutputSchema = {
       source: z.string().nullable(),
       description: z.string().nullable(),
       link: z.string().nullable(),
+      // The node's own metadata bag, reported whole. NULL means nothing was
+      // ever recorded about the node, which is a different state from a bag
+      // written with no keys — so an absent bag stays null and is never
+      // reported as {}.
+      metadata: z.record(z.any()).nullable(),
+      // When the node was first written, alongside the last-write timestamp.
+      created_at: z.string(),
       updated_at: z.string()
     })
   )
@@ -218,6 +225,15 @@ const queryEdgesOutputSchema = {
       from_node_id: z.number(),
       to_node_id: z.number(),
       type: z.string().nullable(),
+      // Why the connection exists — the explanation every edge in this graph is
+      // required to be created with. Nullable because the mapping normalises a
+      // MISSING key to null and a stored NULL stays null; an edge with no
+      // explanation must never report an empty string, which would read as an
+      // explanation that was written and said nothing.
+      explanation: z.string().nullable(),
+      // When the edge was written. Nullable for the same reason: a row that
+      // arrives without the key normalises to null rather than to undefined.
+      created_at: z.string().nullable(),
       // Belief-engine evidence columns (fork addition), reported verbatim.
       // How strongly the from-node talks about the to-node: unsigned, 0..1.
       // NULL means the edge is not evidence at all.
@@ -233,7 +249,19 @@ const queryEdgesOutputSchema = {
 const updateEdgeInputSchema = {
   id: z.number().int().positive().describe('Edge ID to update'),
   explanation: z.string().min(1).describe('New explanation text (will re-infer relationship type)'),
-  confirmed_by_user: z.boolean().describe('Must be true. Only update the edge after the user explicitly confirmed the corrected relationship.')
+  confirmed_by_user: z.boolean().describe('Must be true. Only update the edge after the user explicitly confirmed the corrected relationship.'),
+  // Belief evidence field (fork addition): the same unsigned 0..1 support
+  // rah_create_edge accepts, so a support written once can be corrected later.
+  // The range is enforced here, before any request reaches the app. Omitting
+  // the field leaves the stored support exactly as it is; a support of 0 says
+  // the edge WAS assessed and carries nothing — a recorded judgement, never
+  // rejected.
+  belief_evidence_support: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe('Corrected support: how strongly the source node talks about the target node, as one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely to leave the edge\'s stored support unchanged.')
 };
 
 const updateEdgeOutputSchema = {
@@ -552,6 +580,11 @@ server.registerTool(
             source: result.node.source ?? null,
             description: result.node.description ?? null,
             link: result.node.link ?? null,
+            // The app already parses the metadata column into an object (or
+            // null). `?? null` normalises only a MISSING key, so "nothing ever
+            // recorded" stays null rather than becoming an empty bag.
+            metadata: result.node.metadata ?? null,
+            created_at: result.node.created_at,
             updated_at: result.node.updated_at
           });
         }
@@ -640,14 +673,18 @@ server.registerTool(
       content: [{ type: 'text', text: `Found ${edges.length} edge(s).` }],
       structuredContent: {
         count: edges.length,
-        // Both belief columns pass through verbatim. `?? null` normalises only
-        // a MISSING key to null; a stored NULL is already null and a real 0 is
-        // kept as 0, so an ungraded evidence edge never looks graded.
+        // The explanation, the creation timestamp and both belief columns pass
+        // through verbatim. `?? null` normalises only a MISSING key to null; a
+        // stored NULL is already null and a real 0 is kept as 0, so an ungraded
+        // evidence edge never looks graded and an unexplained edge never looks
+        // like one explained with an empty string.
         edges: edges.map(e => ({
           id: e.id,
           from_node_id: e.from_node_id,
           to_node_id: e.to_node_id,
           type: e.type ?? e.source ?? null,
+          explanation: e.explanation ?? null,
+          created_at: e.created_at ?? null,
           belief_evidence_support: e.belief_evidence_support ?? null,
           belief_evidence_contribution: e.belief_evidence_contribution ?? null
         }))
@@ -664,17 +701,27 @@ server.registerTool(
     inputSchema: updateEdgeInputSchema,
     outputSchema: updateEdgeOutputSchema
   },
-  async ({ id, explanation, confirmed_by_user }) => {
+  async ({ id, explanation, confirmed_by_user, belief_evidence_support }) => {
     if (!confirmed_by_user) {
       throw new Error('rah_update_edge requires explicit user confirmation before writing the corrected relationship.');
     }
 
+    const payload = {
+      context: { explanation: explanation.trim(), created_via: 'mcp' },
+      confirmed_by_user: true
+    };
+
+    // Belief evidence pass-through (fork addition): include the corrected
+    // support only when the caller supplied one, so an explanation-only
+    // correction still sends an evidence-free payload rather than turning a
+    // plain relationship edge into assessed evidence. Sent TOP-LEVEL, not
+    // inside context, because it belongs to the edges column and not to the
+    // app-owned context JSON.
+    if (belief_evidence_support !== undefined) payload.belief_evidence_support = belief_evidence_support;
+
     const result = await callRaHApi(`/api/edges/${id}`, {
       method: 'PUT',
-      body: JSON.stringify({
-        context: { explanation: explanation.trim(), created_via: 'mcp' },
-        confirmed_by_user: true
-      })
+      body: JSON.stringify(payload)
     });
 
     return {
