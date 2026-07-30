@@ -1,13 +1,91 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { edgeService } from '@/services/database';
 import { validateEdgeExplanation } from '@/services/database/quality';
+import type { BeliefEdgeReadDirection, BeliefEdgeReadFilter } from '@/types/database';
 
 export const runtime = 'nodejs';
 
-export async function GET() {
+// The three sides an edge read can ask for, exactly as the read path names
+// them. Any other value is rejected rather than silently widened to 'both'.
+const BELIEF_EDGE_READ_DIRECTIONS: BeliefEdgeReadDirection[] = ['into', 'out_of', 'both'];
+
+// Outcome of reading the edge-read filter off a query string: either the
+// filter to hand to edgeService.getEdges, or the message explaining why the
+// query string could not become one. An unreadable parameter is an error, not
+// something to ignore — a silently ignored filter reads the whole graph.
+type BeliefEdgeReadFilterParseResult =
+  | { filter: BeliefEdgeReadFilter; error?: undefined }
+  | { filter?: undefined; error: string };
+
+// Read one non-negative whole-number query parameter (limit, offset). Returns
+// undefined when the parameter is absent or blank, and an error message when
+// it is present but not a non-negative integer.
+function parseNonNegativeIntegerParam(
+  rawValue: string | null,
+  paramName: string
+): { value?: number; error?: string } {
+  if (rawValue === null || rawValue.trim() === '') return {};
+  const parsedValue = Number(rawValue);
+  if (!Number.isInteger(parsedValue) || parsedValue < 0) {
+    return { error: `Invalid ${paramName}: must be a whole number of 0 or more (got "${rawValue}")` };
+  }
+  return { value: parsedValue };
+}
+
+// Turn GET /api/edges query parameters into the filter the edge read runs on:
+// nodeId, direction, limit and offset, with limit and offset as numbers rather
+// than raw strings. An omitted direction becomes the literal 'both', so the
+// default is visible in the filter the service receives.
+function parseBeliefEdgeReadFilter(requestUrl: string): BeliefEdgeReadFilterParseResult {
+  const searchParams = new URL(requestUrl).searchParams;
+  const filter: BeliefEdgeReadFilter = {};
+
+  const rawNodeId = searchParams.get('nodeId');
+  if (rawNodeId !== null && rawNodeId.trim() !== '') {
+    const parsedNodeId = Number(rawNodeId);
+    if (!Number.isInteger(parsedNodeId) || parsedNodeId <= 0) {
+      return { error: `Invalid nodeId: must be a positive whole number (got "${rawNodeId}")` };
+    }
+    filter.nodeId = parsedNodeId;
+  }
+
+  const rawDirection = searchParams.get('direction');
+  if (rawDirection === null || rawDirection.trim() === '') {
+    filter.direction = 'both';
+  } else if (BELIEF_EDGE_READ_DIRECTIONS.includes(rawDirection as BeliefEdgeReadDirection)) {
+    filter.direction = rawDirection as BeliefEdgeReadDirection;
+  } else {
+    return {
+      error: `Invalid direction: must be one of ${BELIEF_EDGE_READ_DIRECTIONS.join(', ')} (got "${rawDirection}")`,
+    };
+  }
+
+  const parsedLimit = parseNonNegativeIntegerParam(searchParams.get('limit'), 'limit');
+  if (parsedLimit.error) return { error: parsedLimit.error };
+  if (parsedLimit.value !== undefined) filter.limit = parsedLimit.value;
+
+  const parsedOffset = parseNonNegativeIntegerParam(searchParams.get('offset'), 'offset');
+  if (parsedOffset.error) return { error: parsedOffset.error };
+  if (parsedOffset.value !== undefined) filter.offset = parsedOffset.value;
+
+  return { filter };
+}
+
+export async function GET(request: NextRequest) {
   try {
-    const edges = await edgeService.getEdges();
-    
+    // Validate before reading: a rejected filter must never reach SQL.
+    const parsedEdgeReadFilter = parseBeliefEdgeReadFilter(request.url);
+    if (parsedEdgeReadFilter.error) {
+      return NextResponse.json({
+        success: false,
+        error: parsedEdgeReadFilter.error
+      }, { status: 400 });
+    }
+
+    // Both belief columns travel on the rows the service returns and are
+    // serialised verbatim, so a NULL belief_evidence_contribution stays NULL.
+    const edges = await edgeService.getEdges(parsedEdgeReadFilter.filter);
+
     return NextResponse.json({
       success: true,
       data: edges,

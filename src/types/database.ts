@@ -50,6 +50,38 @@ export interface Edge {
   context?: any;
   source: EdgeSource;
   created_at: string;
+  // Belief-engine evidence columns (fork addition). Both are read straight off
+  // the edges row, and NULL is a meaningful state on each of them.
+  // How strongly the from-node talks about the to-node: one UNSIGNED number in
+  // [0, 1]. NULL means the edge is not evidence at all (a plain relationship
+  // edge, never assessed); 0 means it was assessed and carries nothing.
+  belief_evidence_support?: number | null;
+  // What this edge adds to its target: the from-node's signed belief_credence
+  // × this edge's support, stamped by the belief engine. NULL means the edge
+  // has never been graded — the state the recovery sweep looks for — so it
+  // must never be reported as 0.
+  belief_evidence_contribution?: number | null;
+}
+
+// Which side of a node an edge read is asking for. 'into' is the evidence
+// side: those edges point AT the node and feed its belief_credence. 'out_of'
+// is the mirror side, the edges the node itself supplies. 'both' is either
+// side and is the default.
+export type BeliefEdgeReadDirection = 'into' | 'out_of' | 'both';
+
+// The filter an edge read accepts. Applied IN SQL by every edge read, so both
+// belief columns of the selected page reach the caller untouched. The
+// parameter names are the ones the API route and both MCP doors use.
+export interface BeliefEdgeReadFilter {
+  // Only edges touching this node; omitted means the whole edges table.
+  nodeId?: number;
+  // Which side of nodeId to read; omitted means 'both'.
+  direction?: BeliefEdgeReadDirection;
+  // Page size. Omitted means no cap at all — an unfiltered read still returns
+  // every edge, which the in-memory queryEdge tool depends on.
+  limit?: number;
+  // How many edges to skip before the page begins; omitted means 0.
+  offset?: number;
 }
 
 export type EdgeSource = 'user' | 'ai_similarity' | 'helper_name';

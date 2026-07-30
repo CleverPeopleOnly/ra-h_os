@@ -16,7 +16,7 @@
     "build": "cross-env NEXT_PUBLIC_DEPLOYMENT_MODE=local NEXT_PUBLIC_ENABLE_SUBSCRIPTION_BACKEND=false NODE_OPTIONS=--dns-result-order=ipv4first next build",
     "start": "cross-env NEXT_PUBLIC_DEPLOYMENT_MODE=local NEXT_PUBLIC_ENABLE_SUBSCRIPTION_BACKEND=false NODE_OPTIONS=--dns-result-order=ipv4first next start",
     "lint": "next lint",
-    "lint:belief-surface": "eslint src/services/belief tests/unit/belief tests/unit/mcp/standalone-belief-surface.test.ts tests/unit/mcp/stdio-server-evidence.test.ts tests/unit/mcp/stdio-server-support-range.test.ts tests/unit/api/edgesRouteEvidence.test.ts",
+    "lint:belief-surface": "eslint src/services/belief tests/unit/belief tests/unit/mcp/standalone-belief-surface.test.ts tests/unit/mcp/standalone-belief-edge-reads.test.ts tests/unit/mcp/stdio-server-evidence.test.ts tests/unit/mcp/stdio-server-support-range.test.ts tests/unit/mcp/stdio-server-belief-edge-reads.test.ts tests/unit/api/edgesRouteEvidence.test.ts tests/unit/api/edgesRouteBeliefEdgeReads.test.ts",
     "type-check": "tsc --noEmit",
     "setup": "npm install",
     "sqlite:backup": "bash scripts/database/sqlite-backup.sh",

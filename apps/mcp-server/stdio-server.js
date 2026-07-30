@@ -192,7 +192,22 @@ const createEdgeOutputSchema = {
 // rah_query_edges schemas
 const queryEdgesInputSchema = {
   nodeId: z.number().int().positive().optional().describe('Find edges connected to this node'),
-  limit: z.number().min(1).max(50).optional().describe('Max edges to return')
+  // Which side of nodeId to read. Declared as an enum so an unknown value is
+  // rejected by the schema before the handler runs — no request reaches the
+  // app — and so the three accepted values are discoverable.
+  direction: z
+    .enum(['into', 'out_of', 'both'])
+    .optional()
+    .describe('Which side of nodeId to read: "into" returns edges whose to_node_id is the node — the evidence feeding its belief_credence; "out_of" returns edges whose from_node_id is the node; "both" returns either side. Defaults to "both".'),
+  limit: z.number().min(1).max(50).optional().describe('Max edges to return'),
+  // Page position. min(0) makes a negative offset a schema rejection, since
+  // there is no page before the first one.
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('How many edges to skip before the page begins, over the order created_at DESC then id DESC. 0 is the first page.')
 };
 
 const queryEdgesOutputSchema = {
@@ -203,7 +218,13 @@ const queryEdgesOutputSchema = {
       from_node_id: z.number(),
       to_node_id: z.number(),
       type: z.string().nullable(),
-      weight: z.number().nullable()
+      // Belief-engine evidence columns (fork addition), reported verbatim.
+      // How strongly the from-node talks about the to-node: unsigned, 0..1.
+      // NULL means the edge is not evidence at all.
+      belief_evidence_support: z.number().nullable(),
+      // The from-node's credence × this edge's support, stamped by the app's
+      // belief engine. NULL means never graded, and stays NULL — never 0.
+      belief_evidence_contribution: z.number().nullable()
     })
   )
 };
@@ -601,10 +622,14 @@ server.registerTool(
     inputSchema: queryEdgesInputSchema,
     outputSchema: queryEdgesOutputSchema
   },
-  async ({ nodeId, limit = 25 }) => {
+  // direction defaults to 'both' — either side of the node — and is always
+  // sent, so the side being read is explicit in the request the app receives.
+  async ({ nodeId, direction = 'both', limit = 25, offset = 0 }) => {
     const params = new URLSearchParams();
     if (nodeId) params.set('nodeId', String(nodeId));
+    params.set('direction', direction);
     params.set('limit', String(Math.min(Math.max(limit, 1), 50)));
+    params.set('offset', String(offset));
 
     const result = await callRaHApi(`/api/edges?${params.toString()}`, {
       method: 'GET'
@@ -615,12 +640,16 @@ server.registerTool(
       content: [{ type: 'text', text: `Found ${edges.length} edge(s).` }],
       structuredContent: {
         count: edges.length,
+        // Both belief columns pass through verbatim. `?? null` normalises only
+        // a MISSING key to null; a stored NULL is already null and a real 0 is
+        // kept as 0, so an ungraded evidence edge never looks graded.
         edges: edges.map(e => ({
           id: e.id,
           from_node_id: e.from_node_id,
           to_node_id: e.to_node_id,
           type: e.type ?? e.source ?? null,
-          weight: e.weight ?? null
+          belief_evidence_support: e.belief_evidence_support ?? null,
+          belief_evidence_contribution: e.belief_evidence_contribution ?? null
         }))
       }
     };

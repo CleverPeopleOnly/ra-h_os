@@ -159,7 +159,22 @@ const updateEdgeInputSchema = {
 
 const queryEdgesInputSchema = {
   nodeId: z.number().int().positive().optional().describe('Find edges for this node'),
-  limit: z.number().min(1).max(50).optional().describe('Max edges (default 25)')
+  // Which side of nodeId to read. Declared as an enum so an unknown value is
+  // rejected by the schema before the read runs, and so the three accepted
+  // values are discoverable.
+  direction: z
+    .enum(['into', 'out_of', 'both'])
+    .optional()
+    .describe('Which side of nodeId to read: "into" returns edges whose to_node_id is the node — the evidence feeding its belief_credence; "out_of" returns edges whose from_node_id is the node; "both" returns either side. Defaults to "both".'),
+  limit: z.number().min(1).max(50).optional().describe('Max edges (default 25)'),
+  // Page position. min(0) makes a negative offset a schema rejection, since
+  // there is no page before the first one.
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('How many edges to skip before the page begins, over the order created_at DESC then id DESC. 0 is the first page.')
 };
 
 const readSkillInputSchema = {
@@ -580,25 +595,36 @@ async function main() {
     'queryEdge',
     {
       title: 'Query RA-H edges',
-      description: 'Find edges/connections. Optionally filter by nodeId to see all connections for a specific node. Returns up to 50 edges (default 25) with edge IDs, connected node IDs, and explanations. Use when exploring how nodes relate, checking for existing connections before creating edges, or traversing the graph from a hub node.',
+      description: 'Find edges/connections. Optionally filter by nodeId, and by direction to read one side of that node: "into" is the evidence feeding the node\'s belief_credence, "out_of" is the edges it supplies, "both" is either side. Returns up to 50 edges (default 25) from the page position given by offset, each with its edge ID, connected node IDs, explanation and both belief evidence columns. Use when exploring how nodes relate, checking for existing connections before creating edges, or traversing the graph from a hub node.',
       inputSchema: queryEdgesInputSchema
     },
-    async ({ nodeId, limit = 25 }) => {
+    // direction defaults to 'both' — either side of the node — matching the
+    // behaviour this door already had before direction existed.
+    async ({ nodeId, direction = 'both', limit = 25, offset = 0 }) => {
       const edges = edgeService.getEdges({
         nodeId,
-        limit: Math.min(Math.max(limit, 1), 50)
+        direction,
+        limit: Math.min(Math.max(limit, 1), 50),
+        offset
       });
 
       return {
         content: [{ type: 'text', text: `Found ${edges.length} edge(s).` }],
         structuredContent: {
           count: edges.length,
+          // Both belief columns pass through verbatim. `?? null` normalises
+          // only a MISSING key to null; a stored NULL is already null and a
+          // real 0 stays 0. This door stores evidence but never grades, so
+          // every edge it writes has a NULL contribution — reporting that as 0
+          // would make its own writes look graded and worthless.
           edges: edges.map(e => ({
             id: e.id,
             from_node_id: e.from_node_id,
             to_node_id: e.to_node_id,
             type: e.context?.type ?? null,
-            explanation: e.explanation ?? e.context?.explanation ?? null
+            explanation: e.explanation ?? e.context?.explanation ?? null,
+            belief_evidence_support: e.belief_evidence_support ?? null,
+            belief_evidence_contribution: e.belief_evidence_contribution ?? null
           }))
         }
       };
