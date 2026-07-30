@@ -90,7 +90,7 @@ export interface TempBeliefDatabase {
   // fixed reference, because reopenBeliefDatabase() replaces the client.
   readonly sqlite: import('@/services/database/sqlite-client').SQLiteClient;
   // Insert a node fixture. beliefCredence (if given) is written straight into
-  // nodes.belief_credence — for a source node that IS the weight its evidence
+  // nodes.belief_credence — for a source node that IS the credence its evidence
   // carries; omit it for a node nobody has graded (credence NULL).
   insertNodeFixture(options: { title: string; beliefCredence?: number }): number;
   // Insert a node whose credence is ASSERTED by a human rather than derived

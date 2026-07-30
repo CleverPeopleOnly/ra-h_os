@@ -192,42 +192,97 @@ async function autoInferEdge(params: {
   }
 }
 
+// One value bound to a placeholder of an edge-read WHERE clause: a node id or
+// an edge source string.
+type BoundEdgeReadValue = number | string;
+
+// The SQL narrowing one BeliefEdgeReadFilter describes: the WHERE clause text
+// and the values its placeholders take. Built once and used by both the page
+// read and the matching count, which is what stops the two from drifting apart
+// and reporting a total that does not describe the page beside it.
+interface BeliefEdgeReadNarrowing {
+  // The clause to splice straight after the table name, already prefixed with
+  // ' WHERE ', or the empty string when the filter narrows nothing.
+  whereSql: string;
+  // The bound values, in the order their placeholders appear in whereSql.
+  boundValues: BoundEdgeReadValue[];
+}
+
+// Turn an edge-read filter's narrowing half (node, side of node, edge source)
+// into one WHERE clause. The paging half (limit, offset) is deliberately NOT
+// here: a page is a property of one read, while this clause defines the set
+// being read — the count needs the clause without the paging.
+function buildBeliefEdgeReadNarrowing(
+  edgeReadFilter: BeliefEdgeReadFilter
+): BeliefEdgeReadNarrowing {
+  const { nodeId, direction = 'both', edgeSource } = edgeReadFilter;
+  const whereClauses: string[] = [];
+  const boundValues: BoundEdgeReadValue[] = [];
+
+  if (nodeId !== undefined) {
+    if (direction === 'into') {
+      // The evidence side: edges pointing AT the node.
+      whereClauses.push('to_node_id = ?');
+      boundValues.push(nodeId);
+    } else if (direction === 'out_of') {
+      whereClauses.push('from_node_id = ?');
+      boundValues.push(nodeId);
+    } else {
+      whereClauses.push('(from_node_id = ? OR to_node_id = ?)');
+      boundValues.push(nodeId, nodeId);
+    }
+  }
+
+  if (edgeSource !== undefined) {
+    whereClauses.push('source = ?');
+    boundValues.push(edgeSource);
+  }
+
+  return {
+    whereSql: whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '',
+    boundValues,
+  };
+}
+
+// One edges row exactly as SQLite hands it back. The only difference from the
+// Edge callers receive is the context column, which is stored as JSON text.
+type StoredEdgeRow = Omit<Edge, 'context'> & { context?: string | null };
+
+// Turn a stored edges row into an Edge by parsing its context JSON. A context
+// that will not parse is passed through as the raw string rather than dropped,
+// so a caller can still see what is in the column.
+function parseStoredEdgeRow(row: StoredEdgeRow): Edge {
+  const storedContext = row.context;
+  if (typeof storedContext !== 'string') {
+    return { ...row, context: storedContext };
+  }
+  try {
+    return { ...row, context: JSON.parse(storedContext) };
+  } catch {
+    return { ...row, context: storedContext };
+  }
+}
+
 export class EdgeService {
-  // Read edges, optionally narrowed to one node, one side of that node, and
-  // one page. Every part of the filter is applied IN SQL, so a capped page is
-  // a page of the edges the caller asked for rather than a capped page of the
-  // whole table trimmed afterwards. SELECT * keeps both belief columns
-  // (belief_evidence_support, belief_evidence_contribution) on every row.
-  // The order is created_at DESC, id DESC: created_at alone is not a total
-  // order — rows written in the same millisecond tie, and tied rows can be
-  // returned in any order, which would let two pages overlap or skip a row.
-  // An omitted limit means no cap, so an unfiltered read still returns
-  // everything.
+  // Read edges, optionally narrowed to one node, one side of that node, one
+  // edge source, and one page. Every part of the filter is applied IN SQL, so a
+  // capped page is a page of the edges the caller asked for rather than a
+  // capped page of the whole table trimmed afterwards. SELECT * keeps both
+  // belief columns (belief_evidence_support, belief_evidence_contribution) on
+  // every row. The order is created_at DESC, id DESC: created_at alone is not a
+  // total order — rows written in the same millisecond tie, and tied rows can
+  // be returned in any order, which would let two pages overlap or skip a row.
+  // An omitted limit means no cap.
   async getEdges(edgeReadFilter: BeliefEdgeReadFilter = {}): Promise<Edge[]> {
     const sqlite = getSQLiteClient();
-    const { nodeId, direction = 'both', limit, offset } = edgeReadFilter;
+    const { limit, offset } = edgeReadFilter;
 
-    // WHERE clause and its bound values, built together so they stay in step.
-    const whereClauses: string[] = [];
-    const queryParams: number[] = [];
+    // The same WHERE the matching count uses, so a page and its total can
+    // never be narrowed differently.
+    const narrowing = buildBeliefEdgeReadNarrowing(edgeReadFilter);
+    const queryParams: BoundEdgeReadValue[] = [...narrowing.boundValues];
 
-    if (nodeId !== undefined) {
-      if (direction === 'into') {
-        // The evidence side: edges pointing AT the node.
-        whereClauses.push('to_node_id = ?');
-        queryParams.push(nodeId);
-      } else if (direction === 'out_of') {
-        whereClauses.push('from_node_id = ?');
-        queryParams.push(nodeId);
-      } else {
-        whereClauses.push('(from_node_id = ? OR to_node_id = ?)');
-        queryParams.push(nodeId, nodeId);
-      }
-    }
-
-    let sql = 'SELECT * FROM edges';
-    if (whereClauses.length > 0) sql += ` WHERE ${whereClauses.join(' AND ')}`;
-    sql += ' ORDER BY created_at DESC, id DESC';
+    let sql = `SELECT * FROM edges${narrowing.whereSql} ORDER BY created_at DESC, id DESC`;
     if (limit !== undefined) {
       sql += ' LIMIT ?';
       queryParams.push(limit);
@@ -240,34 +295,16 @@ export class EdgeService {
       queryParams.push(offset);
     }
 
-    const result = sqlite.query<Edge>(sql, queryParams);
-    return result.rows.map((row: any) => {
-      let context: any = row.context;
-      if (typeof context === 'string') {
-        try {
-          context = JSON.parse(context);
-        } catch {
-          // Keep raw context string if JSON parsing fails.
-        }
-      }
-      return { ...row, context };
-    });
+    const result = sqlite.query<StoredEdgeRow>(sql, queryParams);
+    return result.rows.map(parseStoredEdgeRow);
   }
 
   async getEdgeById(id: number): Promise<Edge | null> {
     const sqlite = getSQLiteClient();
-    const result = sqlite.query<Edge>('SELECT * FROM edges WHERE id = ?', [id]);
-    const row: any = result.rows[0];
+    const result = sqlite.query<StoredEdgeRow>('SELECT * FROM edges WHERE id = ?', [id]);
+    const row = result.rows[0];
     if (!row) return null;
-    let context: any = row.context;
-    if (typeof context === 'string') {
-      try {
-        context = JSON.parse(context);
-      } catch {
-        // Keep raw context string if JSON parsing fails.
-      }
-    }
-    return { ...row, context };
+    return parseStoredEdgeRow(row);
   }
 
   async createEdge(edgeData: EdgeData): Promise<Edge> {
@@ -342,11 +379,13 @@ export class EdgeService {
       created_via: createdVia,
     };
 
-    // Whether this edge carries belief-engine evidence for the target node: a
-    // non-NULL unsigned support value is the one thing that makes an edge
-    // evidence (0 counts — assessed, carries nothing).
-    // Evidence lives in a dedicated column; the context JSON stays app-owned.
-    const hasBeliefEvidenceFields = edgeData.belief_evidence_support != null;
+    // Whether this edge is evidence the belief engine must grade, which decides
+    // one thing only: whether writing it regrades the node it points at. A
+    // non-NULL unsigned support is what makes an edge evidence (0 counts —
+    // assessed, carries nothing; NULL means never assessed, so nothing to
+    // grade). Evidence lives in a dedicated column; the context JSON stays
+    // app-owned.
+    const edgeIsGradeableBeliefEvidence = edgeData.belief_evidence_support != null;
 
     const result = sqlite.prepare(`
       INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
@@ -370,7 +409,7 @@ export class EdgeService {
     }
 
     // Evidence hook: a new evidence edge must regrade the node it points at.
-    if (hasBeliefEvidenceFields) {
+    if (edgeIsGradeableBeliefEvidence) {
       await recomputeNodeBelief(finalToId);
     }
 
@@ -658,9 +697,22 @@ export class EdgeService {
     return result.rows.length > 0;
   }
 
-  async getEdgeCount(): Promise<number> {
+  // How many edges match an edge-read filter's narrowing, ignoring its limit
+  // and offset — a total is not a page. It is a separate COUNT(*) query rather
+  // than the length of a row read on purpose: reading the matching rows just to
+  // measure them is the uncapped read this service exists to avoid, and it
+  // fails hardest exactly where the number matters (a hub node in a graph of
+  // 100,000s of edges). COUNT(*) with the SAME WHERE clause getEdges builds is
+  // answered from idx_edges_from / idx_edges_to without materialising a row.
+  // An empty filter counts the whole table, which is what the callers that
+  // pass nothing have always asked for.
+  async getEdgeCount(edgeReadFilter: BeliefEdgeReadFilter = {}): Promise<number> {
     const sqlite = getSQLiteClient();
-    const result = sqlite.query('SELECT COUNT(*) as count FROM edges');
+    const narrowing = buildBeliefEdgeReadNarrowing(edgeReadFilter);
+    const result = sqlite.query(
+      `SELECT COUNT(*) as count FROM edges${narrowing.whereSql}`,
+      narrowing.boundValues
+    );
     return Number(result.rows[0].count);
   }
 

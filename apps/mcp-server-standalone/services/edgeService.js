@@ -2,6 +2,37 @@
 
 const { query, getDb, runWithBusyRetry } = require('./sqlite-client');
 
+// Connections already proven to have the belief evidence column on their edges
+// table. Only the POSITIVE answer is cached, and that is what makes the cache
+// safe: a column that exists is never dropped, while a MISSING column can
+// appear at any time (a migration — cli.js ensureMinimumSchema, run by init-db
+// / setup / doctor — adds it), so a cached "missing" could go stale and a
+// cached "present" cannot. Keyed weakly by the connection object so a replaced
+// connection takes nothing with it.
+const dbConnectionsWithBeliefSupportColumn = new WeakSet();
+
+/**
+ * Whether the edges table of the OPEN database has the belief_evidence_support
+ * column — i.e. whether this database carries the belief schema at all.
+ * initDatabase() opens an existing file and sets pragmas only; it never
+ * migrates, so a server can perfectly well be pointed at a database written
+ * before the fork added belief.
+ *
+ * @param {import('better-sqlite3').Database} db The open connection to inspect.
+ * @returns {boolean} True when the column exists and evidence can be stored.
+ */
+function edgesTableHasBeliefSupportColumn(db) {
+  if (dbConnectionsWithBeliefSupportColumn.has(db)) return true;
+
+  const edgesTableColumns = db.pragma('table_info(edges)');
+  const columnExists = edgesTableColumns.some(
+    (column) => column.name === 'belief_evidence_support'
+  );
+  if (columnExists) dbConnectionsWithBeliefSupportColumn.add(db);
+
+  return columnExists;
+}
+
 /**
  * Read edges, optionally narrowed to one node, one side of that node, and one
  * page. Every part of the filter is applied IN SQL, so a capped page is a page
@@ -101,12 +132,25 @@ function createEdge(edgeData) {
     created_via: 'mcp'
   };
 
-  // True when the caller supplied the belief evidence field; only then does
-  // the INSERT name the belief column, so plain relationship edges keep
-  // working against databases that predate the belief schema.
-  const hasBeliefEvidenceFields = belief_evidence_support !== undefined;
+  // Which INSERT is possible is a question about the DATABASE: only a database
+  // carrying the belief schema has a column to name. Asked before the write so
+  // a refusal leaves no row behind.
+  const tableHasBeliefSupportColumn = edgesTableHasBeliefSupportColumn(db);
 
-  const stmt = hasBeliefEvidenceFields
+  // What the caller asked to store is a separate question, and it decides only
+  // what gets bound.
+  const callerSuppliedBeliefEvidenceSupport = belief_evidence_support !== undefined;
+
+  if (callerSuppliedBeliefEvidenceSupport && !tableHasBeliefSupportColumn) {
+    throw new Error(
+      'This database predates the belief schema: its edges table is missing the ' +
+      'belief_evidence_support column, so the support on this edge cannot be stored. ' +
+      'Migrate the database first — run the init-db command (npx ra-h-mcp-server init-db) — ' +
+      'then write the evidence edge again. No edge was created.'
+    );
+  }
+
+  const stmt = tableHasBeliefSupportColumn
     ? db.prepare(`
         INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
                            belief_evidence_support)
@@ -117,7 +161,7 @@ function createEdge(edgeData) {
         VALUES (?, ?, ?, ?, ?, ?)
       `);
 
-  const result = runWithBusyRetry(() => hasBeliefEvidenceFields
+  const result = runWithBusyRetry(() => tableHasBeliefSupportColumn
       ? stmt.run(
           from_node_id,
           to_node_id,

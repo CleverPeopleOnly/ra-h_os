@@ -1,7 +1,13 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import { edgeService } from '@/services/database/edges';
+import type { BeliefEdgeReadFilter } from '@/types/database';
 import { formatNodeForChat } from '../infrastructure/nodeFormatter';
+
+// Page size used when the caller names none. It matches the input schema's
+// default so a direct execute() call is capped exactly as a schema-parsed agent
+// call is: no edge read here is ever uncapped.
+const DEFAULT_EDGE_PAGE_SIZE = 20;
 
 function truncateText(value: unknown, maxLength = 180): string | null {
   if (typeof value !== 'string') return null;
@@ -21,16 +27,14 @@ export const queryEdgeTool = tool({
       to_node_id: z.number().optional().describe('Get edges pointing to this specific node'),
       source: z.enum(['user', 'ai_similarity', 'helper_name']).optional().describe('Filter edges by their source type'),
       edge_id: z.number().optional().describe('Get a specific edge by its ID'),
-      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results to return')
+      limit: z.number().min(1).max(100).default(DEFAULT_EDGE_PAGE_SIZE).describe('Maximum number of results to return'),
+      offset: z.number().min(0).optional().describe('How many matching edges to skip before this page begins, for reading the next page of a set larger than limit')
     }).optional().describe('Filters to apply when querying edges')
   }),
   execute: async ({ filters = {} }) => {
     console.log('🔍 QueryEdge tool called with filters:', JSON.stringify(filters, null, 2));
     
     try {
-      let result;
-      let message = '';
-
       // Handle specific edge ID lookup
       if (filters.edge_id) {
         const edge = await edgeService.getEdgeById(filters.edge_id);
@@ -116,38 +120,94 @@ export const queryEdgeTool = tool({
         };
       }
 
-      // Handle directional queries or get all edges
-      const allEdges = await edgeService.getEdges();
-      let filteredEdges = allEdges;
+      // Handle directional queries, or a paged read of the whole table.
+      //
+      // The node side, the edge source, the page size and the page position all
+      // go to SQL: a page of one side of one node is an indexed read, whereas
+      // reading the table and narrowing it here is a memory failure mode on a
+      // graph with 100,000s of edges. A query naming no node is paged on the
+      // same terms — the largest read there is, so certainly capped — but is
+      // never narrowed to a node the caller did not ask for.
+      const requestedPageSize = filters.limit ?? DEFAULT_EDGE_PAGE_SIZE;
+      const requestedPagePosition = filters.offset ?? 0;
 
-      // Apply filters
-      if (filters.from_node_id) {
-        filteredEdges = filteredEdges.filter(edge => edge.from_node_id === filters.from_node_id);
-        message += `from node ${filters.from_node_id} `;
-      }
-      
-      if (filters.to_node_id) {
-        filteredEdges = filteredEdges.filter(edge => edge.to_node_id === filters.to_node_id);
-        message += `to node ${filters.to_node_id} `;
-      }
-      
-      if (filters.source) {
-        filteredEdges = filteredEdges.filter(edge => edge.source === filters.source);
-        message += `with source ${filters.source} `;
-      }
+      // The one node side SQL can narrow by. from_node_id asks for the edges
+      // LEAVING a node ('out_of'); to_node_id asks for the edges pointing AT it
+      // ('into'), which is the evidence side feeding that node's credence.
+      const nodeSideOfEdgeRead: Pick<BeliefEdgeReadFilter, 'nodeId' | 'direction'> =
+        filters.from_node_id != null
+          ? { nodeId: filters.from_node_id, direction: 'out_of' }
+          : filters.to_node_id != null
+            ? { nodeId: filters.to_node_id, direction: 'into' }
+            : {};
 
-      // Apply limit
-      const limitedEdges = filteredEdges.slice(0, filters.limit || 20);
+      const edgeReadFilter: BeliefEdgeReadFilter = {
+        ...nodeSideOfEdgeRead,
+        ...(filters.source ? { edgeSource: filters.source } : {}),
+        limit: requestedPageSize,
+        ...(filters.offset != null ? { offset: filters.offset } : {}),
+      };
+
+      const edgePageFromSql = await edgeService.getEdges(edgeReadFilter);
+
+      // The one narrowing SQL cannot express: a query naming BOTH endpoints
+      // gives the SQL filter one node side, so the other endpoint is checked
+      // here. Edge source is re-checked in the same pass — SQL has already
+      // applied it, so this is idempotent, and keeping both residual checks in
+      // one place means the page is narrowed once rather than in two styles.
+      const narrowedEdgePage = edgePageFromSql.filter(edge => {
+        if (filters.from_node_id != null && edge.from_node_id !== filters.from_node_id) return false;
+        if (filters.to_node_id != null && edge.to_node_id !== filters.to_node_id) return false;
+        if (filters.source && edge.source !== filters.source) return false;
+        return true;
+      });
+
+      // How many edges match the query in total, which is a different fact from
+      // the page size: an agent deciding whether to ask for another page needs
+      // the total, and a page past the end must still report it or the agent
+      // will read "no rows here" as "this node has no evidence".
+      //
+      // A page SHORTER than the size asked for has already reached the end of
+      // the matching set, so its own size settles the total and no second query
+      // is needed. That inference only holds while every predicate reached SQL,
+      // so it is skipped when the residual narrowing above removed anything;
+      // and an EMPTY page proves nothing unless it started at the beginning.
+      const sqlPageStoppedShortOfItsCap = edgePageFromSql.length < requestedPageSize;
+      const residualNarrowingRemovedNothing = narrowedEdgePage.length === edgePageFromSql.length;
+      const matchingSetEndedInsideThisPage =
+        sqlPageStoppedShortOfItsCap &&
+        residualNarrowingRemovedNothing &&
+        (edgePageFromSql.length > 0 || requestedPagePosition === 0);
+
+      const matchingEdgeCount = matchingSetEndedInsideThisPage
+        ? requestedPagePosition + edgePageFromSql.length
+        : residualNarrowingRemovedNothing
+          ? await edgeService.getEdgeCount(edgeReadFilter)
+          // A second endpoint was narrowed here, so SQL cannot count the
+          // matching set: the tool can only speak for the page it read.
+          : narrowedEdgePage.length;
+
+      // What the query was about, for the message: which side of which node,
+      // and which edge source, in the caller's own terms.
+      const edgeReadDescription = [
+        filters.from_node_id != null ? `out of node ${filters.from_node_id}` : '',
+        filters.to_node_id != null ? `into node ${filters.to_node_id}` : '',
+        filters.source ? `with source ${filters.source}` : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
 
       return {
         success: true,
         data: {
-          edges: limitedEdges,
-          count: filteredEdges.length,
-          total_available: allEdges.length,
+          edges: narrowedEdgePage,
+          // How many edges are in THIS page.
+          returned_edge_count: narrowedEdgePage.length,
+          // How many edges match the query at all, across every page.
+          matching_edge_count: matchingEdgeCount,
           filters_applied: filters
         },
-        message: `Found ${filteredEdges.length} edges ${message}`.trim()
+        message: `Found ${matchingEdgeCount} edge(s)${edgeReadDescription ? ` ${edgeReadDescription}` : ''}, showing ${narrowedEdgePage.length}.`
       };
     } catch (error) {
       console.error('QueryEdge tool error:', error);
@@ -156,7 +216,14 @@ export const queryEdgeTool = tool({
         error: error instanceof Error ? error.message : 'Failed to query edges',
         data: {
           edges: [],
-          count: 0,
+          // No page was returned, which is the one count a failed read can
+          // state truthfully. There is deliberately NO matching_edge_count
+          // here: the read that would have measured the matching set is the
+          // read that just failed, so any number would be invented — and 0
+          // would tell the agent the query matches nothing, which is the exact
+          // misreading the two separate counts exist to prevent. An absent key
+          // says "unknown"; a 0 would say "none".
+          returned_edge_count: 0,
           filters_applied: filters
         }
       };
