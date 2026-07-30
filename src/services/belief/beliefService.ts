@@ -4,6 +4,10 @@
  * belief_computed_at), stamps each evidence edge's
  * belief_evidence_contribution, and appends a belief_movements row
  * whenever the credence actually changed.
+ *
+ * A source is just a node: its influence over the evidence it supplies IS its
+ * own nodes.belief_credence — the same number and the same word as the belief
+ * of any other node.
  */
 
 import { getSQLiteClient } from '@/services/database/sqlite-client';
@@ -11,15 +15,15 @@ import {
   beliefGradingPolicyV1,
   type BeliefEvidenceContribution,
 } from '@/services/belief/beliefGradingPolicy';
-import { getTrustScore } from '@/services/belief/sourceTrustService';
 
-// Signed effective contribution (support × the source's trust score) stamped
-// on one evidence edge during a recompute.
+// Signed effective contribution (the source node's credence × the edge's
+// unsigned support) stamped on one evidence edge during a recompute.
 export interface BeliefEdgeContribution {
   // The evidence edge this contribution belongs to.
   edgeId: number;
-  // support × the source's trust score; negative when the edge's support is
-  // negative, because support is the only signed term in the product.
+  // The source node's credence × the edge's support; negative exactly when
+  // the source's credence is negative, because credence is the only signed
+  // term in the product (support is unsigned, 0..1).
   effectiveContribution: number;
 }
 
@@ -35,7 +39,7 @@ export interface BeliefMovementRecord {
 
 // Full outcome of one recomputeNodeBelief call.
 export interface BeliefRecomputeResult {
-  // New credence, or null when the node has no evidence edges (ungraded).
+  // New credence, or null when the node has no counted evidence (ungraded).
   beliefCredence: number | null;
   // Movement appended by this recompute, or null when nothing changed.
   movement: BeliefMovementRecord | null;
@@ -44,88 +48,101 @@ export interface BeliefRecomputeResult {
 }
 
 // One incoming evidence edge row as read for grading, joined with the
-// from-node's metadata JSON (where trustOriginKey lives).
+// from-node's own credence — the weight the edge's evidence carries.
 interface EvidenceEdgeRow {
   id: number;
-  // How this edge bears on its target, as one signed number in -1..+1:
-  // positive supports the target, negative contradicts it.
+  // How strongly the source node talks about the target, unsigned 0..1.
+  // Which way the evidence cuts comes from the source node's credence,
+  // never from this number.
   belief_evidence_support: number;
-  from_node_metadata: string | null;
+  // The source node's own credence; NULL when nobody has graded that node.
+  from_node_belief_credence: number | null;
+}
+
+// The belief state a recompute finds on its target before writing anything:
+// the credence the node currently holds, and whether a human asserted that
+// credence by hand (in which case the recompute leaves it alone).
+interface BeliefStateRowBeforeRecompute {
+  belief_credence: number | null;
+  belief_credence_is_fixed: number;
 }
 
 // Two credences within this distance count as "unchanged" — no
 // belief_movements row is appended for a recompute that lands this close.
 const BELIEF_CREDENCE_CHANGE_EPSILON = 1e-12;
 
-// Extract the trustOriginKey from a node's metadata JSON; null when the
-// metadata is absent, unparseable, or carries no usable key.
-function readTrustOriginKeyFromMetadata(metadataJson: string | null): string | null {
-  if (!metadataJson) {
-    return null;
-  }
-  try {
-    const metadata = JSON.parse(metadataJson) as { trustOriginKey?: unknown };
-    return typeof metadata.trustOriginKey === 'string' && metadata.trustOriginKey.length > 0
-      ? metadata.trustOriginKey
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 // Recompute and persist the credence for one node:
-//  - loads its incoming evidence edges (belief_evidence_support IS NOT NULL —
-//    a NULL support is the one thing that makes an edge not evidence),
-//  - weights each by the from-node origin's real trust score — an edge whose
-//    origin has no trustOriginKey, or whose key has no belief_source_trust
-//    row, is UNASSESSED and is excluded from grading entirely (no fallback
-//    trust weight is invented),
-//  - grades the counted (assessed) contributions via beliefGradingPolicyV1
-//    and persists nodes.belief_credence + belief_computed_at,
-//  - stamps belief_evidence_contribution on assessed edges only,
+//  - a node whose belief_credence_is_fixed is set has its credence ASSERTED by
+//    a human rather than derived from the graph, so it is returned untouched:
+//    nothing is written, nothing is stamped and nothing is logged,
+//  - otherwise it loads the node's incoming evidence edges
+//    (belief_evidence_support IS NOT NULL — a NULL support is the one thing
+//    that makes an edge not evidence),
+//  - weights each by its FROM-node's own belief_credence: a source nobody has
+//    graded (credence NULL) casts no vote and its edge is skipped, but every
+//    graded source is COUNTED — a disbelieved source (credence < 0)
+//    contributes negatively (its evidence counts against what it talks
+//    about), and a source at credence exactly 0 casts a counted vote of zero,
+//  - grades the counted contributions via beliefGradingPolicyV1 and persists
+//    nodes.belief_credence + belief_computed_at,
+//  - stamps belief_evidence_contribution on counted edges and clears it back
+//    to NULL on skipped ones, because a stamp written when the source was
+//    still graded is wrong once its credence has been cleared,
 //  - appends a belief_movements row iff the credence actually changed.
 // A node with zero counted contributions stays/becomes ungraded
-// (belief_credence NULL) with no movement row and no stamps — whether that's
-// because it has no evidence edges at all, or only unassessed ones.
+// (belief_credence NULL) with no movement row — whether that is because it
+// has no evidence edges at all, or only edges from never-graded sources. A
+// node whose counted edges all contribute 0 grades to 0 (the formula gives
+// exactly that for S = 0, C = 0), which is a real graded state, not NULL.
 export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecomputeResult> {
   const sqlite = getSQLiteClient();
 
-  // All evidence edges pointing at this node, with each from-node's metadata
-  // so the origin's trust weight can be resolved.
+  // Belief state of the node before this recompute: the credence it currently
+  // holds, and whether that credence was asserted by a human.
+  const nodeBeliefStateRow = sqlite
+    .prepare('SELECT belief_credence, belief_credence_is_fixed FROM nodes WHERE id = ?')
+    .get(nodeId) as BeliefStateRowBeforeRecompute | undefined;
+  const previousBeliefCredence = nodeBeliefStateRow?.belief_credence ?? null;
+
+  // An asserted credence is not derived from the graph, so a recompute is a
+  // no-op on it: the stored credence is reported back and nothing is written —
+  // not the credence, not the timestamp, no stamps on its incoming edges.
+  if (nodeBeliefStateRow?.belief_credence_is_fixed) {
+    return { beliefCredence: previousBeliefCredence, movement: null, contributions: [] };
+  }
+
+  // All evidence edges pointing at this node, each carrying its source node's
+  // own credence — the weight that edge's evidence gets.
   const evidenceEdges = sqlite
     .prepare(
       `SELECT e.id, e.belief_evidence_support,
-              n.metadata AS from_node_metadata
+              n.belief_credence AS from_node_belief_credence
        FROM edges e
        JOIN nodes n ON n.id = e.from_node_id
        WHERE e.to_node_id = ? AND e.belief_evidence_support IS NOT NULL`
     )
     .all(nodeId) as EvidenceEdgeRow[];
 
-  // Credence before this recompute; null when the node was ungraded.
-  // Read before the loop so both the "no evidence edges" and "no assessed
-  // contributions" paths can share the same post-loop NULL branch below.
-  const previousBeliefRow = sqlite
-    .prepare('SELECT belief_credence FROM nodes WHERE id = ?')
-    .get(nodeId) as { belief_credence: number | null } | undefined;
-  const previousBeliefCredence = previousBeliefRow?.belief_credence ?? null;
-
-  // Signed effective contribution per ASSESSED edge: the edge's signed
-  // support × its origin's trust weight, so the sign of the product is the
-  // sign of the support. Unassessed edges (no resolvable trust score) are
-  // skipped entirely — never added here, never stamped.
+  // Signed effective contribution per COUNTED edge: the source node's signed
+  // credence × the edge's unsigned support, so the sign of the product is the
+  // sign of the source's credence.
   const contributions: BeliefEdgeContribution[] = [];
   // Same contributions in the shape the grading policy consumes.
   const policyContributions: BeliefEvidenceContribution[] = [];
+  // Edges that cast no vote this time round and must therefore carry no
+  // contribution stamp, so an earlier recompute's stamp is cleared.
+  const skippedEvidenceEdgeIds: number[] = [];
   for (const evidenceEdge of evidenceEdges) {
-    const trustOriginKey = readTrustOriginKeyFromMetadata(evidenceEdge.from_node_metadata);
-    // Origin trust score: only a real belief_source_trust row counts.
-    const trustScore = trustOriginKey !== null ? await getTrustScore(trustOriginKey) : null;
-    if (trustScore === null || trustScore === undefined) {
-      // Unassessed source: not evidence. Skip — no contribution, no stamp.
+    if (evidenceEdge.from_node_belief_credence === null) {
+      // The source has never been graded, so it says nothing about anything.
+      skippedEvidenceEdgeIds.push(evidenceEdge.id);
       continue;
     }
-    const effectiveContribution = evidenceEdge.belief_evidence_support * trustScore;
+    // Every graded source is counted — including a disbelieved one, whose
+    // negative credence makes its contribution count AGAINST the target, and
+    // a zero-credence one, whose counted contribution is exactly 0.
+    const effectiveContribution =
+      evidenceEdge.from_node_belief_credence * evidenceEdge.belief_evidence_support;
     contributions.push({ edgeId: evidenceEdge.id, effectiveContribution });
     policyContributions.push({
       edgeId: evidenceEdge.id,
@@ -133,10 +150,19 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     });
   }
 
+  // Writes belief_evidence_contribution on one edge (a number for a counted
+  // edge, NULL for a skipped one).
+  const stampEvidenceEdge = sqlite.prepare(
+    'UPDATE edges SET belief_evidence_contribution = ? WHERE id = ?'
+  );
+  for (const skippedEvidenceEdgeId of skippedEvidenceEdgeIds) {
+    stampEvidenceEdge.run(null, skippedEvidenceEdgeId);
+  }
+
   if (policyContributions.length === 0) {
     // Ungraded is a real state: clear any stale credence, record nothing else.
     // Reached both when there were no evidence edges at all and when every
-    // edge present was unassessed.
+    // edge present came from a never-graded (credence NULL) source.
     if (previousBeliefCredence !== null) {
       sqlite
         .prepare('UPDATE nodes SET belief_credence = NULL, belief_computed_at = NULL WHERE id = ?')
@@ -154,10 +180,7 @@ export async function recomputeNodeBelief(nodeId: number): Promise<BeliefRecompu
     .prepare('UPDATE nodes SET belief_credence = ?, belief_computed_at = ? WHERE id = ?')
     .run(newBeliefCredence, computedAt, nodeId);
 
-  // Stamp each evidence edge with its signed effective contribution.
-  const stampEvidenceEdge = sqlite.prepare(
-    'UPDATE edges SET belief_evidence_contribution = ? WHERE id = ?'
-  );
+  // Stamp each counted evidence edge with its signed effective contribution.
   for (const contribution of contributions) {
     stampEvidenceEdge.run(contribution.effectiveContribution, contribution.edgeId);
   }

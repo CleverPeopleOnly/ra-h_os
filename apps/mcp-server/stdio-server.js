@@ -169,17 +169,18 @@ const createEdgeInputSchema = {
   confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.'),
   // Belief evidence field (fork addition): optional, forwarded verbatim to
   // the app's /api/edges — the app-owned belief engine does the grading.
-  // Support is ONE signed number, so a direction can never disagree with a
-  // magnitude. Omitting the field says "not evidence at all"; a support of 0
-  // says the edge WAS assessed and bears neither way — a recorded judgement,
-  // never rejected, because a classifier that finds no lean must not have to
-  // invent one.
+  // Support is UNSIGNED, 0..1: how strongly the source node talks about the
+  // target. Which way the evidence cuts comes from the source NODE's signed
+  // credence, never from this field. Omitting the field says "not evidence at
+  // all"; a support of 0 says the edge WAS assessed and carries nothing — a
+  // recorded judgement, never rejected, because a classifier that finds no
+  // bearing must not have to invent one.
   belief_evidence_support: z
     .number()
-    .min(-1)
+    .min(0)
     .max(1)
     .optional()
-    .describe('How the source node bears on the target node: one signed number in [-1, 1], positive supporting the target and negative contradicting it. Use 0 when the evidence was assessed and bears neither way. Omit the field entirely for a plain non-evidence edge.')
+    .describe('How strongly the source node talks about the target node: one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely for a plain non-evidence edge.')
 };
 
 const createEdgeOutputSchema = {

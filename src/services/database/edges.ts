@@ -227,6 +227,22 @@ export class EdgeService {
     const now = new Date().toISOString();
     const sqlite = getSQLiteClient();
 
+    // Belief-evidence door check: a non-NULL support must sit in [0, 1].
+    // Support is UNSIGNED — how strongly the source node talks about the
+    // target — and contradiction is expressed by the source NODE's negative
+    // credence, never by the edge. NULL passes (the edge is simply not
+    // evidence) and 0 passes (assessed, carries nothing). Checked before any
+    // inference or insert so a rejected support writes no edge row.
+    if (
+      edgeData.belief_evidence_support != null &&
+      (edgeData.belief_evidence_support < 0 || edgeData.belief_evidence_support > 1)
+    ) {
+      throw new Error(
+        `belief_evidence_support must be between 0 and 1 (got ${edgeData.belief_evidence_support}). ` +
+          'Support is unsigned; a contradicting source is expressed by that source node\'s negative belief_credence.'
+      );
+    }
+
     const createdVia: EdgeCreatedVia = edgeData.created_via;
 
     // Fetch nodes for inference context
@@ -274,7 +290,8 @@ export class EdgeService {
     };
 
     // Whether this edge carries belief-engine evidence for the target node: a
-    // signed support value is the one thing that makes an edge evidence.
+    // non-NULL unsigned support value is the one thing that makes an edge
+    // evidence (0 counts — assessed, carries nothing).
     // Evidence lives in a dedicated column; the context JSON stays app-owned.
     const hasBeliefEvidenceFields = edgeData.belief_evidence_support != null;
 

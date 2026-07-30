@@ -205,35 +205,38 @@ function ensureBeliefSchema(db) {
   // half-migrated state the app-side migration then has to clean up.
   renameBeliefColumnToCredence(db, 'nodes', 'belief_value', 'belief_credence');
 
-  // Belief columns added to the upstream-owned nodes/edges tables. ALTER TABLE
-  // has no IF NOT EXISTS, so each column is added only when missing.
+  // Belief columns added to the upstream-owned nodes/edges tables, each as
+  // [table, column, column definition]. The third element is everything that
+  // follows the column name in ALTER TABLE ADD COLUMN — the type plus any
+  // constraint and default — so a flag can carry NOT NULL DEFAULT 0 exactly as
+  // the app's CREATE TABLE declares it. ALTER TABLE has no IF NOT EXISTS, so
+  // each column is added only when missing.
   const beliefColumnAdditions = [
     ['nodes', 'belief_credence', 'REAL'],
     ['nodes', 'belief_computed_at', 'TEXT'],
+    // Set when a human asserted this node's credence instead of the app's
+    // belief engine deriving it from incoming evidence.
+    ['nodes', 'belief_credence_is_fixed', 'INTEGER NOT NULL DEFAULT 0'],
     ['edges', 'belief_evidence_support', 'REAL'],
     ['edges', 'belief_evidence_contribution', 'REAL'],
   ];
 
-  for (const [tableName, columnName, columnType] of beliefColumnAdditions) {
+  for (const [tableName, columnName, columnDefinition] of beliefColumnAdditions) {
     // Column names already present on this table, per PRAGMA table_info.
     const existingColumnNames = db
       .prepare(`PRAGMA table_info(${tableName})`)
       .all()
       .map((column) => column.name);
     if (!existingColumnNames.includes(columnName)) {
-      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType};`);
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition};`);
     }
   }
 
-  // Belief tables: per-origin trust scores and the belief movement audit log.
-  // "trigger" stays double-quoted — it is a SQLite reserved word.
+  // The belief movement audit log. No source-credence table sits beside it: a
+  // source is just a node and its influence IS its own nodes.belief_credence,
+  // so the app-side migration drops that table and this path must never put it
+  // back. "trigger" stays double-quoted — it is a SQLite reserved word.
   db.exec(`
-    CREATE TABLE IF NOT EXISTS belief_source_trust (
-      trust_origin_key TEXT PRIMARY KEY,
-      score REAL NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS belief_movements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       node_id INTEGER NOT NULL,

@@ -109,9 +109,10 @@ export interface EdgeData {
   // the edge is evidence bearing on the to-node and edge creation triggers a
   // belief recompute of that node. Stored in a dedicated edge column, never
   // in the app-owned context JSON.
-  // How the from-node bears on the to-node, as one signed number in [-1, +1]:
-  // positive supports the to-node, negative contradicts it, absent means the
-  // edge is not evidence at all.
+  // How strongly the from-node talks about the to-node, as one unsigned
+  // number in [0, 1]: 0 means assessed and carries nothing, absent means the
+  // edge is not evidence at all. Which way the evidence cuts comes from the
+  // from-node's signed belief_credence, never from this field.
   belief_evidence_support?: number;
 }
 

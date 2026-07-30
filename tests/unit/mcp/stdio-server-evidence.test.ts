@@ -11,11 +11,15 @@
  * schema, not rejected, and the resulting edge is a plain non-evidence one.
  *
  * This proxy is also the app-side write path that validates evidence today
- * (its Zod schema bounded the old strength to [0, 1]), so the support range
- * rules are pinned here as well as on the standalone server: outside
- * [-1, +1] is an error, but exactly 0 is ACCEPTED and forwarded — NULL means
- * the edge was never assessed as evidence, 0 means it was assessed and leans
- * neither way, and the proxy must not collapse the two.
+ * (its Zod schema bounds the range), so the support range rules are pinned
+ * here as well as on the standalone server. Support is UNSIGNED, 0..1 — the
+ * sign of a contribution comes from the source NODE's credence, never from
+ * support — so every negative value and every value above 1 is a tool error
+ * that never reaches the app, while exactly 0 is ACCEPTED and forwarded:
+ * NULL means the edge was never assessed as evidence, 0 means it was
+ * assessed and carries nothing, and the proxy must not collapse the two.
+ * (The in-range acceptance of 1 and of values between 0 and 1 is pinned in
+ * tests/unit/mcp/stdio-server-support-range.test.ts.)
  *
  * Seam (same as tests/unit/mcp/stdio-server.test.ts): the spawned proxy is
  * pointed at a local in-process HTTP stub via RAH_MCP_TARGET_URL, and the
@@ -176,25 +180,37 @@ describe('app-MCP proxy rah_create_edge evidence forwarding', () => {
     });
   });
 
-  // Sign pass-through: a negative support is a contradiction and must reach
-  // the app with its sign intact, since support is the only signed term.
-  it('forwards a negative belief_evidence_support with its sign intact', async () => {
+  // REWRITTEN from "forwards a negative belief_evidence_support with its
+  // sign intact". Support is UNSIGNED (0..1): a negative value is not a
+  // contradiction, it is an invalid write — contradiction is expressed by
+  // the source NODE's negative credence. So every negative value, from a
+  // small one through the old signed range's -1 boundary and beyond, must be
+  // a tool error that never produces a request to the app.
+  it('rejects every negative belief_evidence_support with a tool error and sends no request to /api/edges', async () => {
     await withMcpClient(async (client) => {
-      await client.callTool({
-        name: 'rah_create_edge',
-        arguments: {
-          sourceId: 2,
-          targetId: 1,
-          explanation: 'Reports a measured result that contradicts the claim node.',
-          confirmed_by_user: true,
-          belief_evidence_support: -0.9,
-        },
-      });
+      for (const rejectedNegativeSupport of [-0.1, -0.9, -1, -1.5]) {
+        const toolResult = await client.callTool({
+          name: 'rah_create_edge',
+          arguments: {
+            sourceId: 2,
+            targetId: 1,
+            explanation: 'Reports a measured result about the claim node.',
+            confirmed_by_user: true,
+            belief_evidence_support: rejectedNegativeSupport,
+          },
+        });
 
-      const createEdgeRequest = recordedApiRequests.find(
-        (entry) => entry.method === 'POST' && entry.pathname === '/api/edges'
-      );
-      expect(createEdgeRequest?.body).toMatchObject({ belief_evidence_support: -0.9 });
+        expect(
+          (toolResult as { isError?: boolean }).isError,
+          `a support of ${rejectedNegativeSupport} must be rejected — support is unsigned`
+        ).toBe(true);
+      }
+      // None of the rejected calls produced a request to the app.
+      expect(
+        recordedApiRequests.filter(
+          (entry) => entry.method === 'POST' && entry.pathname === '/api/edges'
+        )
+      ).toHaveLength(0);
     });
   });
 
@@ -230,11 +246,12 @@ describe('app-MCP proxy rah_create_edge evidence forwarding', () => {
     });
   });
 
-  // The signed range runs -1..+1, so both ends are out of bounds: the tool
-  // must error at either end and POST nothing.
-  it('rejects a belief_evidence_support outside [-1, 1] at either end and sends no request to /api/edges', async () => {
+  // The unsigned range tops out at 1: anything above it is out of bounds, so
+  // the tool must error and POST nothing. (Negative values have their own
+  // rejection test above — they are the semantic change, not a mere bound.)
+  it('rejects a belief_evidence_support above 1 and sends no request to /api/edges', async () => {
     await withMcpClient(async (client) => {
-      for (const outOfRangeSupport of [1.5, -1.5]) {
+      for (const outOfRangeSupport of [1.5, 2]) {
         const toolResult = await client.callTool({
           name: 'rah_create_edge',
           arguments: {

@@ -137,17 +137,18 @@ const createEdgeInputSchema = {
   // Belief evidence field (fork addition): optional, stored verbatim in the
   // dedicated belief_ edge column. This server never grades — the RA-H app
   // owns grading (belief_evidence_contribution stays NULL here).
-  // Support is ONE signed number, so a direction can never disagree with a
-  // magnitude. Omitting the field says "not evidence at all"; a support of 0
-  // says the edge WAS assessed and bears neither way — a recorded judgement,
-  // never rejected, because a classifier that finds no lean must not have to
-  // invent one.
+  // Support is UNSIGNED, 0..1: how strongly the source node talks about the
+  // target. Which way the evidence cuts comes from the source NODE's signed
+  // credence, never from this field. Omitting the field says "not evidence at
+  // all"; a support of 0 says the edge WAS assessed and carries nothing — a
+  // recorded judgement, never rejected, because a classifier that finds no
+  // bearing must not have to invent one.
   belief_evidence_support: z
     .number()
-    .min(-1)
+    .min(0)
     .max(1)
     .optional()
-    .describe('How the source node bears on the target node: one signed number in [-1, 1], positive supporting the target and negative contradicting it. Use 0 when the evidence was assessed and bears neither way. Omit the field entirely for a plain non-evidence edge.')
+    .describe('How strongly the source node talks about the target node: one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely for a plain non-evidence edge.')
 };
 
 const updateEdgeInputSchema = {
@@ -180,15 +181,17 @@ const searchContentInputSchema = {
   limit: z.number().min(1).max(20).optional().describe('Max results (default 5)')
 };
 
-// setBeliefSourceTrust schema (fork addition): upsert one origin's trust score.
-const setBeliefSourceTrustInputSchema = {
-  trust_origin_key: z.string().min(1).describe('Origin key whose trust score to set (e.g. "agent:alpha")'),
-  score: z.number().describe('Trust score for this origin, used by the app-owned grading policy')
-};
-
-// getBeliefSourceTrust schema (fork addition): read one origin's trust row.
-const getBeliefSourceTrustInputSchema = {
-  trust_origin_key: z.string().min(1).describe('Origin key to look up in belief_source_trust')
+// setBeliefFixedCredence schema (fork addition): assert one node's credence by
+// hand. Parameter names follow the column names exactly. Credence lives in the
+// OPEN interval (-1, +1): total certainty either way is not expressible, so
+// both endpoints are rejected while 0 — assessed and torn — is accepted.
+const setBeliefFixedCredenceInputSchema = {
+  node_id: z.number().int().positive().describe('ID of the node whose credence is being asserted'),
+  belief_credence: z
+    .number()
+    .gt(-1)
+    .lt(1)
+    .describe('How much this node is believed: one number strictly between -1 and +1, positive meaning believed and negative meaning disbelieved. Use 0 when the node was assessed and is believed neither way. -1 and +1 are rejected — total certainty is not expressible.')
 };
 
 const sqliteQueryInputSchema = {
@@ -450,7 +453,10 @@ async function main() {
             updated_at: node.updated_at,
             event_date: node.event_date ?? null,
             belief_credence: nodeBeliefState.belief_credence ?? null,
-            belief_computed_at: nodeBeliefState.belief_computed_at ?? null
+            belief_computed_at: nodeBeliefState.belief_computed_at ?? null,
+            // Whether a human asserted that credence rather than the app's
+            // belief engine deriving it from the node's incoming evidence.
+            belief_credence_is_fixed: nodeBeliefState.belief_credence_is_fixed ?? 0
           });
         }
       }
@@ -522,9 +528,10 @@ async function main() {
         throw new Error('createEdge requires explicit user confirmation before writing the relationship.');
       }
 
-      // Meaningless evidence never reaches the database: the input schema
-      // above rejects a support outside [-1, 1] or exactly 0 before this
-      // handler runs, so no row is written for either case.
+      // Out-of-range evidence never reaches the database: the input schema
+      // above rejects a support outside [0, 1] before this handler runs, so
+      // no row is written for it. A support of exactly 0 is VALID — assessed,
+      // carries nothing — and is stored like any other value.
       const edge = edgeService.createEdge({
         from_node_id: sourceId,
         to_node_id: targetId,
@@ -598,61 +605,61 @@ async function main() {
     }
   );
 
-  // ========== BELIEF SOURCE TRUST TOOLS (fork addition) ==========
+  // ========== BELIEF FIXED CREDENCE TOOL (fork addition) ==========
 
   registerToolWithAliases(
-    'setBeliefSourceTrust',
+    'setBeliefFixedCredence',
     {
-      title: 'Set RA-H belief source trust',
-      description: 'Set (upsert) the trust score for one evidence origin in belief_source_trust. The app-owned belief engine weights evidence by this score when grading node beliefs.',
-      inputSchema: setBeliefSourceTrustInputSchema
+      title: 'Set RA-H fixed belief credence',
+      description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from incoming evidence. This is the bootstrap a graph needs before anything in it can be graded: a source node\'s credence is the weight every piece of evidence it supplies carries. Calling it again replaces the asserted credence in place.',
+      inputSchema: setBeliefFixedCredenceInputSchema
     },
-    async ({ trust_origin_key, score }) => {
-      // Upsert: one row per origin key, updated in place on repeat calls.
+    async ({ node_id, belief_credence }) => {
+      // The node's credence before this assertion; the row's absence is what
+      // makes an unknown node an error rather than a silent no-op.
+      const existingBeliefStateRows = query(
+        'SELECT belief_credence FROM nodes WHERE id = ?',
+        [node_id]
+      );
+      if (existingBeliefStateRows.length === 0) {
+        throw new Error(`Cannot assert a credence about node #${node_id}: no such node.`);
+      }
+      const previousBeliefCredence = existingBeliefStateRows[0].belief_credence ?? null;
+
+      // Single timestamp shared by the node write and any movement row.
+      const assertedAt = new Date().toISOString();
       query(
-        `INSERT INTO belief_source_trust (trust_origin_key, score, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(trust_origin_key) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`,
-        [trust_origin_key, score, new Date().toISOString()]
+        `UPDATE nodes
+            SET belief_credence = ?, belief_credence_is_fixed = 1, belief_computed_at = ?
+          WHERE id = ?`,
+        [belief_credence, assertedAt, node_id]
       );
 
-      const summary = `Set trust for ${trust_origin_key} to ${score}.`;
+      // The credence and its timestamp are written unconditionally; only the
+      // movement row is conditional, because a movement records the credence
+      // CHANGING and re-asserting the same number is not a change. The
+      // comparison is EXACT: an asserted credence is a literal number compared
+      // against a literal number, with no arithmetic drift for a tolerance to
+      // absorb.
+      const beliefCredenceChanged = previousBeliefCredence !== belief_credence;
+      if (beliefCredenceChanged) {
+        query(
+          `INSERT INTO belief_movements (node_id, from_credence, to_credence, "trigger", occurred_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          [node_id, previousBeliefCredence, belief_credence, 'belief-fixed-credence-set', assertedAt]
+        );
+      }
+
+      const summary = `Asserted belief_credence ${belief_credence} on node #${node_id}.`;
       return {
         content: [{ type: 'text', text: summary }],
         structuredContent: {
           success: true,
-          trust_origin_key,
-          score,
+          node_id,
+          belief_credence,
+          belief_credence_is_fixed: 1,
+          belief_computed_at: assertedAt,
           message: summary
-        }
-      };
-    }
-  );
-
-  registerToolWithAliases(
-    'getBeliefSourceTrust',
-    {
-      title: 'Get RA-H belief source trust',
-      description: 'Read the trust row for one evidence origin from belief_source_trust. Returns null trust when no row exists — the app-owned engine applies its own default in that case.',
-      inputSchema: getBeliefSourceTrustInputSchema
-    },
-    async ({ trust_origin_key }) => {
-      // The stored trust row for this origin, if any (never invent a default
-      // here — the DEFAULT_ORIGIN_TRUST fallback is app-engine-owned).
-      const trustRows = query(
-        'SELECT trust_origin_key, score, updated_at FROM belief_source_trust WHERE trust_origin_key = ?',
-        [trust_origin_key]
-      );
-      const trustRow = trustRows.length > 0 ? trustRows[0] : null;
-
-      const summary = trustRow
-        ? `Trust for ${trust_origin_key}: ${trustRow.score}.`
-        : `No trust row for ${trust_origin_key}.`;
-      return {
-        content: [{ type: 'text', text: summary }],
-        structuredContent: {
-          trust_origin_key,
-          trust: trustRow ? { score: trustRow.score, updated_at: trustRow.updated_at } : null
         }
       };
     }

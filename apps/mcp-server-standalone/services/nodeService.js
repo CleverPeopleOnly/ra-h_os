@@ -386,16 +386,30 @@ function getNodeById(id) {
 
 /**
  * Read one node's persisted belief state (fork addition): the belief_credence
- * the app-owned engine graded and when it was computed. Returns NULLs when the
- * database predates the belief columns, so callers keep working against legacy
- * schemas.
+ * the app-owned engine graded, when it was computed, and whether a human
+ * asserted that credence by hand instead of the engine deriving it. Falls back
+ * to an ungraded, derived state when the database predates the belief columns,
+ * so callers keep working against legacy schemas — and reports the failure on
+ * stderr rather than swallowing it, because a real error here is otherwise
+ * indistinguishable from a node nobody has graded.
  */
 function getNodeBeliefState(id) {
+  // What an unreadable belief state looks like: ungraded, and derived rather
+  // than asserted (0 is the column default every ordinary node carries).
+  const unreadableNodeBeliefState = {
+    belief_credence: null,
+    belief_computed_at: null,
+    belief_credence_is_fixed: 0
+  };
   try {
-    const rows = query('SELECT belief_credence, belief_computed_at FROM nodes WHERE id = ?', [id]);
-    return rows[0] || { belief_credence: null, belief_computed_at: null };
-  } catch {
-    return { belief_credence: null, belief_computed_at: null };
+    const rows = query(
+      'SELECT belief_credence, belief_computed_at, belief_credence_is_fixed FROM nodes WHERE id = ?',
+      [id]
+    );
+    return rows[0] || unreadableNodeBeliefState;
+  } catch (beliefStateErr) {
+    console.error(`[ra-h-mcp-server] Failed to read belief state for node #${id}:`, beliefStateErr.message);
+    return unreadableNodeBeliefState;
   }
 }
 

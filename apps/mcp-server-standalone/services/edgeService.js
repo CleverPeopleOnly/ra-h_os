@@ -45,10 +45,11 @@ function createEdge(edgeData) {
     to_node_id,
     explanation,
     source = 'mcp',
-    // Belief evidence field (fork addition): one signed support value in
-    // [-1, +1], stored verbatim in the dedicated belief_ edge column. The
-    // standalone server stores evidence but NEVER grades —
-    // belief_evidence_contribution is never written here.
+    // Belief evidence field (fork addition): one unsigned support value in
+    // [0, 1] — how strongly the source node talks about the target — stored
+    // verbatim in the dedicated belief_ edge column. The standalone server
+    // stores evidence but NEVER grades — belief_evidence_contribution is
+    // never written here.
     belief_evidence_support
   } = edgeData;
   const now = new Date().toISOString();
