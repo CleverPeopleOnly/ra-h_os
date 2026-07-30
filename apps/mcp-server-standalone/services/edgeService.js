@@ -3,21 +3,47 @@
 const { query, getDb, runWithBusyRetry } = require('./sqlite-client');
 
 /**
- * Get all edges.
+ * Read edges, optionally narrowed to one node, one side of that node, and one
+ * page. Every part of the filter is applied IN SQL, so a capped page is a page
+ * of the edges the caller asked for rather than a capped page of the whole
+ * table trimmed afterwards. SELECT * keeps both belief columns
+ * (belief_evidence_support, belief_evidence_contribution) on every row.
+ *
+ * @param {object} filters                Edge-read filter.
+ * @param {number} [filters.nodeId]       Only edges touching this node.
+ * @param {'into'|'out_of'|'both'} [filters.direction]
+ *        Which side of nodeId to read: 'into' means the node is the
+ *        to_node_id (the evidence feeding its credence), 'out_of' means the
+ *        node is the from_node_id, 'both' is either side and is the default.
+ * @param {number} [filters.limit]        Page size, default 50.
+ * @param {number} [filters.offset]       Edges to skip before the page, default 0.
+ *
+ * The order is created_at DESC, id DESC: created_at alone is not a total order
+ * — rows written in the same millisecond tie, and tied rows can be returned in
+ * any order, which would let two pages overlap or skip a row.
  */
 function getEdges(filters = {}) {
-  const { nodeId, limit = 50 } = filters;
+  const { nodeId, direction = 'both', limit = 50, offset = 0 } = filters;
 
   let sql = 'SELECT * FROM edges';
   const params = [];
 
   if (nodeId) {
-    sql += ' WHERE from_node_id = ? OR to_node_id = ?';
-    params.push(nodeId, nodeId);
+    if (direction === 'into') {
+      // The evidence side: edges pointing AT the node.
+      sql += ' WHERE to_node_id = ?';
+      params.push(nodeId);
+    } else if (direction === 'out_of') {
+      sql += ' WHERE from_node_id = ?';
+      params.push(nodeId);
+    } else {
+      sql += ' WHERE (from_node_id = ? OR to_node_id = ?)';
+      params.push(nodeId, nodeId);
+    }
   }
 
-  sql += ' ORDER BY created_at DESC LIMIT ?';
-  params.push(limit);
+  sql += ' ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?';
+  params.push(limit, offset);
 
   const rows = query(sql, params);
 

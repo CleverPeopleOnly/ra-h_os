@@ -1,5 +1,13 @@
 import { getSQLiteClient } from './sqlite-client';
-import { Edge, EdgeContext, EdgeData, EdgeCreatedVia, NodeConnection, Node } from '@/types/database';
+import {
+  BeliefEdgeReadFilter,
+  Edge,
+  EdgeContext,
+  EdgeData,
+  EdgeCreatedVia,
+  NodeConnection,
+  Node,
+} from '@/types/database';
 import { eventBroadcaster } from '../events';
 import { nodeService } from './nodes';
 import { z } from 'zod';
@@ -185,9 +193,54 @@ async function autoInferEdge(params: {
 }
 
 export class EdgeService {
-  async getEdges(): Promise<Edge[]> {
+  // Read edges, optionally narrowed to one node, one side of that node, and
+  // one page. Every part of the filter is applied IN SQL, so a capped page is
+  // a page of the edges the caller asked for rather than a capped page of the
+  // whole table trimmed afterwards. SELECT * keeps both belief columns
+  // (belief_evidence_support, belief_evidence_contribution) on every row.
+  // The order is created_at DESC, id DESC: created_at alone is not a total
+  // order — rows written in the same millisecond tie, and tied rows can be
+  // returned in any order, which would let two pages overlap or skip a row.
+  // An omitted limit means no cap, so an unfiltered read still returns
+  // everything.
+  async getEdges(edgeReadFilter: BeliefEdgeReadFilter = {}): Promise<Edge[]> {
     const sqlite = getSQLiteClient();
-    const result = sqlite.query<Edge>('SELECT * FROM edges ORDER BY created_at DESC');
+    const { nodeId, direction = 'both', limit, offset } = edgeReadFilter;
+
+    // WHERE clause and its bound values, built together so they stay in step.
+    const whereClauses: string[] = [];
+    const queryParams: number[] = [];
+
+    if (nodeId !== undefined) {
+      if (direction === 'into') {
+        // The evidence side: edges pointing AT the node.
+        whereClauses.push('to_node_id = ?');
+        queryParams.push(nodeId);
+      } else if (direction === 'out_of') {
+        whereClauses.push('from_node_id = ?');
+        queryParams.push(nodeId);
+      } else {
+        whereClauses.push('(from_node_id = ? OR to_node_id = ?)');
+        queryParams.push(nodeId, nodeId);
+      }
+    }
+
+    let sql = 'SELECT * FROM edges';
+    if (whereClauses.length > 0) sql += ` WHERE ${whereClauses.join(' AND ')}`;
+    sql += ' ORDER BY created_at DESC, id DESC';
+    if (limit !== undefined) {
+      sql += ' LIMIT ?';
+      queryParams.push(limit);
+    }
+    if (offset !== undefined) {
+      // SQLite only accepts OFFSET after a LIMIT; -1 is its "no cap" limit, so
+      // a page position without a page size still reads to the end.
+      if (limit === undefined) sql += ' LIMIT -1';
+      sql += ' OFFSET ?';
+      queryParams.push(offset);
+    }
+
+    const result = sqlite.query<Edge>(sql, queryParams);
     return result.rows.map((row: any) => {
       let context: any = row.context;
       if (typeof context === 'string') {
