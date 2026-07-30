@@ -67,6 +67,32 @@ export async function PUT(
       }, { status: 400 });
     }
 
+    // Belief-evidence door check (fork addition): a support in the body is
+    // spread into the update payload below and written to the REAL
+    // edges.belief_evidence_support column, so it is range-checked here before
+    // the service ever sees it. Support is UNSIGNED, 0..1 — contradiction is
+    // expressed by the source NODE's negative belief_credence, never by the
+    // edge. An absent field passes (the update writes no support at all), NULL
+    // passes (it un-assesses the edge, a legitimate write) and 0 passes
+    // (assessed, carries nothing). The number test comes first and
+    // separately: a value that is not a number cannot be in range, and no range
+    // comparison catches NaN.
+    const writtenBeliefEvidenceSupport = body.belief_evidence_support;
+    if (
+      writtenBeliefEvidenceSupport != null &&
+      (typeof writtenBeliefEvidenceSupport !== 'number' ||
+        !Number.isFinite(writtenBeliefEvidenceSupport) ||
+        writtenBeliefEvidenceSupport < 0 ||
+        writtenBeliefEvidenceSupport > 1)
+    ) {
+      return NextResponse.json({
+        success: false,
+        error:
+          `belief_evidence_support must be a number between 0 and 1 (got ${String(writtenBeliefEvidenceSupport)}). ` +
+          'Support is unsigned; a contradicting source is expressed by that source node\'s negative belief_credence.'
+      }, { status: 400 });
+    }
+
     const explanation =
       typeof body.explanation === 'string'
         ? body.explanation.trim()
