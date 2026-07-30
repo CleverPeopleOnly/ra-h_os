@@ -637,7 +637,7 @@ async function main() {
     'setBeliefFixedCredence',
     {
       title: 'Set RA-H fixed belief credence',
-      description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from incoming evidence. This is the bootstrap a graph needs before anything in it can be graded: a source node\'s credence is the weight every piece of evidence it supplies carries. Calling it again replaces the asserted credence in place.',
+      description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from incoming evidence. This is the bootstrap a graph needs before anything in it can be graded: a node\'s credence is also the credence carried by every piece of evidence that node supplies, so until at least one node has a credence there is nothing for the engine to grade from. Calling it again replaces the asserted credence in place.',
       inputSchema: setBeliefFixedCredenceInputSchema
     },
     async ({ node_id, belief_credence }) => {

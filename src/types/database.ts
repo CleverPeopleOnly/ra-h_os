@@ -77,8 +77,14 @@ export interface BeliefEdgeReadFilter {
   nodeId?: number;
   // Which side of nodeId to read; omitted means 'both'.
   direction?: BeliefEdgeReadDirection;
-  // Page size. Omitted means no cap at all — an unfiltered read still returns
-  // every edge, which the in-memory queryEdge tool depends on.
+  // Only edges created this way (the edges.source column: who or what made the
+  // edge, not the source NODE); omitted means every source.
+  edgeSource?: EdgeSource;
+  // Page size. Omitted means no cap at all — the SQL read then returns every
+  // edge matching the rest of the filter. Callers that face a caller-sized
+  // graph always set it: an uncapped read of a graph with 100,000s of edges is
+  // a memory failure mode, so a page size is the norm and omitting it is the
+  // exception (a maintenance sweep that genuinely must see every row).
   limit?: number;
   // How many edges to skip before the page begins; omitted means 0.
   offset?: number;

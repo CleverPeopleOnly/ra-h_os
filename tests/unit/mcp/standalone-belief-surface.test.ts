@@ -1150,4 +1150,47 @@ describe('standalone MCP server belief surface (MR-B)', () => {
       }
     });
   });
+
+  // CLAUDE.md's belief-vocabulary rule bans trust / standing / score / weight
+  // / value as synonyms for credence anywhere in belief code, comments or TOOL
+  // DESCRIPTIONS. A tool description is the one place the rule is enforced by
+  // an external reader rather than by us: it is the prose an agent reads
+  // before it writes belief data, so a second word for credence there teaches
+  // the caller the wrong model of the quantity it is about to set.
+  //
+  // The check reads the LIVE registered descriptions from tools/list rather
+  // than grepping the source, so it pins what callers actually receive, and it
+  // matches WHOLE WORDS only: "understanding" legitimately contains
+  // "standing", and banning the substring would fail on prose that is fine.
+  // Scope: every tool whose own description or input schema already talks
+  // about belief — the fork-owned belief surface, not upstream's tools.
+  it('registers no banned credence synonym in the description of any belief tool', async () => {
+    // The five words CLAUDE.md bans as synonyms for credence, plus the plurals
+    // the same words appear in, as whole-word patterns.
+    const bannedCredenceSynonymPattern = /\b(trust|trusts|trusted|standing|standings|score|scores|weight|weights|value|values)\b/i;
+
+    await withStandaloneClient(async (client) => {
+      const listedTools = await client.listTools();
+
+      // A tool is part of the belief surface when its own advertised prose
+      // already names the belief system — description or input schema.
+      const beliefSurfaceTools = listedTools.tools.filter((tool) => {
+        const advertisedProse = `${tool.description ?? ''} ${JSON.stringify(tool.inputSchema ?? {})}`;
+        return /belief|credence/i.test(advertisedProse);
+      });
+
+      // Guard against the filter silently matching nothing: the credence
+      // bootstrap tool must be in the swept set, or this test proves nothing.
+      expect(beliefSurfaceTools.map((tool) => tool.name)).toContain('setBeliefFixedCredence');
+
+      for (const beliefSurfaceTool of beliefSurfaceTools) {
+        const bannedSynonymMatch = bannedCredenceSynonymPattern.exec(beliefSurfaceTool.description ?? '');
+        expect(
+          bannedSynonymMatch?.[0],
+          `${beliefSurfaceTool.name} description uses the banned credence synonym ` +
+            `"${bannedSynonymMatch?.[0]}" — one word per concept: it is credence`
+        ).toBeUndefined();
+      }
+    });
+  });
 });
