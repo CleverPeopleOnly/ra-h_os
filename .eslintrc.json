@@ -2,5 +2,17 @@
   "extends": [
     "next/core-web-vitals",
     "next/typescript"
+  ],
+  "overrides": [
+    {
+      // src/services/belief/beliefMcpToolContract.js must stay CommonJS: the
+      // local MCP door (apps/mcp-server/stdio-server.js) is a CommonJS script
+      // spawned straight from source with no build step, so it can only
+      // `require` the shared belief contract.
+      "files": ["src/services/belief/*.js"],
+      "rules": {
+        "@typescript-eslint/no-require-imports": "off"
+      }
+    }
   ]
 }

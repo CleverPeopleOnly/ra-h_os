@@ -3,6 +3,17 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { z } from 'zod';
 
+// The fork-owned belief pieces of the MCP tool contract, shared verbatim with
+// the local door (apps/mcp-server/stdio-server.js) so the two cannot drift
+// apart again. The module is CommonJS because that door requires it from
+// source; the companion .d.ts is what types it here.
+import {
+  beliefEvidenceSupportInputSchemaForEdgeCreate,
+  beliefEvidenceSupportInputSchemaForEdgeUpdate,
+  beliefEvidenceFieldsForEdgeRead,
+  beliefEvidenceEdgeReadOutputSchemaFields,
+} from '@/services/belief/beliefMcpToolContract';
+
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
@@ -228,6 +239,27 @@ function createServer(request: NextRequest): McpServer {
       inputSchema: {
         nodeIds: z.array(z.number().int().positive()).min(1).max(10),
       },
+      outputSchema: {
+        count: z.number(),
+        nodes: z.array(
+          z.object({
+            id: z.number(),
+            title: z.string(),
+            source: z.string().nullable(),
+            description: z.string().nullable(),
+            link: z.string().nullable(),
+            // The node's own metadata bag, reported whole. NULL means nothing
+            // was ever recorded about the node, which is a different state
+            // from a bag written with no keys — so an absent bag stays null
+            // and is never reported as {}.
+            metadata: z.record(z.any()).nullable(),
+            // When the node was first written, alongside the last-write
+            // timestamp.
+            created_at: z.string(),
+            updated_at: z.string(),
+          })
+        ),
+      },
     },
     async ({ nodeIds }) => {
       const uniqueIds = Array.from(new Set(nodeIds.filter((id) => Number.isFinite(id) && id > 0)));
@@ -241,7 +273,13 @@ function createServer(request: NextRequest): McpServer {
               id: payload.node.id,
               title: payload.node.title,
               source: payload.node.source ?? null,
+              description: payload.node.description ?? null,
               link: payload.node.link ?? null,
+              // The app already parses the metadata column into an object (or
+              // null). `?? null` normalises only a MISSING key, so "nothing
+              // ever recorded" stays null rather than becoming an empty bag.
+              metadata: payload.node.metadata ?? null,
+              created_at: payload.node.created_at,
               updated_at: payload.node.updated_at,
             });
           }
@@ -270,23 +308,41 @@ function createServer(request: NextRequest): McpServer {
         targetId: z.number().int().positive(),
         explanation: z.string().min(1),
         confirmed_by_user: z.boolean(),
+        // Belief evidence field (fork addition), taken from the shared
+        // contract: an unsigned 0..1 support forwarded verbatim to the app's
+        // /api/edges, where the belief engine does the grading.
+        belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeCreate,
+      },
+      outputSchema: {
+        success: z.boolean(),
+        edgeId: z.number(),
+        message: z.string(),
       },
     },
-    async ({ sourceId, targetId, explanation, confirmed_by_user }) => {
+    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_support }) => {
       if (!confirmed_by_user) {
         throw new Error('rah_create_edge requires explicit user confirmation before writing the relationship.');
       }
 
+      const edgeCreateBody: Record<string, unknown> = {
+        from_node_id: sourceId,
+        to_node_id: targetId,
+        explanation: explanation.trim(),
+        source: 'helper_name',
+        created_via: 'mcp',
+        confirmed_by_user: true,
+      };
+
+      // Belief evidence pass-through (fork addition): include the support only
+      // when the caller supplied it, so a plain relationship edge keeps an
+      // evidence-free payload rather than being written as assessed evidence.
+      if (belief_evidence_support !== undefined) {
+        edgeCreateBody.belief_evidence_support = belief_evidence_support;
+      }
+
       const payload = await callRaHApi(request, '/api/edges', {
         method: 'POST',
-        body: JSON.stringify({
-          from_node_id: sourceId,
-          to_node_id: targetId,
-          explanation: explanation.trim(),
-          source: 'helper_name',
-          created_via: 'mcp',
-          confirmed_by_user: true,
-        }),
+        body: JSON.stringify(edgeCreateBody),
       });
 
       const edge = payload.edge || payload.data;
@@ -307,14 +363,57 @@ function createServer(request: NextRequest): McpServer {
       title: 'Query RA-H edges',
       description: 'Find connections between nodes.',
       inputSchema: {
-        nodeId: z.number().int().positive().optional(),
-        limit: z.number().min(1).max(50).optional(),
+        nodeId: z.number().int().positive().optional().describe('Find edges connected to this node'),
+        // Which side of nodeId to read. Declared as an enum so an unknown value
+        // is rejected by the schema before the handler runs — no request
+        // reaches the app — and so the three accepted values are discoverable.
+        direction: z
+          .enum(['into', 'out_of', 'both'])
+          .optional()
+          .describe('Which side of nodeId to read: "into" returns edges whose to_node_id is the node — the evidence feeding its belief_credence; "out_of" returns edges whose from_node_id is the node; "both" returns either side. Defaults to "both".'),
+        limit: z.number().min(1).max(50).optional().describe('Max edges to return'),
+        // Page position. min(0) makes a negative offset a schema rejection,
+        // since there is no page before the first one.
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('How many edges to skip before the page begins, over the order created_at DESC then id DESC. 0 is the first page.'),
+      },
+      outputSchema: {
+        count: z.number(),
+        edges: z.array(
+          z.object({
+            id: z.number(),
+            from_node_id: z.number(),
+            to_node_id: z.number(),
+            type: z.string().nullable(),
+            // Why the connection exists — the explanation every edge in this
+            // graph is required to be created with. Nullable because the
+            // mapping normalises a MISSING key to null and a stored NULL stays
+            // null; an edge with no explanation must never report an empty
+            // string, which would read as an explanation that was written and
+            // said nothing.
+            explanation: z.string().nullable(),
+            // When the edge was written. Nullable for the same reason: a row
+            // that arrives without the key normalises to null.
+            created_at: z.string().nullable(),
+            // Belief-engine evidence columns (fork addition), declared from the
+            // shared contract so both doors advertise them identically.
+            ...beliefEvidenceEdgeReadOutputSchemaFields,
+          })
+        ),
       },
     },
-    async ({ nodeId, limit = 25 }) => {
+    // direction defaults to 'both' — either side of the node — and is always
+    // sent, so the side being read is explicit in the request the app receives.
+    async ({ nodeId, direction = 'both', limit = 25, offset = 0 }) => {
       const params = new URLSearchParams();
       if (nodeId) params.set('nodeId', String(nodeId));
+      params.set('direction', direction);
       params.set('limit', String(Math.min(Math.max(limit, 1), 50)));
+      params.set('offset', String(offset));
 
       const payload = await callRaHApi(request, `/api/edges?${params.toString()}`);
       const edges = Array.isArray(payload.data) ? payload.data : [];
@@ -323,12 +422,18 @@ function createServer(request: NextRequest): McpServer {
         content: [{ type: 'text', text: `Found ${edges.length} edge(s).` }],
         structuredContent: {
           count: edges.length,
+          // The columns are reported under their own names, and the
+          // relationship-LABEL confidence is deliberately not reported at all:
+          // it says how sure the app is that it typed the relationship, which
+          // is not a belief quantity and must never be read as one.
           edges: edges.map((edge: any) => ({
             id: edge.id,
-            source_id: edge.from_node_id,
-            target_id: edge.to_node_id,
+            from_node_id: edge.from_node_id,
+            to_node_id: edge.to_node_id,
             type: edge.context?.type ?? null,
-            weight: typeof edge.context?.confidence === 'number' ? edge.context.confidence : null,
+            explanation: edge.explanation ?? null,
+            created_at: edge.created_at ?? null,
+            ...beliefEvidenceFieldsForEdgeRead(edge),
           })),
         },
       };
@@ -344,19 +449,39 @@ function createServer(request: NextRequest): McpServer {
         id: z.number().int().positive(),
         explanation: z.string().min(1),
         confirmed_by_user: z.boolean(),
+        // Belief evidence field (fork addition), taken from the shared
+        // contract: the same unsigned 0..1 support rah_create_edge accepts, so
+        // a support written once can be corrected later.
+        belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeUpdate,
+      },
+      outputSchema: {
+        success: z.boolean(),
+        message: z.string(),
       },
     },
-    async ({ id, explanation, confirmed_by_user }) => {
+    async ({ id, explanation, confirmed_by_user, belief_evidence_support }) => {
       if (!confirmed_by_user) {
         throw new Error('rah_update_edge requires explicit user confirmation before writing the corrected relationship.');
       }
 
+      const edgeUpdateBody: Record<string, unknown> = {
+        context: { explanation: explanation.trim(), created_via: 'mcp' },
+        confirmed_by_user: true,
+      };
+
+      // Belief evidence pass-through (fork addition): include the corrected
+      // support only when the caller supplied one, so an explanation-only
+      // correction still sends an evidence-free payload rather than turning a
+      // plain relationship edge into assessed evidence. Sent TOP-LEVEL, not
+      // inside context, because it belongs to the edges column and not to the
+      // app-owned context JSON.
+      if (belief_evidence_support !== undefined) {
+        edgeUpdateBody.belief_evidence_support = belief_evidence_support;
+      }
+
       const payload = await callRaHApi(request, `/api/edges/${id}`, {
         method: 'PUT',
-        body: JSON.stringify({
-          context: { explanation: explanation.trim(), created_via: 'mcp' },
-          confirmed_by_user: true,
-        }),
+        body: JSON.stringify(edgeUpdateBody),
       });
 
       return {
