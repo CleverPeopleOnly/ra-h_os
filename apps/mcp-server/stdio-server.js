@@ -8,6 +8,14 @@ const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const packageJson = require('../../package.json');
+// The fork-owned belief pieces of the MCP tool contract, shared verbatim with
+// the remote door (app/api/mcp/route.ts) so the two cannot drift apart again.
+const {
+  beliefEvidenceSupportInputSchemaForEdgeCreate,
+  beliefEvidenceSupportInputSchemaForEdgeUpdate,
+  beliefEvidenceFieldsForEdgeRead,
+  beliefEvidenceEdgeReadOutputSchemaFields
+} = require('../../src/services/belief/beliefMcpToolContract.js');
 
 const instructions = [
   'RA-H is a personal knowledge graph — local-first, vendor-neutral.',
@@ -181,13 +189,9 @@ const createEdgeInputSchema = {
   // credence, never from this field. Omitting the field says "not evidence at
   // all"; a support of 0 says the edge WAS assessed and carries nothing — a
   // recorded judgement, never rejected, because a classifier that finds no
-  // bearing must not have to invent one.
-  belief_evidence_support: z
-    .number()
-    .min(0)
-    .max(1)
-    .optional()
-    .describe('How strongly the source node talks about the target node: one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely for a plain non-evidence edge.')
+  // bearing must not have to invent one. Taken from the shared contract so the
+  // remote door advertises exactly the same argument.
+  belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeCreate
 };
 
 const createEdgeOutputSchema = {
@@ -234,13 +238,10 @@ const queryEdgesOutputSchema = {
       // When the edge was written. Nullable for the same reason: a row that
       // arrives without the key normalises to null rather than to undefined.
       created_at: z.string().nullable(),
-      // Belief-engine evidence columns (fork addition), reported verbatim.
-      // How strongly the from-node talks about the to-node: unsigned, 0..1.
-      // NULL means the edge is not evidence at all.
-      belief_evidence_support: z.number().nullable(),
-      // The from-node's credence × this edge's support, stamped by the app's
-      // belief engine. NULL means never graded, and stays NULL — never 0.
-      belief_evidence_contribution: z.number().nullable()
+      // Belief-engine evidence columns (fork addition), reported verbatim and
+      // declared from the shared contract so both doors advertise them
+      // identically.
+      ...beliefEvidenceEdgeReadOutputSchemaFields
     })
   )
 };
@@ -255,13 +256,9 @@ const updateEdgeInputSchema = {
   // The range is enforced here, before any request reaches the app. Omitting
   // the field leaves the stored support exactly as it is; a support of 0 says
   // the edge WAS assessed and carries nothing — a recorded judgement, never
-  // rejected.
-  belief_evidence_support: z
-    .number()
-    .min(0)
-    .max(1)
-    .optional()
-    .describe('Corrected support: how strongly the source node talks about the target node, as one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely to leave the edge\'s stored support unchanged.')
+  // rejected. Taken from the shared contract so the remote door advertises
+  // exactly the same argument.
+  belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeUpdate
 };
 
 const updateEdgeOutputSchema = {
@@ -677,7 +674,8 @@ server.registerTool(
         // through verbatim. `?? null` normalises only a MISSING key to null; a
         // stored NULL is already null and a real 0 is kept as 0, so an ungraded
         // evidence edge never looks graded and an unexplained edge never looks
-        // like one explained with an empty string.
+        // like one explained with an empty string. The belief columns get that
+        // same normalisation from the shared contract's mapper.
         edges: edges.map(e => ({
           id: e.id,
           from_node_id: e.from_node_id,
@@ -685,8 +683,7 @@ server.registerTool(
           type: e.type ?? e.source ?? null,
           explanation: e.explanation ?? null,
           created_at: e.created_at ?? null,
-          belief_evidence_support: e.belief_evidence_support ?? null,
-          belief_evidence_contribution: e.belief_evidence_contribution ?? null
+          ...beliefEvidenceFieldsForEdgeRead(e)
         }))
       }
     };
