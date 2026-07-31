@@ -447,11 +447,19 @@ function createServer(request: NextRequest): McpServer {
       description: 'Update an existing edge connection only after the user explicitly confirmed the corrected relationship.',
       inputSchema: {
         id: z.number().int().positive(),
-        explanation: z.string().min(1),
+        // The explanation is OPTIONAL: it is the recorded human reasoning for
+        // why the connection exists, and correcting how strongly the source
+        // talks about its neighbour is not an occasion to rewrite it. There is
+        // no read-one-edge-by-id tool to fetch the stored words and hand them
+        // back, so a required explanation would force a support correction to
+        // invent prose over them. A blank one is refused by the handler rather
+        // than treated as an omission.
+        explanation: z.string().min(1).optional(),
         confirmed_by_user: z.boolean(),
         // Belief evidence field (fork addition), taken from the shared
         // contract: the same unsigned 0..1 support rah_create_edge accepts, so
-        // a support written once can be corrected later.
+        // a support written once can be corrected later — plus null, which
+        // un-assesses the edge so it stops being evidence at all.
         belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeUpdate,
       },
       outputSchema: {
@@ -464,17 +472,44 @@ function createServer(request: NextRequest): McpServer {
         throw new Error('rah_update_edge requires explicit user confirmation before writing the corrected relationship.');
       }
 
+      // The corrected explanation, absent when this is a support-only
+      // correction. A SUPPLIED explanation that is blank is refused rather than
+      // treated as an omission: writing whitespace over recorded human reasoning
+      // destroys it just as surely as inventing replacement prose would.
+      const correctedEdgeExplanation = typeof explanation === 'string' ? explanation.trim() : '';
+      if (explanation !== undefined && !correctedEdgeExplanation) {
+        throw new Error(
+          "rah_update_edge refuses a blank explanation. Omit the field entirely to leave the edge's stored explanation unchanged."
+        );
+      }
+
       const edgeUpdateBody: Record<string, unknown> = {
-        context: { explanation: explanation.trim(), created_via: 'mcp' },
         confirmed_by_user: true,
       };
+
+      // Where `created_via: 'mcp'` rides depends on whether this correction
+      // writes a context at all. The app assigns `context` WHOLESALE, so a
+      // context carrying created_via and no explanation would overwrite the
+      // stored one and delete the very reasoning the optional explanation exists
+      // to protect — with no explanation to send, created_via must travel
+      // TOP-LEVEL instead. It must always travel somewhere: the route defaults a
+      // missing created_via to 'ui', and the 'ui' path skips the app-side
+      // confirmation gate entirely.
+      if (correctedEdgeExplanation) {
+        edgeUpdateBody.context = { explanation: correctedEdgeExplanation, created_via: 'mcp' };
+      } else {
+        edgeUpdateBody.created_via = 'mcp';
+      }
 
       // Belief evidence pass-through (fork addition): include the corrected
       // support only when the caller supplied one, so an explanation-only
       // correction still sends an evidence-free payload rather than turning a
-      // plain relationship edge into assessed evidence. Sent TOP-LEVEL, not
-      // inside context, because it belongs to the edges column and not to the
-      // app-owned context JSON.
+      // plain relationship edge into assessed evidence. The test is against
+      // undefined and not against null, because an explicit null is the caller
+      // un-assessing the edge and must reach the app present and null — a
+      // dropped key reads as "no support supplied" and leaves the edge graded.
+      // Sent TOP-LEVEL, not inside context, because it belongs to the edges
+      // column and not to the app-owned context JSON.
       if (belief_evidence_support !== undefined) {
         edgeUpdateBody.belief_evidence_support = belief_evidence_support;
       }

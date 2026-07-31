@@ -10,8 +10,15 @@ import { z } from 'zod';
 /** The unsigned [0, 1] belief_evidence_support argument of rah_create_edge. */
 export declare const beliefEvidenceSupportInputSchemaForEdgeCreate: z.ZodOptional<z.ZodNumber>;
 
-/** The unsigned [0, 1] belief_evidence_support argument of rah_update_edge. */
-export declare const beliefEvidenceSupportInputSchemaForEdgeUpdate: z.ZodOptional<z.ZodNumber>;
+/**
+ * The unsigned [0, 1] belief_evidence_support argument of rah_update_edge,
+ * nullable as well as optional: null is how an update un-assesses the edge, so
+ * the declared type has to admit it or the TypeScript remote door cannot pass
+ * the very value the runtime schema exists to accept.
+ */
+export declare const beliefEvidenceSupportInputSchemaForEdgeUpdate: z.ZodOptional<
+  z.ZodNullable<z.ZodNumber>
+>;
 
 /** The two belief columns of one edge as an edge-read tool reports them. */
 export type BeliefEvidenceEdgeReadFields = {

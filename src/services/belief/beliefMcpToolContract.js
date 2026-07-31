@@ -40,16 +40,27 @@ const beliefEvidenceSupportInputSchemaForEdgeCreate = z
 /**
  * The belief_evidence_support argument of rah_update_edge: the same unsigned
  * [0, 1] range as the create tool, so a support written once can be corrected
- * later. Optional, because omitting it on an UPDATE leaves the stored support
- * exactly as it is — a different meaning from omitting it on a create, and the
- * reason the two descriptions are deliberately kept apart.
+ * later — but NULLABLE where the create schema is not.
+ *
+ * WHY NULLABLE HERE, AND ONLY HERE. An update has a stored support behind it,
+ * so a caller has three distinct things to say and needs three spellings:
+ * a number corrects the support, OMISSION leaves the stored support exactly as
+ * it is, and NULL un-assesses the edge — it stops being evidence at all, its
+ * contribution is cleared and the target node is regraded from whatever
+ * evidence remains. Without null an agent can raise and lower a support forever
+ * but can never take one back, and 0 is no substitute: 0 is an assessed
+ * "carries nothing", a recorded judgement rather than the absence of one.
+ * On a CREATE there is no stored support to withdraw, so null would say nothing
+ * that omission does not already say — which is why the create schema
+ * deliberately keeps refusing it, and why the two descriptions stay apart.
  */
 const beliefEvidenceSupportInputSchemaForEdgeUpdate = z
   .number()
   .min(0)
   .max(1)
+  .nullable()
   .optional()
-  .describe('Corrected support: how strongly the source node talks about the target node, as one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely to leave the edge\'s stored support unchanged.');
+  .describe('Corrected support: how strongly the source node talks about the target node, as one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Send null to un-assess the edge: it stops being evidence at all. Omit the field entirely to leave the edge\'s stored support unchanged.');
 
 /**
  * The two belief columns of one edge, as an edge-read tool must report them.
