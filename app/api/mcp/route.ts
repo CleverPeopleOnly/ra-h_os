@@ -623,6 +623,18 @@ export async function POST(request: NextRequest) {
     const server = createServer(request);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      // Answer in a single complete JSON body rather than the default SSE
+      // stream. In streaming mode handleRequest returns a Response wrapping a
+      // ReadableStream that is filled after this handler has already returned,
+      // so the transport.close() below shut the stream controller before a
+      // single JSON-RPC message was enqueued and every request came back as
+      // HTTP 200 with an empty body. Streaming only earns its keep when a
+      // server pushes progress notifications over a long-lived connection;
+      // every tool on this door returns one result, and a stateless
+      // per-request server that is closed immediately cannot send anything
+      // asynchronously anyway. With a complete JSON body, tearing down
+      // straight afterwards is safe.
+      enableJsonResponse: true,
     });
 
     await server.connect(transport);
