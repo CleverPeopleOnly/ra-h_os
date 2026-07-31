@@ -56,10 +56,18 @@ const acceptedSupportValues = [0, 0.5, 1];
 // system, so a signed support is a category error.
 const rejectedOutOfRangeSupportValues = [-1, -0.5, -0.0001, 1.0001, 1.5, 2];
 
-// Values that are not numbers at all. A numeric string must not be coerced:
-// a caller that sends "0.5" has a bug, and silently accepting it would let a
-// non-number reach the belief engine.
-const rejectedNonNumberSupportValues: unknown[] = ['0.5', '', null, true, false, {}, [], NaN];
+// Values that are not numbers at all and that BOTH write tools must refuse. A
+// numeric string must not be coerced: a caller that sends "0.5" has a bug, and
+// silently accepting it would let a non-number reach the belief engine.
+//
+// null is deliberately NOT in this list, because the two schemas differ on it.
+// On an UPDATE null is a legitimate un-assessment — it takes the stored support
+// back, so the edge stops being evidence at all — and is pinned as accepted in
+// tests/unit/belief/beliefMcpToolContractSupportUnassessment.test.ts. On a
+// CREATE there is no stored support to take back, so null says nothing that
+// omission does not already say and stays refused; that half is pinned just
+// below, on the create schema alone.
+const rejectedNonNumberSupportValues: unknown[] = ['0.5', '', true, false, {}, [], NaN];
 
 describe('belief_evidence_support input schema shared by both MCP doors', () => {
   for (const [toolName, supportInputSchema] of supportInputSchemasBothWriteToolsUse) {
@@ -107,6 +115,18 @@ describe('belief_evidence_support input schema shared by both MCP doors', () => 
       }
     });
   }
+
+  // The create half of the null asymmetry, asserted on the create schema alone
+  // because the update schema legitimately accepts null as an un-assessment.
+  // A newly created edge has no stored support to withdraw, so null there would
+  // offer a caller a second spelling of omission and invite the reading that a
+  // create can un-assess something.
+  it('rejects null for rah_create_edge, which has no stored support to withdraw', () => {
+    expect(
+      beliefEvidenceSupportInputSchemaForEdgeCreate.safeParse(null).success,
+      'null must stay invalid on create — omission is how a plain relationship edge is created'
+    ).toBe(false);
+  });
 
   // The two schemas share a range but must NOT share a description: omitting
   // support on a create means "this edge is not evidence", while omitting it
