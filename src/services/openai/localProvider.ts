@@ -1,5 +1,5 @@
 import { createOpenAI } from '@ai-sdk/openai';
-import { getPreferredOpenAiKey } from '@/services/storage/openaiKeyServer';
+import { getPreferredOpenAiKey } from '@/services/storage/apiKeyServer';
 
 export function createLocalOpenAIProvider() {
   const apiKey = getPreferredOpenAiKey();

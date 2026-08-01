@@ -5,7 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import { checkDatabaseHealth } from '@/services/database';
-import { hasPreferredOpenAiKey } from '@/services/storage/openaiKeyServer';
+import { hasPreferredOpenAiKey } from '@/services/storage/apiKeyServer';
 
 export const runtime = 'nodejs';
 
