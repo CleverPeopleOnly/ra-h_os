@@ -1,3 +1,7 @@
+// MUST stay the first import: it loads `.env.local` into process.env as a
+// module side effect, and the imports below (sqlite-client in particular)
+// read process.env while their modules load.
+import '@/services/config/loadEnvLocalIntoProcessEnvOnImport';
 import { getSQLiteClient } from '@/services/database/sqlite-client';
 import { NodeEmbedder } from '@/services/typescript/embed-nodes';
 import { UniversalEmbedder } from '@/services/typescript/embed-universal';
