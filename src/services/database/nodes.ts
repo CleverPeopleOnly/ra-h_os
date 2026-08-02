@@ -197,10 +197,15 @@ export class NodeService {
 
   private async getNodeByIdSQLite(id: number): Promise<Node | null> {
     const sqlite = getSQLiteClient();
+    // The three belief columns (fork addition) ride the same SELECT so a node
+    // read carries the node's belief: belief_credence NULL means nobody has
+    // grounded the node (a real state, never coerced to 0), and
+    // belief_credence_is_fixed is NOT NULL DEFAULT 0 so it always has a value.
     const query = `
       SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
              n.chunk_status, n.embedding_updated_at, n.embedding_text,
-             n.created_at, n.updated_at
+             n.created_at, n.updated_at,
+             n.belief_credence, n.belief_computed_at, n.belief_credence_is_fixed
       FROM nodes n
       WHERE n.id = ?
     `;

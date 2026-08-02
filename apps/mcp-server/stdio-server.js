@@ -14,7 +14,15 @@ const {
   beliefEvidenceSupportInputSchemaForEdgeCreate,
   beliefEvidenceSupportInputSchemaForEdgeUpdate,
   beliefEvidenceFieldsForEdgeRead,
-  beliefEvidenceEdgeReadOutputSchemaFields
+  beliefEvidenceEdgeReadOutputSchemaFields,
+  beliefFieldsForNodeRead,
+  beliefNodeReadOutputSchemaFields,
+  beliefSetFixedCredenceInputSchemaFields,
+  beliefSetFixedCredenceOutputSchemaFields,
+  beliefMovementsReadInputSchemaFields,
+  beliefMovementsReadOutputSchemaFields,
+  beliefRecomputeInputSchemaFields,
+  beliefRecomputeOutputSchemaFields
 } = require('../../src/services/belief/beliefMcpToolContract.js');
 
 const instructions = [
@@ -158,7 +166,10 @@ const getNodesOutputSchema = {
       metadata: z.record(z.any()).nullable(),
       // When the node was first written, alongside the last-write timestamp.
       created_at: z.string(),
-      updated_at: z.string()
+      updated_at: z.string(),
+      // Belief-engine node columns (fork addition), declared from the shared
+      // contract so both doors advertise them identically.
+      ...beliefNodeReadOutputSchemaFields
     })
   )
 };
@@ -590,7 +601,11 @@ server.registerTool(
             // recorded" stays null rather than becoming an empty bag.
             metadata: result.node.metadata ?? null,
             created_at: result.node.created_at,
-            updated_at: result.node.updated_at
+            updated_at: result.node.updated_at,
+            // The node's belief columns (fork addition), normalised by the
+            // shared contract's mapper: a stored NULL credence stays null
+            // (nobody has grounded the node) and a real 0 stays 0.
+            ...beliefFieldsForNodeRead(result.node)
           });
         }
       } catch (e) {
@@ -756,6 +771,105 @@ server.registerTool(
       structuredContent: {
         success: true,
         message: result.message || `Updated edge #${id}`
+      }
+    };
+  }
+);
+
+// ========== BELIEF TOOLS (fork addition) ==========
+// All three are validate-and-forward proxies onto the app's belief endpoints;
+// the app is never reimplemented door-side, and every schema comes from the
+// shared contract so the remote door advertises exactly the same surface.
+
+server.registerTool(
+  'rah_set_belief_fixed_credence',
+  {
+    title: 'Set RA-H fixed belief credence',
+    description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from incoming evidence. This is the bootstrap a graph needs before anything in it can be graded: a node\'s credence is also the credence carried by every piece of evidence that node supplies. Calling it again replaces the asserted credence in place.',
+    inputSchema: beliefSetFixedCredenceInputSchemaFields,
+    outputSchema: beliefSetFixedCredenceOutputSchemaFields
+  },
+  async ({ node_id, belief_credence }) => {
+    // Forward the assertion under the exact column names; the app enforces
+    // node existence and the open interval again on its own surface.
+    const result = await callRaHApi('/api/belief/fixed-credence', {
+      method: 'POST',
+      body: JSON.stringify({ node_id, belief_credence })
+    });
+
+    const summary = result.message || `Asserted belief_credence ${belief_credence} on node #${node_id}.`;
+    return {
+      content: [{ type: 'text', text: summary }],
+      // The app's standalone-shaped reply, passed through field for field.
+      structuredContent: {
+        success: true,
+        node_id: result.node_id,
+        belief_credence: result.belief_credence,
+        belief_credence_is_fixed: result.belief_credence_is_fixed,
+        belief_computed_at: result.belief_computed_at,
+        message: summary
+      }
+    };
+  }
+);
+
+server.registerTool(
+  'rah_get_belief_movements',
+  {
+    title: 'Get RA-H belief movements',
+    description: 'Read the log of one node\'s belief_credence changing, newest movement first. Each movement records the credence before the change (null when the node was previously ungraded), the credence after, what caused it, and when it happened. An empty log is a success: the node\'s credence has simply never changed.',
+    inputSchema: beliefMovementsReadInputSchemaFields,
+    outputSchema: beliefMovementsReadOutputSchemaFields
+  },
+  async ({ node_id, limit }) => {
+    // node_id rides the query string; the limit forwards so the APP caps the
+    // page — the door must not page a log it never loaded.
+    const params = new URLSearchParams();
+    params.set('node_id', String(node_id));
+    if (limit !== undefined) params.set('limit', String(limit));
+
+    const result = await callRaHApi(`/api/belief/movements?${params.toString()}`, {
+      method: 'GET'
+    });
+
+    const movements = Array.isArray(result.movements) ? result.movements : [];
+    const movementCount = typeof result.count === 'number' ? result.count : movements.length;
+    return {
+      content: [{ type: 'text', text: `Found ${movementCount} movement(s) for node #${node_id}.` }],
+      // The app's newest-first order and exact column names pass through
+      // untouched.
+      structuredContent: {
+        count: movementCount,
+        movements
+      }
+    };
+  }
+);
+
+server.registerTool(
+  'rah_recompute_node_belief',
+  {
+    title: 'Recompute RA-H node belief',
+    description: 'Ask the app-owned belief engine to regrade one node\'s belief_credence from its incoming evidence. A null credence in the reply is a real answer, not an error: the node has no counted evidence and stays ungraded — never reported as 0.',
+    inputSchema: beliefRecomputeInputSchemaFields,
+    outputSchema: beliefRecomputeOutputSchemaFields
+  },
+  async ({ node_id }) => {
+    const result = await callRaHApi('/api/belief/recompute', {
+      method: 'POST',
+      body: JSON.stringify({ node_id })
+    });
+
+    const summary = result.message || `Recomputed belief for node #${node_id}.`;
+    return {
+      content: [{ type: 'text', text: summary }],
+      // The regraded credence passes through verbatim — including null, which
+      // must stay null and never be coerced to 0.
+      structuredContent: {
+        success: true,
+        node_id: result.node_id,
+        belief_credence: result.belief_credence ?? null,
+        message: summary
       }
     };
   }
