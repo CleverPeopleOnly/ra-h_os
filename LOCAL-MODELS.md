@@ -51,6 +51,20 @@ If you change embedding provider, model, dimensions, or vector backend after dat
 npm run rebuild:embeddings
 ```
 
+## Voyage Embeddings (hosted)
+
+The `voyage` profile uses hosted Voyage AI embeddings instead of a local embedding server. It is embeddings only — Voyage has no chat models, so pair it with any LLM profile (OpenAI or a local OpenAI-compatible server); your `LLM_*` settings are left untouched.
+
+Setup:
+
+```bash
+npm run setup:local -- --profile voyage
+```
+
+This writes `EMBEDDING_PROFILE=voyage`, `EMBEDDING_MODEL=voyage-4-large`, and `EMBEDDING_DIMENSIONS=1024` — the same 1024 dimensions as the local Qwen profiles, so existing sqlite-vec tables match.
+
+Requires `VOYAGE_API_KEY` in `.env.local` (get one at https://www.voyageai.com).
+
 ## Vector Storage
 
 Qwen3 creates vectors. sqlite-vec or Qdrant stores and searches those vectors.

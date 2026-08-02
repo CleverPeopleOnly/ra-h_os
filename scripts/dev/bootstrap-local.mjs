@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 const repoDir = process.cwd();
 const envTemplate = path.join(repoDir, '.env.example');
 const targetEnv = path.join(repoDir, '.env.local');
-const supportedProfiles = new Set(['openai', 'qwen-local', 'llama-cpp']);
+const supportedProfiles = new Set(['openai', 'qwen-local', 'llama-cpp', 'voyage']);
 
 function log(message) {
   console.log(`[bootstrap-local] ${message}`);
@@ -141,7 +141,7 @@ function normalizeSetupProfile(rawProfile) {
 function applySetupProfile(profile) {
   if (!profile) return;
   if (!supportedProfiles.has(profile)) {
-    throw new Error(`Unsupported setup profile "${profile}". Use "openai", "qwen-local", or "llama-cpp".`);
+    throw new Error(`Unsupported setup profile "${profile}". Use "openai", "qwen-local", "llama-cpp", or "voyage".`);
   }
 
   if (profile === 'openai') {
@@ -149,6 +149,16 @@ function applySetupProfile(profile) {
     ensureEnvValue('EMBEDDING_PROFILE', 'openai');
     ensureEnvValue('EMBEDDING_MODEL', 'text-embedding-3-small');
     ensureEnvValue('EMBEDDING_DIMENSIONS', '1536');
+    ensureEnvValue('VECTOR_BACKEND', 'sqlite-vec');
+    return;
+  }
+
+  if (profile === 'voyage') {
+    // Voyage supplies embeddings only (no chat models), so LLM_* keys are
+    // deliberately left as-is — the user pairs voyage with any LLM profile.
+    ensureEnvValue('EMBEDDING_PROFILE', 'voyage');
+    ensureEnvValue('EMBEDDING_MODEL', 'voyage-4-large');
+    ensureEnvValue('EMBEDDING_DIMENSIONS', '1024');
     ensureEnvValue('VECTOR_BACKEND', 'sqlite-vec');
     return;
   }
@@ -186,11 +196,13 @@ function assertEmbeddingProfileSelected(env) {
     'The selected embedding model controls sqlite-vec table dimensions:',
     '  OpenAI text-embedding-3-small -> 1536',
     '  Local Qwen qwen3-embedding:0.6b -> 1024',
+    '  Voyage voyage-4-large -> 1024',
     '',
     'Run one of:',
     '  npm run setup:local -- --profile openai',
     '  npm run setup:local -- --profile qwen-local',
     '  npm run setup:local -- --profile llama-cpp',
+    '  npm run setup:local -- --profile voyage',
     '',
     'If you change embedding provider later, run:',
     '  npm run rebuild:embeddings',

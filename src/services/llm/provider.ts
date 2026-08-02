@@ -1,6 +1,6 @@
 import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
-import { getPreferredOpenAiKey } from '@/services/storage/openaiKeyServer';
+import { getPreferredOpenAiKey } from '@/services/storage/apiKeyServer';
 
 export type UtilityLlmProfile = 'openai' | 'openai-compatible' | 'custom';
 
