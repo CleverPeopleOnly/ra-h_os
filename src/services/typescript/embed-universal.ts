@@ -40,9 +40,10 @@ export class UniversalEmbedder {
 
   /**
    * Generate embedding for text using the active embedding profile.
+   * Source chunks are embedded for storage, so the input type is 'document'.
    */
   private async generateEmbedding(text: string): Promise<number[]> {
-    return createEmbeddingProvider().generateEmbedding(text);
+    return createEmbeddingProvider().generateEmbedding(text, 'document');
   }
 
   /**

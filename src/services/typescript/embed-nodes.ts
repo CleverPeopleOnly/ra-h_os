@@ -66,9 +66,10 @@ Source: ${node.source || 'No source'}
 
   /**
    * Generate embedding for text using the active embedding profile.
+   * Node metadata is embedded for storage, so the input type is 'document'.
    */
   private async generateEmbedding(text: string): Promise<number[]> {
-    return createEmbeddingProvider().generateEmbedding(text);
+    return createEmbeddingProvider().generateEmbedding(text, 'document');
   }
 
   /**
