@@ -4,6 +4,7 @@ import path from 'path';
 // Template placeholders that must never be treated as real keys.
 const OPENAI_KEY_PLACEHOLDER = 'your-openai-api-key-here';
 const VOYAGE_KEY_PLACEHOLDER = 'your-voyage-api-key-here';
+const ANTHROPIC_KEY_PLACEHOLDER = 'your-anthropic-api-key-here';
 
 // Find the first `<envKeyName>=` line in .env.local contents and return its
 // value with surrounding quotes stripped. Comment lines are skipped; an empty
@@ -55,4 +56,9 @@ export function hasPreferredOpenAiKey(): boolean {
 // Voyage keys start 'pa-', never 'sk-', so no prefix check applies here.
 export function getPreferredVoyageKey(): string | undefined {
   return readKeyFromEnvLocal('VOYAGE_API_KEY', VOYAGE_KEY_PLACEHOLDER);
+}
+
+// Anthropic keys start 'sk-ant-'; no prefix check applies, same as the Voyage reader.
+export function getPreferredAnthropicKey(): string | undefined {
+  return readKeyFromEnvLocal('ANTHROPIC_API_KEY', ANTHROPIC_KEY_PLACEHOLDER);
 }

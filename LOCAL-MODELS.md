@@ -65,6 +65,20 @@ This writes `EMBEDDING_PROFILE=voyage`, `EMBEDDING_MODEL=voyage-4-large`, and `E
 
 Requires `VOYAGE_API_KEY` in `.env.local` (get one at https://www.voyageai.com).
 
+## Anthropic Utility LLM (hosted)
+
+The `anthropic` profile uses Anthropic's hosted models for the utility LLM instead of a local model server. Set in `.env.local`:
+
+```bash
+LLM_PROFILE=anthropic
+# Optional — defaults to claude-opus-5:
+# LLM_MODEL=claude-opus-5
+```
+
+Requires `ANTHROPIC_API_KEY` in `.env.local` (get one at https://platform.claude.com).
+
+It is LLM only — Anthropic has no embeddings API, so pair it with any embedding profile (OpenAI, Voyage, or a local OpenAI-compatible server); your `EMBEDDING_*` settings are left untouched.
+
 ## Vector Storage
 
 Qwen3 creates vectors. sqlite-vec or Qdrant stores and searches those vectors.
