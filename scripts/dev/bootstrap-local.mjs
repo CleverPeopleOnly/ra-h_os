@@ -651,7 +651,10 @@ function ensureCoreSchema(db) {
 }
 
 function getEmbeddingDimensions(env) {
-  const defaultDimensions = env.EMBEDDING_PROFILE === 'openai-compatible' || env.EMBEDDING_PROFILE === 'custom'
+  // Profiles whose providers emit 1024-wide vectors; everything else (the
+  // OpenAI default) is 1536-wide.
+  const profilesWith1024Dimensions = ['openai-compatible', 'custom', 'voyage'];
+  const defaultDimensions = profilesWith1024Dimensions.includes(env.EMBEDDING_PROFILE)
     ? '1024'
     : '1536';
   return Number(env.EMBEDDING_DIMENSIONS || defaultDimensions);
@@ -678,7 +681,7 @@ function tryInitVectorTables(db, dbPath, env) {
       );
     `);
     log(`Initialized sqlite-vec tables using ${extensionPath}`);
-  } catch (error) {
+  } catch {
     log(`sqlite-vec unavailable for bootstrap (${dbPath}). Continuing without vector tables.`);
   }
 }
