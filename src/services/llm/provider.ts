@@ -1,8 +1,9 @@
-import { generateText } from 'ai';
+import { generateText, type LanguageModel } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
-import { getPreferredOpenAiKey } from '@/services/storage/apiKeyServer';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { getPreferredAnthropicKey, getPreferredOpenAiKey } from '@/services/storage/apiKeyServer';
 
-export type UtilityLlmProfile = 'openai' | 'openai-compatible' | 'custom';
+export type UtilityLlmProfile = 'openai' | 'anthropic' | 'openai-compatible' | 'custom';
 
 export interface UtilityLlmRequest {
   prompt: string;
@@ -37,9 +38,10 @@ export interface UtilityLlmProvider {
 }
 
 const DEFAULT_OPENAI_LLM_MODEL = 'gpt-4o-mini';
+const DEFAULT_ANTHROPIC_LLM_MODEL = 'claude-opus-5';
 
 function normalizeProfile(raw: string | undefined): UtilityLlmProfile {
-  if (raw === 'openai-compatible' || raw === 'custom') return raw;
+  if (raw === 'anthropic' || raw === 'openai-compatible' || raw === 'custom') return raw;
   return 'openai';
 }
 
@@ -49,6 +51,14 @@ export function getUtilityLlmProviderInfo(): UtilityLlmProviderInfo {
     return {
       profile,
       model: process.env.LLM_MODEL || DEFAULT_OPENAI_LLM_MODEL,
+    };
+  }
+
+  // The official Anthropic provider knows its endpoint, so no base URL applies.
+  if (profile === 'anthropic') {
+    return {
+      profile,
+      model: process.env.LLM_MODEL || DEFAULT_ANTHROPIC_LLM_MODEL,
     };
   }
 
@@ -66,13 +76,27 @@ export function getUtilityLlmProviderInfo(): UtilityLlmProviderInfo {
   };
 }
 
-function createProvider(info: UtilityLlmProviderInfo): ReturnType<typeof createOpenAI> {
+// Both official providers are callable as provider(modelId) → a model object
+// for generateText.
+type UtilityLlmProviderCallable = (modelId: string) => LanguageModel;
+
+function createProvider(info: UtilityLlmProviderInfo): UtilityLlmProviderCallable {
   if (info.profile === 'openai') {
     const apiKey = getPreferredOpenAiKey();
     if (!apiKey) {
       throw new Error('OpenAI API key not configured. Add your key in Settings or .env.local.');
     }
     return createOpenAI({ apiKey });
+  }
+
+  if (info.profile === 'anthropic') {
+    const apiKey = getPreferredAnthropicKey() || process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        'Anthropic API key not configured. Add ANTHROPIC_API_KEY to your .env.local file.'
+      );
+    }
+    return createAnthropic({ apiKey });
   }
 
   return createOpenAI({
@@ -108,7 +132,7 @@ export function createUtilityLlmProvider(): UtilityLlmProvider {
           ok: true,
           profile: info.profile,
           model: info.model,
-          detail: info.baseUrl ? `Connected to ${info.baseUrl}` : 'OpenAI utility LLM ready',
+          detail: info.baseUrl ? `Connected to ${info.baseUrl}` : `${info.profile} utility LLM ready`,
         };
       } catch (error) {
         return {
