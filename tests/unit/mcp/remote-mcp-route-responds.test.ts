@@ -68,6 +68,9 @@ const toolNamesTheRemoteMcpDoorAdvertises = [
   'rah_extract_youtube',
   'rah_extract_pdf',
   'rah_get_context',
+  'rah_set_belief_fixed_credence',
+  'rah_get_belief_movements',
+  'rah_recompute_node_belief',
 ];
 
 // The node record the app stub returns from the search endpoint, so the

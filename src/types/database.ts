@@ -30,6 +30,18 @@ export interface Node {
   embedding_updated_at?: string;
   embedding_text?: string;
   chunk_status?: 'not_chunked' | 'chunking' | 'chunked' | 'error' | null;
+
+  // Belief-engine node columns (fork addition), read straight off the nodes
+  // row. NULL is a meaningful state on the first two.
+  // How much this node is believed — the ONLY signed quantity in the system.
+  // NULL means nobody has grounded the node, which must never collapse into 0
+  // (assessed and believed neither way).
+  belief_credence?: number | null;
+  // When the credence was stamped; NULL exactly when the node is ungraded.
+  belief_computed_at?: string | null;
+  // 0/1 flag: 1 says a human asserted the credence by hand instead of the
+  // engine deriving it. NOT NULL DEFAULT 0, so it has no null state.
+  belief_credence_is_fixed?: number;
 }
 
 export interface Chunk {
