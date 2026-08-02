@@ -3,6 +3,10 @@ import { getPreferredOpenAiKey, getPreferredVoyageKey } from '@/services/storage
 
 export type EmbeddingProfile = 'openai' | 'openai-compatible' | 'custom' | 'voyage';
 
+// The role a text plays in retrieval: 'document' when being stored,
+// 'query' when being searched with. Voyage embeds the two differently.
+export type EmbeddingInputType = 'query' | 'document';
+
 export interface EmbeddingProviderInfo {
   profile: EmbeddingProfile;
   model: string;
@@ -20,7 +24,7 @@ export interface EmbeddingHealth {
 
 export interface EmbeddingProvider {
   info(): EmbeddingProviderInfo;
-  generateEmbedding(text: string): Promise<number[]>;
+  generateEmbedding(text: string, inputType?: EmbeddingInputType): Promise<number[]>;
   healthCheck(): Promise<EmbeddingHealth>;
 }
 
@@ -102,7 +106,11 @@ function createOpenAiClient(info: EmbeddingProviderInfo): OpenAI {
 // OpenAI's parameter names (`dimensions`, `encoding_format`) with HTTP 400,
 // so its own body shape { model, input, output_dimension } is required and
 // the OpenAI SDK client cannot be reused here.
-async function fetchVoyageEmbedding(info: EmbeddingProviderInfo, text: string): Promise<number[] | undefined> {
+async function fetchVoyageEmbedding(
+  info: EmbeddingProviderInfo,
+  text: string,
+  inputType?: EmbeddingInputType
+): Promise<number[] | undefined> {
   // .env.local (settings UI) wins over the process env, matching the OpenAI key path.
   const voyageApiKey = getPreferredVoyageKey() || process.env.VOYAGE_API_KEY;
   if (!voyageApiKey) {
@@ -119,6 +127,9 @@ async function fetchVoyageEmbedding(info: EmbeddingProviderInfo, text: string): 
       model: info.model,
       input: text.trim(),
       output_dimension: info.dimensions,
+      // Omitting input_type entirely (no key, not undefined) is Voyage's
+      // documented untyped mode, so only an explicit argument adds the key.
+      ...(inputType !== undefined ? { input_type: inputType } : {}),
     }),
   });
 
@@ -146,10 +157,10 @@ export function createEmbeddingProvider(): EmbeddingProvider {
 
   return {
     info: () => info,
-    async generateEmbedding(text: string): Promise<number[]> {
+    async generateEmbedding(text: string, inputType?: EmbeddingInputType): Promise<number[]> {
       let embedding: number[] | undefined;
       if (info.profile === 'voyage') {
-        embedding = await fetchVoyageEmbedding(info, text);
+        embedding = await fetchVoyageEmbedding(info, text, inputType);
       } else {
         const client = createOpenAiClient(info);
         const response = await client.embeddings.create({

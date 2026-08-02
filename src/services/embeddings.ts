@@ -10,7 +10,7 @@ export class EmbeddingService {
    */
   static async generateQueryEmbedding(query: string): Promise<number[]> {
     try {
-      return await createEmbeddingProvider().generateEmbedding(query);
+      return await createEmbeddingProvider().generateEmbedding(query, 'query');
     } catch (error) {
       console.error('Failed to generate query embedding:', error);
       throw new Error(`Embedding generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
