@@ -217,6 +217,14 @@ function ensureBeliefSchema(db) {
     // Set when a human asserted this node's credence instead of the app's
     // belief engine deriving it from incoming evidence.
     ['nodes', 'belief_credence_is_fixed', 'INTEGER NOT NULL DEFAULT 0'],
+    // The two v2 evidence masses (belief model v2, spec §2): the primary
+    // belief state behind the cached credence projection. Both REAL and
+    // NULLABLE, because both-NULL is the "never assessed" state — which is
+    // what ADD COLUMN backfills every existing row with. Schema only: this
+    // path never rewrites data (the app's startup recovery sweep does the
+    // regrading).
+    ['nodes', 'belief_evidence_for_mass', 'REAL'],
+    ['nodes', 'belief_evidence_against_mass', 'REAL'],
     ['edges', 'belief_evidence_support', 'REAL'],
     ['edges', 'belief_evidence_contribution', 'REAL'],
   ];
@@ -253,6 +261,11 @@ function ensureBeliefSchema(db) {
   // existing log, so an older one only gets there through these renames.
   renameBeliefColumnToCredence(db, 'belief_movements', 'from_value', 'from_credence');
   renameBeliefColumnToCredence(db, 'belief_movements', 'to_value', 'to_credence');
+
+  // Every movement read filters on node_id (belief model v2, spec §5), so
+  // the log carries an index on it — the same index the app-side schema
+  // creates, so a database either side creates is one the other can run over.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_belief_movements_node_id ON belief_movements(node_id);');
 }
 
 function initDb(dbPath) {

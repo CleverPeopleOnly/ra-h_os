@@ -45,9 +45,10 @@ export async function POST(request: NextRequest) {
       }, { status: 404 });
     }
 
-    // The engine does the grading, persists the credence, stamps the counted
-    // edges and appends a movement iff the credence actually moved.
-    const beliefRecomputeResult = await recomputeNodeBelief(recomputedNodeId);
+    // The engine does the grading, persists the credence and masses, stamps
+    // the counted edges and appends a movement iff the credence actually
+    // moved — logged under this entry point's own trigger (spec §5).
+    const beliefRecomputeResult = await recomputeNodeBelief(recomputedNodeId, 'mcp-recompute');
 
     // The reply carries the credence that was actually persisted — including
     // null for a node with no counted evidence, which stays ungraded.

@@ -37,11 +37,14 @@ import type { z } from 'zod';
 // file exists to create.
 import * as beliefMcpToolContract from '@/services/belief/beliefMcpToolContract';
 
-// The three belief columns of one node as a node-read tool must report them.
+// The belief fields of one node as a node-read tool must report them —
+// EDITED per belief model v2 §2/§6: belief_uncertainty (derived on read from
+// the evidence masses) joins the three stored columns.
 type BeliefNodeReadFields = {
   belief_credence: number | null;
   belief_computed_at: string | null;
   belief_credence_is_fixed: number;
+  belief_uncertainty: number | null;
 };
 
 // The two new exports under test, typed locally because the contract does not
@@ -75,6 +78,9 @@ describe('belief fields mapper for a node read', () => {
       belief_credence: null,
       belief_computed_at: null,
       belief_credence_is_fixed: 0,
+      // EDITED per v2 §2: no masses on the row means never assessed, so the
+      // derived uncertainty is null too.
+      belief_uncertainty: null,
     });
     expect(Object.keys(mappedBeliefFields)).toContain('belief_credence');
     expect(Object.keys(mappedBeliefFields)).toContain('belief_computed_at');
@@ -125,12 +131,15 @@ describe('belief fields mapper for a node read', () => {
       belief_credence: -0.4,
       belief_computed_at: GRADED_BELIEF_COMPUTED_AT,
       belief_credence_is_fixed: 1,
+      // EDITED per v2 §2: a fixed credence is the dogmatic opinion, u = 0.
+      belief_uncertainty: 0,
     });
   });
 
   // The mapper reports the belief fields and nothing else, so a door can
   // spread it into its node read without it overwriting neighbouring columns.
-  it('reports exactly the three belief fields and no others', () => {
+  // EDITED per v2 §6: belief_uncertainty joins the three stored columns.
+  it('reports exactly the four belief fields and no others', () => {
     const mappedBeliefFields = beliefFieldsForNodeRead({
       id: 5,
       title: 'A graded node',
@@ -144,18 +153,21 @@ describe('belief fields mapper for a node read', () => {
       'belief_computed_at',
       'belief_credence',
       'belief_credence_is_fixed',
+      'belief_uncertainty',
     ]);
   });
 });
 
 describe('belief output-schema fields for a node read', () => {
-  // The fragment must declare exactly the three belief columns, so a door can
+  // The fragment must declare exactly the four belief fields, so a door can
   // spread it into its per-node output schema and advertise all of them.
-  it('declares exactly the three belief columns', () => {
+  // EDITED per v2 §6: belief_uncertainty joins the three stored columns.
+  it('declares exactly the four belief fields', () => {
     expect(Object.keys(beliefNodeReadOutputSchemaFields).sort()).toEqual([
       'belief_computed_at',
       'belief_credence',
       'belief_credence_is_fixed',
+      'belief_uncertainty',
     ]);
   });
 

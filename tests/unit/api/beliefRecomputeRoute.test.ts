@@ -11,7 +11,7 @@
  *
  *  - a recompute answers { success, node_id, belief_credence, message } and
  *    the answered credence is the one actually persisted on the node,
- *  - the engine's movement row (trigger 'belief-recompute') reaches the
+ *  - the engine's movement row (trigger 'mcp-recompute', v2 §5) reaches the
  *    belief_movements table when the credence moved, and a repeat over an
  *    unchanged graph appends nothing,
  *  - belief_credence NULL is a REAL answer, not an error: a node with no
@@ -117,7 +117,10 @@ describe('POST /api/belief/recompute', () => {
     expect(beliefMovements[0]).toMatchObject({
       from_credence: null,
       to_credence: recomputeReply.belief_credence,
-      trigger: 'belief-recompute',
+      // EDITED per belief model v2 §5: the trigger names the actual entry
+      // point — this route is the doors' engine door, 'mcp-recompute'; the
+      // v1 constant 'belief-recompute' is retired.
+      trigger: 'mcp-recompute',
     });
   });
 

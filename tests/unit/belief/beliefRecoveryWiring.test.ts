@@ -4,7 +4,7 @@
  * Seam chosen: AutoEmbedQueue.recoverStuckNodes. The app's only startup
  * recovery entry point is instrumentation.ts -> startAutoEmbedRecovery(),
  * which calls autoEmbedQueue.recoverStuckNodes() immediately and then every
- * 60 seconds. Wiring recoverUngradedEvidence into recoverStuckNodes gives
+ * 60 seconds. Wiring runBeliefRecoverySweep into recoverStuckNodes gives
  * the belief sweep exactly the recovery cadence the embed sweep already has
  * (startup + periodic), with no new startup plumbing — and it is testable
  * without booting the Next runtime.
@@ -29,9 +29,11 @@ vi.mock('@/services/embedding/ingestion', () => ({
 }));
 
 // Replace the belief recovery service with a spy so the test can observe
-// whether recoverStuckNodes triggers the sweep.
+// whether recoverStuckNodes triggers the sweep. RENAMED per Reviewer ruling 4
+// (belief model v2): the sweep export is runBeliefRecoverySweep, and this
+// file is one of its callers/imports.
 vi.mock('@/services/belief/beliefRecoveryService', () => ({
-  recoverUngradedEvidence: vi.fn(async () => ({ regradedNodeIds: [] })),
+  runBeliefRecoverySweep: vi.fn(async () => ({ regradedNodeIds: [] })),
 }));
 
 // The database context under test; opened per test, closed after each.
@@ -47,7 +49,8 @@ describe('belief recovery wiring (MR-B)', () => {
   // (AutoEmbedQueue.recoverStuckNodes) must also trigger the belief
   // recovery sweep, so offline standalone evidence writes get graded when
   // the app comes back up.
-  it('AutoEmbedQueue.recoverStuckNodes triggers recoverUngradedEvidence', async () => {
+  // RENAMED per Reviewer ruling 4: the export is runBeliefRecoverySweep.
+  it('AutoEmbedQueue.recoverStuckNodes triggers runBeliefRecoverySweep', async () => {
     db = await openTempBeliefDatabase();
 
     // Import through the current database generation so the mock above is
@@ -58,6 +61,6 @@ describe('belief recovery wiring (MR-B)', () => {
     const queue = new AutoEmbedQueue();
     await queue.recoverStuckNodes();
 
-    expect(vi.mocked(beliefRecoveryModule.recoverUngradedEvidence)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(beliefRecoveryModule.runBeliefRecoverySweep)).toHaveBeenCalledTimes(1);
   });
 });

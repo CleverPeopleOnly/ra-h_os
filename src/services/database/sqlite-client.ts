@@ -406,7 +406,9 @@ class SQLiteClient {
         chunk_status TEXT DEFAULT 'not_chunked',
         belief_credence REAL,
         belief_computed_at TEXT,
-        belief_credence_is_fixed INTEGER NOT NULL DEFAULT 0
+        belief_credence_is_fixed INTEGER NOT NULL DEFAULT 0,
+        belief_evidence_for_mass REAL,
+        belief_evidence_against_mass REAL
       );
 
       CREATE TABLE IF NOT EXISTS edges (
@@ -470,6 +472,7 @@ class SQLiteClient {
 
       CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_node_id);
       CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_node_id);
+      CREATE INDEX IF NOT EXISTS idx_belief_movements_node_id ON belief_movements(node_id);
       CREATE INDEX IF NOT EXISTS idx_nodes_updated_at ON nodes(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_chunks_node_id ON chunks(node_id);
       CREATE INDEX IF NOT EXISTS idx_chats_thread ON chats(thread_id);
@@ -546,6 +549,20 @@ class SQLiteClient {
       ensureNodeBeliefCol(
         'belief_credence_is_fixed',
         'ALTER TABLE nodes ADD COLUMN belief_credence_is_fixed INTEGER NOT NULL DEFAULT 0;'
+      );
+      // The two v2 evidence masses (spec §2): the primary belief state, both
+      // REAL and NULLABLE because both-NULL is the "never assessed" state —
+      // which is exactly what ADD COLUMN backfills every existing row with.
+      // Schema only: no data is rewritten here — v1-graded rows keep their
+      // credence and are regraded (masses filled in) by the startup recovery
+      // sweep, movement trigger 'model-migration'.
+      ensureNodeBeliefCol(
+        'belief_evidence_for_mass',
+        'ALTER TABLE nodes ADD COLUMN belief_evidence_for_mass REAL;'
+      );
+      ensureNodeBeliefCol(
+        'belief_evidence_against_mass',
+        'ALTER TABLE nodes ADD COLUMN belief_evidence_against_mass REAL;'
       );
     } catch (nodeErr) {
       console.warn('Failed to ensure nodes belief columns:', nodeErr);

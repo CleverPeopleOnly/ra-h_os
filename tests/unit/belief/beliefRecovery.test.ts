@@ -1,6 +1,8 @@
 /**
  * MR-B tests for the belief recovery sweep
- * (src/services/belief/beliefRecoveryService.recoverUngradedEvidence).
+ * (src/services/belief/beliefRecoveryService.runBeliefRecoverySweep —
+ * RENAMED from recoverUngradedEvidence per belief model v2: the sweep now
+ * recovers stale stamps as well as never-stamped edges).
  *
  * The sweep exists for one scenario: the standalone MCP server wrote
  * evidence edges while the app was closed. Those edges carry a NULL
@@ -57,8 +59,8 @@ describe('belief recovery sweep (MR-B)', () => {
       support: 0.8,
     });
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    const recoveryResult = await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    const recoveryResult = await runBeliefRecoverySweep();
 
     // The regraded node is reported.
     expect(recoveryResult.regradedNodeIds).toContain(claimNodeId);
@@ -102,8 +104,8 @@ describe('belief recovery sweep (MR-B)', () => {
     const movementsAfterGrading = db.readBeliefMovements(claimNodeId);
     expect(movementsAfterGrading).toHaveLength(1);
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    const recoveryResult = await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    const recoveryResult = await runBeliefRecoverySweep();
 
     // Fully-stamped node: not reported, no new movement rows.
     expect(recoveryResult.regradedNodeIds).not.toContain(claimNodeId);
@@ -145,8 +147,8 @@ describe('belief recovery sweep (MR-B)', () => {
       support: 0.8,
     });
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    const recoveryResult = await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    const recoveryResult = await runBeliefRecoverySweep();
 
     expect(recoveryResult.regradedNodeIds).toContain(claimNodeId);
     expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
@@ -173,13 +175,15 @@ describe('belief recovery sweep (MR-B)', () => {
       support: 0.8,
     });
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    const recoveryResult = await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    const recoveryResult = await runBeliefRecoverySweep();
 
     expect(recoveryResult.regradedNodeIds).toContain(claimNodeId);
-    // Graded negative off C = |-0.9 × 0.8| = 0.72: e^(-0.72) - 1.
+    // Graded negative off s = |-0.9 × 0.8| = 0.72: -0.72/2.72 (EDITED per
+    // docs/belief-model-subjective-logic.md §3 row 6 arithmetic — the v2
+    // projection replaces the v1 exponential anchor e^(-0.72) - 1).
     expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
-      Math.exp(-0.72) - 1,
+      -0.72 / 2.72,
       10
     );
     // Stamped with the negative contribution, so the edge is no longer
@@ -187,7 +191,7 @@ describe('belief recovery sweep (MR-B)', () => {
     expect(Number(db.readEvidenceStamp(disbelievedSourceEdgeId))).toBeCloseTo(-0.72, 10);
 
     // Idempotence for this shape: a second sweep finds nothing left to do.
-    const secondSweepResult = await recoverUngradedEvidence();
+    const secondSweepResult = await runBeliefRecoverySweep();
     expect(secondSweepResult.regradedNodeIds).not.toContain(claimNodeId);
   });
 
@@ -223,8 +227,8 @@ describe('belief recovery sweep (MR-B)', () => {
       support: 0.8,
     });
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    const recoveryResult = await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    const recoveryResult = await runBeliefRecoverySweep();
 
     expect(recoveryResult.regradedNodeIds).toContain(ordinaryClaimNodeId);
     expect(recoveryResult.regradedNodeIds).not.toContain(fixedExpertNodeId);
@@ -256,8 +260,8 @@ describe('belief recovery sweep (MR-B)', () => {
       support: 1.0,
     });
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    await runBeliefRecoverySweep();
 
     const fixedExpertBelief = db.readNodeBelief(fixedExpertNodeId);
     expect(Number(fixedExpertBelief.belief_credence)).toBeCloseTo(0.9, 10);
@@ -271,8 +275,8 @@ describe('belief recovery sweep (MR-B)', () => {
     db = await openTempBeliefDatabase();
     const plainNodeId = db.insertNodeFixture({ title: 'plain node without evidence' });
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    const recoveryResult = await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    const recoveryResult = await runBeliefRecoverySweep();
 
     expect(recoveryResult.regradedNodeIds).not.toContain(plainNodeId);
     const nodeBelief = db.readNodeBelief(plainNodeId);
@@ -301,8 +305,8 @@ describe('belief recovery sweep (MR-B)', () => {
       'belief_evidence_support'
     );
 
-    const { recoverUngradedEvidence } = await importBeliefRecoveryService();
-    const recoveryResult = await recoverUngradedEvidence();
+    const { runBeliefRecoverySweep } = await importBeliefRecoveryService();
+    const recoveryResult = await runBeliefRecoverySweep();
 
     expect(recoveryResult.regradedNodeIds).not.toContain(claimNodeId);
     expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();

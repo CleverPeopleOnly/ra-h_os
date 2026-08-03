@@ -409,8 +409,10 @@ export class EdgeService {
     }
 
     // Evidence hook: a new evidence edge must regrade the node it points at.
+    // The movement trigger names this entry point (spec §5): the write door
+    // is the edge write, whichever verb carried it.
     if (edgeIsGradeableBeliefEvidence) {
-      await recomputeNodeBelief(finalToId);
+      await recomputeNodeBelief(finalToId, 'evidence-edge-write');
     }
 
     // Broadcast edge creation event (use final IDs from the saved edge)
@@ -615,7 +617,9 @@ export class EdgeService {
           .prepare('UPDATE edges SET belief_evidence_contribution = NULL WHERE id = ?')
           .run(id);
       }
-      await recomputeNodeBelief(updatedEdge.to_node_id);
+      // The movement trigger names this entry point (spec §5): a support
+      // correction is still an evidence-edge write.
+      await recomputeNodeBelief(updatedEdge.to_node_id, 'evidence-edge-write');
 
       // The edge as it stands once the regrade has finished with it. Everything
       // above — the clear on the un-assessment path, and the re-stamp the

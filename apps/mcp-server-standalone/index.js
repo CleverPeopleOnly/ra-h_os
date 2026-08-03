@@ -209,6 +209,18 @@ const setBeliefFixedCredenceInputSchema = {
     .describe('How much this node is believed: one number strictly between -1 and +1, positive meaning believed and negative meaning disbelieved. Use 0 when the node was assessed and is believed neither way. -1 and +1 are rejected — total certainty is not expressible.')
 };
 
+// clearBeliefFixedCredence schema (fork addition): withdraw one node's
+// asserted credence. The node is the ONLY argument — a credence input here
+// would contradict the door's whole meaning (the app's belief engine derives
+// the credence from the node's actual evidence once the assertion is gone).
+const clearBeliefFixedCredenceInputSchema = {
+  node_id: z
+    .number()
+    .int()
+    .positive()
+    .describe('ID of the node whose asserted credence is being withdrawn')
+};
+
 const sqliteQueryInputSchema = {
   sql: z.string().min(1).describe('The SQL query to execute. Must be a SELECT, WITH, or PRAGMA statement.'),
   format: z.enum(['json', 'table']).optional().describe('Output format (default json)')
@@ -652,7 +664,12 @@ async function main() {
       }
       const previousBeliefCredence = existingBeliefStateRows[0].belief_credence ?? null;
 
-      // Single timestamp shared by the node write and any movement row.
+      // Single timestamp shared by the node write and any movement row. The
+      // v2 evidence masses are deliberately NOT touched here: this server
+      // never grades, so it never writes masses — the app-side twin clears
+      // them on assertion, and the app's recovery sweep and read mapper (a
+      // fixed node reads uncertainty 0 regardless of masses) cover a node
+      // asserted through this door.
       const assertedAt = new Date().toISOString();
       query(
         `UPDATE nodes
@@ -685,6 +702,45 @@ async function main() {
           belief_credence,
           belief_credence_is_fixed: 1,
           belief_computed_at: assertedAt,
+          message: summary
+        }
+      };
+    }
+  );
+
+  registerToolWithAliases(
+    'clearBeliefFixedCredence',
+    {
+      title: 'Clear RA-H fixed belief credence',
+      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its belief_credence_is_fixed flag so the app-owned belief engine derives the credence from the node\'s incoming evidence again. This server never grades, so the stored credence is left as it stands until the RA-H app next runs its startup recovery sweep and regrades the node — an assertion made through this door while the app was closed must be withdrawable through it the same way.',
+      inputSchema: clearBeliefFixedCredenceInputSchema
+    },
+    async ({ node_id }) => {
+      // The row's absence is what makes an unknown node an error rather than
+      // a silent no-op — the mirror of setBeliefFixedCredence's refusal.
+      const existingFixedStateRows = query(
+        'SELECT belief_credence, belief_credence_is_fixed FROM nodes WHERE id = ?',
+        [node_id]
+      );
+      if (existingFixedStateRows.length === 0) {
+        throw new Error(`Cannot withdraw the asserted credence of node #${node_id}: no such node.`);
+      }
+
+      // The flag clears and NOTHING else is written: this door never grades
+      // (grading is app-owned), so there is no regrade here and no movement —
+      // a movement records the credence changing, and the stored credence has
+      // not changed yet. The app's startup recovery sweep regrades the node.
+      query('UPDATE nodes SET belief_credence_is_fixed = 0 WHERE id = ?', [node_id]);
+
+      const summary = `Withdrew the asserted credence of node #${node_id}; the RA-H app's belief engine will regrade it from its evidence on its next recovery sweep.`;
+      return {
+        content: [{ type: 'text', text: summary }],
+        structuredContent: {
+          success: true,
+          node_id,
+          // The credence as it still stands — the engine has not regraded yet.
+          belief_credence: existingFixedStateRows[0].belief_credence ?? null,
+          belief_credence_is_fixed: 0,
           message: summary
         }
       };

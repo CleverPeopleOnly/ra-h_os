@@ -19,6 +19,8 @@ const {
   beliefNodeReadOutputSchemaFields,
   beliefSetFixedCredenceInputSchemaFields,
   beliefSetFixedCredenceOutputSchemaFields,
+  beliefClearFixedCredenceInputSchemaFields,
+  beliefClearFixedCredenceOutputSchemaFields,
   beliefMovementsReadInputSchemaFields,
   beliefMovementsReadOutputSchemaFields,
   beliefRecomputeInputSchemaFields,
@@ -807,6 +809,38 @@ server.registerTool(
         belief_credence: result.belief_credence,
         belief_credence_is_fixed: result.belief_credence_is_fixed,
         belief_computed_at: result.belief_computed_at,
+        message: summary
+      }
+    };
+  }
+);
+
+server.registerTool(
+  'rah_clear_belief_fixed_credence',
+  {
+    title: 'Clear RA-H fixed belief credence',
+    description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the app-owned belief engine immediately regrade the node from its actual incoming evidence. A null credence in the reply is a real answer, not an error: the node has no counted evidence and is now ungraded — never reported as 0.',
+    inputSchema: beliefClearFixedCredenceInputSchemaFields,
+    outputSchema: beliefClearFixedCredenceOutputSchemaFields
+  },
+  async ({ node_id }) => {
+    // Forward the withdrawal under the exact column name; the app enforces
+    // node existence again on its own surface.
+    const result = await callRaHApi('/api/belief/fixed-credence/clear', {
+      method: 'POST',
+      body: JSON.stringify({ node_id })
+    });
+
+    const summary = result.message || `Withdrew the asserted credence of node #${node_id}.`;
+    return {
+      content: [{ type: 'text', text: summary }],
+      // The app's reply, passed through field for field — the regraded
+      // credence stays null when the node is now ungraded, never 0.
+      structuredContent: {
+        success: true,
+        node_id: result.node_id,
+        belief_credence: result.belief_credence ?? null,
+        belief_credence_is_fixed: 0,
         message: summary
       }
     };

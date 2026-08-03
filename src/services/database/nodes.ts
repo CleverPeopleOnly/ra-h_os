@@ -197,15 +197,19 @@ export class NodeService {
 
   private async getNodeByIdSQLite(id: number): Promise<Node | null> {
     const sqlite = getSQLiteClient();
-    // The three belief columns (fork addition) ride the same SELECT so a node
-    // read carries the node's belief: belief_credence NULL means nobody has
+    // The belief columns (fork addition) ride the same SELECT so a node read
+    // carries the node's belief: belief_credence NULL means nobody has
     // grounded the node (a real state, never coerced to 0), and
-    // belief_credence_is_fixed is NOT NULL DEFAULT 0 so it always has a value.
+    // belief_credence_is_fixed is NOT NULL DEFAULT 0 so it always has a
+    // value. The two evidence masses (belief model v2) ride along too, so the
+    // MCP doors' node reads can DERIVE belief_uncertainty from them — the
+    // derivation lives in the shared contract's node-read mapper, never here.
     const query = `
       SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
              n.chunk_status, n.embedding_updated_at, n.embedding_text,
              n.created_at, n.updated_at,
-             n.belief_credence, n.belief_computed_at, n.belief_credence_is_fixed
+             n.belief_credence, n.belief_computed_at, n.belief_credence_is_fixed,
+             n.belief_evidence_for_mass, n.belief_evidence_against_mass
       FROM nodes n
       WHERE n.id = ?
     `;
