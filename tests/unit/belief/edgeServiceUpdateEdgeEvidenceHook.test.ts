@@ -59,7 +59,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Edge } from '@/types/database';
-import { beliefGradingPolicyV1 } from '@/services/belief/beliefGradingPolicy';
+// EDITED per spec §7: expected credences are derived via the v2 policy — the
+// v1 exponential is deleted, not kept beside it.
+import { beliefGradingPolicyV2 } from '@/services/belief/beliefGradingPolicy';
 import { openTempBeliefDatabase, type TempBeliefDatabase } from './helpers/tempBeliefDatabase';
 
 // The source node's own credence: the one signed term in a contribution, and
@@ -99,13 +101,13 @@ afterEach(() => {
 });
 
 // The credence a node holds when its only counted evidence is one edge with the
-// given signed contribution. Derived by asking the pinned v1 policy itself, so
+// given signed contribution. Derived by asking the pinned v2 policy itself, so
 // this file never restates the grading formula.
 function expectedBeliefCredenceForOneEvidenceEdge(
   edgeId: number,
   signedContribution: number
 ): number {
-  return beliefGradingPolicyV1.gradeBelief([{ edgeId, signedContribution }]);
+  return beliefGradingPolicyV2.gradeBelief([{ edgeId, signedContribution }]);
 }
 
 // Read the support column of one edge straight from SQLite, bypassing the
@@ -187,14 +189,14 @@ async function openDatabaseWithGradedEvidenceEdge(): Promise<GradedEvidenceEdgeF
 }
 
 // The credence a node holds when TWO counted evidence edges feed it, derived by
-// asking the pinned v1 policy itself so the formula is never restated here.
+// asking the pinned v2 policy itself so the formula is never restated here.
 function expectedBeliefCredenceForTwoEvidenceEdges(
   firstEdgeId: number,
   firstSignedContribution: number,
   secondEdgeId: number,
   secondSignedContribution: number
 ): number {
-  return beliefGradingPolicyV1.gradeBelief([
+  return beliefGradingPolicyV2.gradeBelief([
     { edgeId: firstEdgeId, signedContribution: firstSignedContribution },
     { edgeId: secondEdgeId, signedContribution: secondSignedContribution },
   ]);

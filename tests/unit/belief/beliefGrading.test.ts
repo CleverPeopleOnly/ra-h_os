@@ -38,7 +38,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NEUTRAL_BELIEF_CREDENCE, SATURATION_RATE } from '@/services/belief/beliefGradingPolicy';
+import { NEUTRAL_BELIEF_CREDENCE } from '@/services/belief/beliefGradingPolicy';
 import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
@@ -52,15 +52,15 @@ afterEach(() => {
   db = undefined;
 });
 
-// Expected credence for a support mass S and contradiction mass C under the
-// pinned v1 OPEN SIGNED saturation formula: e^(-RATE*C) - e^(-RATE*S).
-// Taking the weight from the source node's own credence instead of a trust
-// row moves no arithmetic: the contribution is still support × one weight, so
-// every number below is byte-for-byte the one the earlier tests asserted.
+// Expected credence for a for mass r (summed positive contributions) and an
+// against mass s (summed |negative| contributions) under the pinned v2
+// projection formula of docs/belief-model-subjective-logic.md §2:
+// (r − s)/(r + s + W), W = 2. The 2 is a deliberate hand literal, exactly as
+// in helpers/beliefEvidenceMassExpectations.ts: the independent calculation
+// must not import the constant it is checking. EDITED per §3 (every v1
+// exponential expectation in this file moves to the projection).
 function expectedBeliefCredence(supportSum: number, contradictionSum: number): number {
-  return (
-    Math.exp(-SATURATION_RATE * contradictionSum) - Math.exp(-SATURATION_RATE * supportSum)
-  );
+  return (supportSum - contradictionSum) / (supportSum + contradictionSum + 2);
 }
 
 // Create a claim node plus one evidence source node, joined by one evidence
@@ -685,7 +685,7 @@ describe('recomputeNodeBelief grading behavior', () => {
   //     node's CREDENCE is the only signed term, so a disbelieved source
   //     (credence -0.6) talking with support 0.9 must stamp a negative
   //     contribution of exactly credence × support = -0.54, and a claim with
-  //     only that edge grades to e^(-0.54) - e^(0) = e^(-0.54) - 1: a real
+  //     only that edge grades to (0 - 0.54)/(0.54 + 2) = -0.54/2.54 (§2): a real
   //     NEGATIVE credence, not NULL — the disbelieved source's edge is
   //     counted as contradiction mass, never silenced.
   it('stamps a disbelieved-source edge with exactly credence × support and grades the claim negative', async () => {
@@ -702,7 +702,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     expect(result.contributions).toHaveLength(1);
     expect(result.contributions[0].effectiveContribution).toBeCloseTo(-0.54, 10);
     expect(Number(db.readEvidenceStamp(disbelievedSourceEdgeId))).toBeCloseTo(-0.54, 10);
-    // S = 0, C = 0.54: credence = e^(-0.54) - 1, strictly negative.
+    // r = 0, s = 0.54: credence = -0.54/2.54 (§2 projection), strictly negative.
     const expectedNegativeCredence = expectedBeliefCredence(0, 0.54);
     expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
       expectedNegativeCredence,
@@ -727,8 +727,10 @@ describe('recomputeNodeBelief grading behavior', () => {
     });
     // Spy on the SAME policy-module instance the belief service binds to
     // (both are imported after the helper reset the module registry).
+    // EDITED per spec §7: the engine grades through beliefGradingPolicyV2 —
+    // v1 (and its exponential) is deleted, not kept beside it.
     const beliefGradingPolicyModule = await db.importBeliefGradingPolicyModule();
-    const gradeBeliefSpy = vi.spyOn(beliefGradingPolicyModule.beliefGradingPolicyV1, 'gradeBelief');
+    const gradeBeliefSpy = vi.spyOn(beliefGradingPolicyModule.beliefGradingPolicyV2, 'gradeBelief');
     const { recomputeNodeBelief } = await db.importBeliefService();
 
     await recomputeNodeBelief(claimNodeId);
@@ -773,7 +775,7 @@ describe('recomputeNodeBelief grading behavior', () => {
 describe('recomputeNodeBelief weights evidence by the source node credence', () => {
   // THE REAL THING, end to end: a human expert whose credence is fixed at
   // 0.9 supplies one piece of evidence with support 0.8 to a claim. The
-  // claim's credence is what the v1 policy returns for a single contribution
+  // claim's credence is what the v2 policy returns for a single contribution
   // of 0.8 × 0.9 = 0.72, and the edge carries that same 0.72 as its stamp.
   it('grades a claim from a fixed expert at credence 0.9 supplying support 0.8 to exactly the 0.72 contribution', async () => {
     db = await openTempBeliefDatabase();
@@ -797,7 +799,7 @@ describe('recomputeNodeBelief weights evidence by the source node credence', () 
     expect(result.contributions[0].edgeId).toBe(expertEvidenceEdgeId);
     expect(result.contributions[0].effectiveContribution).toBeCloseTo(expertContribution, 10);
     expect(Number(db.readEvidenceStamp(expertEvidenceEdgeId))).toBeCloseTo(expertContribution, 10);
-    // The claim grades to what the v1 policy returns for that lone 0.72.
+    // The claim grades to what the v2 policy returns for that lone 0.72.
     expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
       expectedBeliefCredence(expertContribution, 0),
       10
@@ -863,7 +865,7 @@ describe('recomputeNodeBelief counts a disbelieved or zero-credence source', () 
     expect(result.contributions[0].edgeId).toBe(disbelievedSourceEdgeId);
     expect(result.contributions[0].effectiveContribution).toBeCloseTo(-0.72, 10);
     expect(Number(db.readEvidenceStamp(disbelievedSourceEdgeId))).toBeCloseTo(-0.72, 10);
-    // Graded, not NULL: S = 0, C = 0.72 -> e^(-0.72) - 1, strictly negative.
+    // Graded, not NULL: r = 0, s = 0.72 -> -0.72/2.72 (§3 row 6 arithmetic), strictly negative.
     expect(Number(result.beliefCredence)).toBeCloseTo(expectedBeliefCredence(0, 0.72), 10);
     expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeLessThan(0);
     // Ungraded -> negative is a real movement and is logged.
@@ -934,7 +936,7 @@ describe('recomputeNodeBelief counts a disbelieved or zero-credence source', () 
     expect(Number(db.readEvidenceStamp(believedSourceEdgeId))).toBeCloseTo(0.4, 10);
     expect(Number(db.readEvidenceStamp(disbelievedSourceEdgeId))).toBeCloseTo(-0.4, 10);
     // S and C are the identical double (0.8 × 0.5 and 0.5 × 0.8), so
-    // e^(-C) - e^(-S) is exactly 0 — no tolerance needed, and toBe(0)
+    // (r - s)/(r + s + 2) is exactly 0 — no tolerance needed, and toBe(0)
     // also proves the claim was GRADED to zero rather than left NULL.
     expect(result.beliefCredence).toBe(0);
     expect(db.readNodeBelief(claimNodeId).belief_credence).toBe(0);

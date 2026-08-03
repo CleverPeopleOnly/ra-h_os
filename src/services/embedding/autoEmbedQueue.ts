@@ -2,7 +2,7 @@ import { embedNodeContent } from '@/services/embedding/ingestion';
 import { nodeService } from '@/services/database';
 import { getSQLiteClient } from '@/services/database/sqlite-client';
 import { recomputeNodeBelief } from '@/services/belief/beliefService';
-import { recoverUngradedEvidence } from '@/services/belief/beliefRecoveryService';
+import { runBeliefRecoverySweep } from '@/services/belief/beliefRecoveryService';
 
 interface AutoEmbedTask {
   nodeId: number;
@@ -22,11 +22,12 @@ export class AutoEmbedQueue {
   private readonly cooldownMs = DEFAULT_COOLDOWN_MS;
 
   async recoverStuckNodes(): Promise<void> {
-    // Belief recovery sweep: grade evidence edges written by the standalone
-    // MCP server while the app was closed (they carry no contribution stamp).
+    // Belief recovery sweep: regrade nodes with never-stamped evidence
+    // (standalone writes while the app was closed), stale stamps, and
+    // v1-graded nodes still missing their evidence masses (model migration).
     // Warn-only — a belief sweep failure must never break embedding recovery.
     try {
-      await recoverUngradedEvidence();
+      await runBeliefRecoverySweep();
     } catch (beliefRecoveryError) {
       console.warn('[AutoEmbedQueue] Belief recovery sweep failed', beliefRecoveryError);
     }
@@ -136,10 +137,11 @@ export class AutoEmbedQueue {
       return;
     }
 
-    // Belief hook: a freshly embedded node gets its belief regraded. A
+    // Belief hook: a freshly embedded node gets its belief regraded, logging
+    // the movement under this entry point's own trigger (spec §5). A
     // recompute failure must never mark the embed task itself as failed.
     try {
-      await recomputeNodeBelief(task.nodeId);
+      await recomputeNodeBelief(task.nodeId, 'embed-grade');
     } catch (beliefError) {
       console.warn('[AutoEmbedQueue] Belief recompute failed after embed', task.nodeId, beliefError);
     }

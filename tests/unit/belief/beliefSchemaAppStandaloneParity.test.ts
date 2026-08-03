@@ -109,10 +109,12 @@ describe('app and standalone agree on the belief schema', () => {
 
     await recomputeNodeBelief(claimNodeId);
 
-    // 0.8 × 0.9 = 0.72, graded by the pinned v1 saturation formula.
+    // 0.8 × 0.9 = 0.72, graded by the pinned v2 projection: 0.72/2.72
+    // (docs/belief-model-subjective-logic.md §3, the 0.72-contribution
+    // arithmetic of §2 — EDITED from the v1 exponential anchor).
     expect(Number(db.readEvidenceStamp(expertEvidenceEdgeId))).toBeCloseTo(0.72, 10);
     expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
-      1 - Math.exp(-0.72),
+      0.72 / 2.72,
       10
     );
     // The expert's asserted credence survived the app opening the file.
@@ -186,7 +188,9 @@ describe('app and standalone agree on the belief schema', () => {
       const preservedClaimRow = directDb
         .prepare('SELECT belief_credence FROM nodes WHERE id = ?')
         .get(claimNodeId) as { belief_credence: number };
-      expect(Number(preservedClaimRow.belief_credence)).toBeCloseTo(1 - Math.exp(-0.72), 10);
+      // EDITED per spec §2/§3: the v2 projection anchor 0.72/2.72 replaces
+      // the v1 exponential 1 − e^(−0.72).
+      expect(Number(preservedClaimRow.belief_credence)).toBeCloseTo(0.72 / 2.72, 10);
       const preservedEvidenceRow = directDb
         .prepare(
           'SELECT belief_evidence_support, belief_evidence_contribution FROM edges WHERE id = ?'

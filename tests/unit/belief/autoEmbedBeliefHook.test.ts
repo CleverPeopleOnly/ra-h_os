@@ -69,9 +69,15 @@ describe('AutoEmbedQueue belief hook', () => {
     );
 
     // The pinned behavior: the completed embed task triggers the recompute.
+    // EDITED per Reviewer ruling 8 (belief model v2 §5): the queue now names
+    // its entry point, so the call carries the 'embed-grade' trigger beside
+    // the node id.
     await vi.waitFor(
       () => {
-        expect(vi.mocked(beliefServiceModule.recomputeNodeBelief)).toHaveBeenCalledWith(nodeId);
+        expect(vi.mocked(beliefServiceModule.recomputeNodeBelief)).toHaveBeenCalledWith(
+          nodeId,
+          'embed-grade'
+        );
       },
       { timeout: 2000, interval: 25 }
     );
