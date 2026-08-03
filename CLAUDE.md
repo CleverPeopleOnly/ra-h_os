@@ -30,11 +30,20 @@ One word per concept, and no synonyms. This exists because the belief system's c
 | How strongly a source node talks about the neighbour — one unsigned number | **support** | `edges.belief_evidence_support` |
 | A credence a human asserts by hand instead of the engine deriving it | **fixed credence** | `nodes.belief_credence_is_fixed` |
 | The log of a node's credence changing | **movement** | `belief_movements` |
+| Accumulated evidence for/against a node (v2, not yet implemented) | **evidence mass** | `nodes.belief_evidence_for_mass`, `nodes.belief_evidence_against_mass` |
+| How little evidence a credence rests on (v2, not yet implemented) | **uncertainty** | derived W/(r+s+W); never stored |
 | Future: learning a source's credence from confirmed outcomes | **calibration** | produces credence; not a new quantity |
 
 The load-bearing row is the second. A source's influence and a node's belief are THE SAME NUMBER, so they must never acquire two names. **`trust`, `standing`, `score`, `weight` and `value` are therefore banned as synonyms for credence** anywhere in belief code, comments, or tool descriptions.
 
 The vocabulary in one sentence: an edge's **contribution** is its **support** × the source node's **credence**; a node's **credence** is the graded sum of its incoming contributions; a node nobody has grounded has no credence (NULL).
+
+**Belief model v2 is approved and designed, not yet implemented** — see
+`docs/belief-model-subjective-logic.md`. It replaces the `e^(−C) − e^(−S)` aggregation
+with Subjective Logic evidence masses (credence becomes the derived projection
+`(r − s)/(r + s + W)`, uncertainty becomes readable), and adds propagation, an un-fix
+door, and per-cause movement triggers. Every rule in this file — naming, vocabulary,
+the sign invariant, NULL-vs-0 — carries over unchanged; the doc is written under them.
 
 **Sign invariant: `nodes.belief_credence` is the only signed quantity in the system.** Support runs 0..1, unsigned — it says how strongly the source node talks about the neighbour, never which way. An edge's contribution is negative exactly when its source's credence is negative: a disbelieved source's evidence counts against what it talks about, feeding the C side of the grading formula.
 
