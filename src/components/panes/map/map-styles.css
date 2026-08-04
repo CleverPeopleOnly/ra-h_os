@@ -52,6 +52,7 @@
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, opacity 0.15s ease;
   cursor: pointer;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  position: relative; /* (fork addition) anchors the belief fixed badge */
 }
 
 .rah-map-node:hover {
@@ -136,3 +137,7 @@
 .rah-map-node--belief-against-80 { border-color: color-mix(in srgb, var(--rah-belief-against) 80%, var(--rah-border)); }
 .rah-map-node--belief-neutral-15 { border-color: color-mix(in srgb, var(--rah-belief-neutral) 15%, var(--rah-border)); }
 .rah-map-node--belief-dashed { border-style: dashed; }
+
+/* Belief fixed-credence badge (fork addition) — a small circular marker on
+   nodes whose credence a human asserted by hand (fixed credence). */
+.rah-map-node__belief-fixed-badge { position: absolute; top: -4px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: color-mix(in srgb, var(--rah-belief-for) 80%, var(--rah-bg-surface)); border: 1px solid var(--rah-bg-surface); }
