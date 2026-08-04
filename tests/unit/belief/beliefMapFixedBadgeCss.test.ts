@@ -20,13 +20,27 @@
  *    hex literal anywhere in a fixed-badge rule — the slice-2 hex guard
  *    extended to this class, so theme switches reach the badge.
  *
+ * SLICE 11 tightens the colour pin only. Slice 9's visual verification found
+ * the badge drawn from `var(--rah-belief-for)` — the BELIEVED pole — so the
+ * seeded demo graph's "discredited origin" source wore a correctly-disbelieved
+ * fuchsia ring with a GREEN dot sitting on it, which reads as endorsement of
+ * the very node the graph disbelieves. The badge's meaning is provenance ("a
+ * human asserted this credence"), never polarity, so its hue must be the
+ * neutral token and must encode no belief direction at all:
+ *  - the badge colours from `var(--rah-belief-neutral)`, and
+ *  - NO polarity token (`--rah-belief-for` / `--rah-belief-against`) appears
+ *    in any fixed-badge rule, so neither pole can be reintroduced later.
+ * Everything else about the rule is unchanged — circular, absolute, ~10px,
+ * token-only, surface-coloured border ring, and any color-mix percentage.
+ *
  * A CSS declaration's absence is invisible to the type system and this
  * harness runs node-env vitest with no jsdom, so the pin reads the
  * checked-in stylesheet source and asserts against its text — the same
  * source-text pinning as beliefMapRingClasses.test.ts.
  *
- * Red today: every pin in this file (the class and the anchor declaration
- * do not exist yet). No deliberate greens.
+ * Red today (slice 11): the two colour pins — the stylesheet still draws the
+ * badge from `var(--rah-belief-for)`. Green today, and expected to stay green:
+ * the shape, size, position, anchor and hex-guard pins from slice 5.
  */
 
 import fs from 'fs';
@@ -53,6 +67,32 @@ const beliefFixedBadgeClassName = 'rah-map-node__belief-fixed-badge';
 // map node whose own min-width is 56px, and anything under 4px is invisible.
 const beliefFixedBadgeMinPx = 4;
 const beliefFixedBadgeMaxPx = 20;
+
+// The one hue the badge may wear: the polarity-free token, already declared
+// in both theme blocks (beliefThemeTokens.test.ts pins #9ca3af dark /
+// #6b7280 light) and already used by the graded-neutral ring.
+const beliefNeutralThemeToken = '--rah-belief-neutral';
+
+// The two tokens that DO encode a belief direction. Either one in a badge
+// rule turns a provenance mark into a verdict — the slice-9 finding.
+const beliefPolarityThemeTokens = ['--rah-belief-for', '--rah-belief-against'];
+
+// Matches a reference to either polarity token. The trailing boundary keeps
+// a future longer token name (e.g. --rah-belief-forecast) from tripping the
+// guard, while `--rah-belief-neutral` shares no prefix with either and so is
+// never matched.
+const beliefPolarityThemeTokenPattern = /--rah-belief-(?:for|against)\b/;
+
+// Every rule block whose selector mentions the fixed-badge class, as body
+// text. The badge's colour could be split across a base rule and a later
+// override, so the polarity guard must read all of them, not just the first.
+function readBeliefFixedBadgeRuleBodies(): string[] {
+  return [
+    ...mapStylesheetSource.matchAll(
+      new RegExp(String.raw`\.${beliefFixedBadgeClassName}[^{}]*\{([^}]*)\}`, 'g')
+    ),
+  ].map((beliefFixedBadgeRuleMatch) => beliefFixedBadgeRuleMatch[1]);
+}
 
 // Extracts the body text of the first CSS rule for the given class, robust
 // to whitespace between selector and brace. The map stylesheet contains only
@@ -129,13 +169,39 @@ describe('the belief fixed-credence badge class in map-styles.css', () => {
     );
   });
 
-  // THEME-TOKEN COLOUR: the badge's colour must come from the --rah- theme
-  // tokens (--rah-belief-* or another house token), never a literal, so a
-  // theme retune reaches the badge like every other belief surface.
-  it('colours the badge from a var(--rah-…) theme token', () => {
-    expect(readClassDeclarations(beliefFixedBadgeClassName)).toMatch(
+  // THEME-TOKEN COLOUR, NARROWED IN SLICE 11: the badge's colour must come
+  // from the --rah- theme tokens, never a literal — and specifically from the
+  // NEUTRAL token. Slice 9's visual check caught the badge drawn from the
+  // believed pole, which put a green dot on a deliberately disbelieved
+  // "discredited origin" node: a disbelieved anchor must not wear a
+  // believed-green mark. The badge says a human fixed this credence; it does
+  // not say the credence is positive, so its hue is polarity-free.
+  it(`colours the badge from var(${beliefNeutralThemeToken})`, () => {
+    const badgeDeclarations = readClassDeclarations(beliefFixedBadgeClassName);
+    expect(badgeDeclarations, 'badge colour must come from a theme token').toMatch(
       /var\(\s*--rah-/
     );
+    expect(
+      badgeDeclarations,
+      `badge must colour from var(${beliefNeutralThemeToken}) — provenance, not polarity`
+    ).toMatch(new RegExp(String.raw`var\(\s*${beliefNeutralThemeToken}\s*\)`));
+  });
+
+  // THE SAME PIN STATED POSITIVELY, and file-wide across the badge's rules:
+  // no polarity token appears at all, so neither pole can be reintroduced
+  // later by a follow-up rule or an override the pin above would not read.
+  it('mentions no belief-polarity token in any fixed-badge rule', () => {
+    const beliefFixedBadgeRuleBodies = readBeliefFixedBadgeRuleBodies();
+    expect(
+      beliefFixedBadgeRuleBodies.length,
+      `at least one .${beliefFixedBadgeClassName} rule must exist for the polarity guard to bite`
+    ).toBeGreaterThanOrEqual(1);
+    for (const beliefFixedBadgeRuleBody of beliefFixedBadgeRuleBodies) {
+      expect(
+        beliefFixedBadgeRuleBody,
+        `a fixed-badge rule names a polarity token (${beliefPolarityThemeTokens.join(' / ')}); the badge marks who set the credence, not which way it points`
+      ).not.toMatch(beliefPolarityThemeTokenPattern);
+    }
   });
 
   // HEX GUARD (the slice-2 guard extended to this class): no rule whose

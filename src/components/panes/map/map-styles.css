@@ -139,5 +139,8 @@
 .rah-map-node--belief-dashed { border-style: dashed; }
 
 /* Belief fixed-credence badge (fork addition) — a small circular marker on
-   nodes whose credence a human asserted by hand (fixed credence). */
-.rah-map-node__belief-fixed-badge { position: absolute; top: -4px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: color-mix(in srgb, var(--rah-belief-for) 80%, var(--rah-bg-surface)); border: 1px solid var(--rah-bg-surface); }
+   nodes whose credence a human asserted by hand (fixed credence).
+   Coloured from the NEUTRAL token, never a pole: the badge marks provenance
+   (a human asserted this), not polarity. It read as endorsement while it used
+   the believed-green token — a disbelieved anchor wore a green mark. */
+.rah-map-node__belief-fixed-badge { position: absolute; top: -4px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: color-mix(in srgb, var(--rah-belief-neutral) 80%, var(--rah-bg-surface)); border: 1px solid var(--rah-bg-surface); }
