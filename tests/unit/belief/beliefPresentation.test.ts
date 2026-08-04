@@ -10,7 +10,9 @@
  *    credence is null — never assessed means NO belief treatment at all,
  *  - RING INTENSITY: a stepped color-mix percentage, monotonically
  *    non-decreasing in |credence| and bounded (the exact step table below is
- *    the reviewable design decision),
+ *    the reviewable design decision), with a VISIBILITY FLOOR high enough
+ *    that every assessed node — a credence-0 contested one above all — carries
+ *    a ring a human can actually see (slice 10, see the step table comment),
  *  - RING STYLE: dashed when the derived uncertainty is >= 0.5, solid below;
  *    the uncertainty must agree EXACTLY with the shared node-read mapper
  *    beliefFieldsForNodeRead (src/services/belief/beliefMcpToolContract.js),
@@ -96,21 +98,49 @@ async function importBeliefPresentationModule(): Promise<BeliefPresentationModul
  * steps: intensity is the ringIntensityPercent of the LAST row whose
  * minAbsoluteCredence <= |credence|.
  *
- *   |credence| in [0,    0.15) -> 15   barely leaning: the smallest visible step
- *   |credence| in [0.15, 0.4 ) -> 30   leaning
- *   |credence| in [0.4,  0.7 ) -> 55   committed
+ *   |credence| in [0,    0.15) -> 35   barely leaning: the visibility floor
+ *   |credence| in [0.15, 0.4 ) -> 50   leaning
+ *   |credence| in [0.4,  0.7 ) -> 65   committed
  *   |credence| in [0.7,  1   ) -> 80   strongly committed
+ *
+ * SLICE 10 raised the floor from 15/30/55/80 to 35/50/65/80 — same four
+ * bands, same |credence| thresholds, same cap. Screenshots of the seeded demo
+ * graph (slice 9's visual verification) showed the contested node — credence
+ * exactly 0, so the lowest band — computing to a border of rgb(45,47,48)
+ * against a plain node's rgb(42,42,42) in dark mode, and rgb(211,212,214)
+ * against rgb(212,212,212) in light: imperceptible. "Heavily contested" and
+ * "never assessed" therefore looked identical on the map, which defeats the
+ * point of the v2 model, and the barely-assessed 15% band was carried
+ * entirely by its dashed style. At 35 the floor is high enough that ANY
+ * assessed node carries a visible ring, while never-assessed nodes stay
+ * completely untreated.
  *
  * Bounded at 80, never 100: credence lives in the OPEN interval (-1, +1), so
  * total certainty is not expressible and the ring must never render as if it
  * were. Monotonically non-decreasing by construction (rows ascend).
  */
 const EXPECTED_BELIEF_RING_INTENSITY_STEPS: ReadonlyArray<BeliefRingIntensityStep> = [
-  { minAbsoluteCredence: 0, ringIntensityPercent: 15 },
-  { minAbsoluteCredence: 0.15, ringIntensityPercent: 30 },
-  { minAbsoluteCredence: 0.4, ringIntensityPercent: 55 },
+  { minAbsoluteCredence: 0, ringIntensityPercent: 35 },
+  { minAbsoluteCredence: 0.15, ringIntensityPercent: 50 },
+  { minAbsoluteCredence: 0.4, ringIntensityPercent: 65 },
   { minAbsoluteCredence: 0.7, ringIntensityPercent: 80 },
 ];
+
+/**
+ * The lowest intensity percentage an ASSESSED node may render at. Named
+ * separately from the table above so the floor invariant below is an
+ * independent statement of the slice-9 finding rather than a restatement of
+ * the table's first row: a future retune may move the bands, but it may not
+ * drop the floor back into invisibility.
+ */
+const MINIMUM_VISIBLE_BELIEF_RING_INTENSITY_PERCENT = 35;
+
+/**
+ * The intensity percentage no step may reach. Credence lives in the OPEN
+ * interval (-1, +1), so total certainty is inexpressible and a 100% ring
+ * would render a certainty the model cannot hold.
+ */
+const UNREACHABLE_BELIEF_RING_INTENSITY_PERCENT = 100;
 
 // W of belief model v2, restated by hand so the expected uncertainties below
 // are an independent calculation, not an import of the constant under test.
@@ -172,6 +202,65 @@ describe('BELIEF_RING_INTENSITY_STEPS', () => {
     const { BELIEF_RING_INTENSITY_STEPS } = await importBeliefPresentationModule();
     expect(BELIEF_RING_INTENSITY_STEPS).toEqual(EXPECTED_BELIEF_RING_INTENSITY_STEPS);
   });
+
+  // THE VISIBILITY FLOOR INVARIANT (slice 10). Stated over the EXPORTED table
+  // rather than the expected constant, so it survives a future retune of the
+  // bands: whatever the rows become, the lowest of them must still be a ring
+  // a human can see. Slice 9's screenshots caught the old 15% floor computing
+  // to rgb(45,47,48) against a plain node's rgb(42,42,42) in dark mode — an
+  // assessed node that looked exactly like an unassessed one.
+  it('never lets the lowest step fall back below the visible floor', async () => {
+    const { BELIEF_RING_INTENSITY_STEPS } = await importBeliefPresentationModule();
+    // The faintest ring any assessed node can render at: the minimum over
+    // every row, not merely the first, so a reordered table cannot smuggle a
+    // fainter band in behind the first row.
+    const faintestRingIntensityPercent = Math.min(
+      ...BELIEF_RING_INTENSITY_STEPS.map((intensityStep) => intensityStep.ringIntensityPercent)
+    );
+    expect(
+      faintestRingIntensityPercent,
+      'an assessed node must never ring fainter than the visible floor (slice 9 finding)'
+    ).toBeGreaterThanOrEqual(MINIMUM_VISIBLE_BELIEF_RING_INTENSITY_PERCENT);
+  });
+
+  // MONOTONICITY of the table itself: rows ascend in minAbsoluteCredence, and
+  // their percentages never fall as they do. More credence must never render
+  // fainter, and the derivation reads the LAST row reached, so a descending
+  // row would silently invert the whole reading of the map.
+  it('ascends in minAbsoluteCredence with non-decreasing percentages', async () => {
+    const { BELIEF_RING_INTENSITY_STEPS } = await importBeliefPresentationModule();
+    for (
+      let rowIndex = 1;
+      rowIndex < BELIEF_RING_INTENSITY_STEPS.length;
+      rowIndex += 1
+    ) {
+      // The row before this one, whose thresholds and percentage this row
+      // must not undercut.
+      const previousIntensityStep = BELIEF_RING_INTENSITY_STEPS[rowIndex - 1];
+      const currentIntensityStep = BELIEF_RING_INTENSITY_STEPS[rowIndex];
+      expect(
+        currentIntensityStep.minAbsoluteCredence,
+        `row ${rowIndex} must start above row ${rowIndex - 1}`
+      ).toBeGreaterThan(previousIntensityStep.minAbsoluteCredence);
+      expect(
+        currentIntensityStep.ringIntensityPercent,
+        `row ${rowIndex} must not ring fainter than row ${rowIndex - 1}`
+      ).toBeGreaterThanOrEqual(previousIntensityStep.ringIntensityPercent);
+    }
+  });
+
+  // The CAP, restated over the exported table: raising the floor must never
+  // become an excuse to raise the ceiling to 100. Credence's interval is
+  // open, so total certainty stays inexpressible and no ring may render it.
+  it('keeps every step strictly below the unreachable 100%', async () => {
+    const { BELIEF_RING_INTENSITY_STEPS } = await importBeliefPresentationModule();
+    for (const intensityStep of BELIEF_RING_INTENSITY_STEPS) {
+      expect(
+        intensityStep.ringIntensityPercent,
+        'credence lives in the open interval (-1, +1): 100% would render an inexpressible certainty'
+      ).toBeLessThan(UNREACHABLE_BELIEF_RING_INTENSITY_PERCENT);
+    }
+  });
 });
 
 describe('deriveBeliefPresentation ring hue', () => {
@@ -228,14 +317,17 @@ describe('deriveBeliefPresentation ring intensity', () => {
   it('maps |credence| onto the pinned steps, boundaries included', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
     // [|credence| probed, expected intensity %] pairs covering every band
-    // and both sides of every boundary of the pinned table.
+    // and both sides of every boundary of the pinned table. The thresholds
+    // are unchanged by slice 10; the percentages are its raised floor
+    // (35/50/65/80 in place of 15/30/55/80) — see the step table comment for
+    // the slice-9 screenshots that forced it.
     const intensityExpectations: Array<[number, number]> = [
-      [0, 15],
-      [0.14, 15],
-      [0.15, 30],
-      [0.39, 30],
-      [0.4, 55],
-      [0.69, 55],
+      [0, 35],
+      [0.14, 35],
+      [0.15, 50],
+      [0.39, 50],
+      [0.4, 65],
+      [0.69, 65],
       [0.7, 80],
       [0.99, 80],
     ];
@@ -259,10 +351,11 @@ describe('deriveBeliefPresentation ring intensity', () => {
   // an equally believed one — the hue, not the intensity, carries the sign.
   it('uses the absolute credence, so -0.5 renders as strongly as +0.5', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
-    // r=1, s=7 -> credence -0.6, |credence| in the 55% band.
+    // r=1, s=7 -> credence -0.6, |credence| in the committed band — 65% since
+    // slice 10 raised the floor (was 55%).
     expect(
       deriveBeliefPresentation(gradedNodeBeliefFields(1, 7)).beliefRingIntensityPercent
-    ).toBe(55);
+    ).toBe(65);
   });
 
   // The monotonicity and boundedness contract, swept over the whole credence
@@ -283,10 +376,62 @@ describe('deriveBeliefPresentation ring intensity', () => {
         deriveBeliefPresentation(sweptFields).beliefRingIntensityPercent;
       expect(sweptIntensityPercent, `|credence| ${absoluteCredence} must have an intensity`).not.toBeNull();
       expect(sweptIntensityPercent!).toBeGreaterThanOrEqual(previousIntensityPercent);
-      expect(sweptIntensityPercent!).toBeGreaterThanOrEqual(15);
+      // The lower bound is slice 10's raised floor (was 15): no assessed
+      // |credence|, anywhere in the range, may render below the visible floor.
+      expect(sweptIntensityPercent!).toBeGreaterThanOrEqual(
+        MINIMUM_VISIBLE_BELIEF_RING_INTENSITY_PERCENT
+      );
       expect(sweptIntensityPercent!).toBeLessThanOrEqual(80);
       previousIntensityPercent = sweptIntensityPercent!;
     }
+  });
+});
+
+describe('deriveBeliefPresentation always draws an assessed credence-0 node', () => {
+  // THE CONTESTED-NODE CASE (slice 9's finding, slice 10's fix). A node
+  // graded to exactly 0 is heavily contested, not unassessed: it must render
+  // at the floor percentage with EVERY ring field non-null, so it reads as a
+  // real assessment on the map. This is the case the screenshots caught
+  // rendering as an invisible rgb(45,47,48) border, indistinguishable from an
+  // untreated node.
+  it('gives a graded-neutral node the floor percentage and a fully non-null ring', async () => {
+    const { deriveBeliefPresentation, BELIEF_RING_INTENSITY_STEPS } =
+      await importBeliefPresentationModule();
+    // Heavy balanced conflict, r=3 s=3: credence exactly 0, uncertainty 0.25.
+    const contestedPresentation = deriveBeliefPresentation(gradedNodeBeliefFields(3, 3));
+    // Premise of this case: this really is the assessed credence-0 state.
+    expect(contestedPresentation.beliefRingHue).toBe('neutral');
+    // The ring is DRAWN — hue, intensity and style all present, so nothing
+    // downstream can mistake it for the never-assessed decision.
+    expect(contestedPresentation.beliefRingHue).not.toBeNull();
+    expect(contestedPresentation.beliefRingIntensityPercent).not.toBeNull();
+    expect(contestedPresentation.beliefRingStyle).not.toBeNull();
+    // …at exactly the table's floor, which is itself at or above the
+    // visibility floor (checked directly, so a table change cannot make this
+    // pass with an invisible percentage).
+    expect(contestedPresentation.beliefRingIntensityPercent).toBe(
+      BELIEF_RING_INTENSITY_STEPS[0].ringIntensityPercent
+    );
+    expect(contestedPresentation.beliefRingIntensityPercent!).toBeGreaterThanOrEqual(
+      MINIMUM_VISIBLE_BELIEF_RING_INTENSITY_PERCENT
+    );
+  });
+
+  // The same guarantee for the OTHER credence-0 state: the vacuous opinion
+  // (r=s=0, assessed and carrying nothing). Both credence-0 nodes ring at the
+  // visible floor — assessed-and-balanced is always drawn, whatever the
+  // evidence behind the balance.
+  it('gives the vacuous credence-0 node the same visible floor ring', async () => {
+    const { deriveBeliefPresentation, BELIEF_RING_INTENSITY_STEPS } =
+      await importBeliefPresentationModule();
+    const vacuousPresentation = deriveBeliefPresentation(gradedNodeBeliefFields(0, 0));
+    expect(vacuousPresentation.beliefRingHue).toBe('neutral');
+    expect(vacuousPresentation.beliefRingIntensityPercent).toBe(
+      BELIEF_RING_INTENSITY_STEPS[0].ringIntensityPercent
+    );
+    expect(vacuousPresentation.beliefRingIntensityPercent!).toBeGreaterThanOrEqual(
+      MINIMUM_VISIBLE_BELIEF_RING_INTENSITY_PERCENT
+    );
   });
 });
 
