@@ -40,6 +40,8 @@ function RahNodeComponent({ data, selected }: NodeProps<RahNodeType>) {
         {label.length > 26 ? label.slice(0, 24) + '\u2026' : label}
       </div>
       <Handle type="source" position={Position.Bottom} className="rah-map-handle rah-map-handle--hidden" isConnectable={false} />
+      {/* Belief fixed-credence badge: small marker on nodes with human-asserted credence. */}
+      {data.beliefPresentation.beliefFixedBadgeShown && (<span className="rah-map-node__belief-fixed-badge" title="fixed credence" />)}
     </div>
   );
 }
