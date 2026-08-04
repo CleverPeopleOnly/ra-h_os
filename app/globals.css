@@ -79,6 +79,11 @@ html[data-theme="dark"] {
   --settings-active-border: rgba(255, 255, 255, 0.12);
   --settings-chip-bg: rgba(255, 255, 255, 0.04);
   --settings-danger: #f87171;
+  /* Belief overlay (fork addition): validated diverging pair — green pole
+     (believed), fuchsia pole (disbelieved), neutral grey midpoint. */
+  --rah-belief-for: #16a34a;
+  --rah-belief-against: #c026d3;
+  --rah-belief-neutral: #9ca3af;
 }
 
 html[data-theme="light"] {
@@ -123,6 +128,11 @@ html[data-theme="light"] {
   --settings-active-border: rgba(0, 0, 0, 0.08);
   --settings-chip-bg: rgba(0, 0, 0, 0.03);
   --settings-danger: #b91c1c;
+  /* Belief overlay (fork addition): validated diverging pair — green pole
+     (believed), fuchsia pole (disbelieved), neutral grey midpoint. */
+  --rah-belief-for: #16a34a;
+  --rah-belief-against: #c026d3;
+  --rah-belief-neutral: #6b7280;
 }
 
 /* Modern Clean Design System - RA-H */
