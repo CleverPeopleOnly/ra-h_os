@@ -42,6 +42,13 @@ export interface Node {
   // 0/1 flag: 1 says a human asserted the credence by hand instead of the
   // engine deriving it. NOT NULL DEFAULT 0, so it has no null state.
   belief_credence_is_fixed?: number;
+  // Accumulated evidence FOR the node (belief model v2): one UNSIGNED mass
+  // the engine persists. NULL means never assessed; 0 means assessed and
+  // carrying nothing — never the same state.
+  belief_evidence_for_mass?: number | null;
+  // Accumulated evidence AGAINST the node: the same states as the for-mass.
+  // The two masses move together — both NULL or both non-NULL.
+  belief_evidence_against_mass?: number | null;
 }
 
 export interface Chunk {

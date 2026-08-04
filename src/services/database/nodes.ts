@@ -5,6 +5,10 @@ import { EmbeddingService } from '@/services/embeddings';
 import { getHighSignalSearchTerms, scoreNodeSearchMatch } from './searchRanking';
 import { buildCanonicalNodeMetadata, mergeNodeMetadata } from '@/services/nodes/metadata';
 import { getVectorBackend } from '@/services/vectorBackend/factory';
+// The five belief columns (fork addition) every node-read SELECT below
+// appends, declared once so no read surface can drop them — see the fragment
+// module for the full contract.
+import { BELIEF_NODE_READ_COLUMNS_SQL } from '@/services/belief/beliefNodeReadColumnsSql';
 
 type NodeRow = Node;
 type NodeSearchRow = NodeRow & { rank?: number; similarity?: number };
@@ -111,6 +115,7 @@ export class NodeService {
       SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
              n.chunk_status, n.embedding_updated_at, n.embedding_text,
              n.created_at, n.updated_at,
+             ${BELIEF_NODE_READ_COLUMNS_SQL},
              (SELECT COUNT(*) FROM edges WHERE from_node_id = n.id OR to_node_id = n.id) as edge_count
       FROM nodes n
       WHERE 1=1
@@ -197,19 +202,11 @@ export class NodeService {
 
   private async getNodeByIdSQLite(id: number): Promise<Node | null> {
     const sqlite = getSQLiteClient();
-    // The belief columns (fork addition) ride the same SELECT so a node read
-    // carries the node's belief: belief_credence NULL means nobody has
-    // grounded the node (a real state, never coerced to 0), and
-    // belief_credence_is_fixed is NOT NULL DEFAULT 0 so it always has a
-    // value. The two evidence masses (belief model v2) ride along too, so the
-    // MCP doors' node reads can DERIVE belief_uncertainty from them — the
-    // derivation lives in the shared contract's node-read mapper, never here.
     const query = `
       SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
              n.chunk_status, n.embedding_updated_at, n.embedding_text,
              n.created_at, n.updated_at,
-             n.belief_credence, n.belief_computed_at, n.belief_credence_is_fixed,
-             n.belief_evidence_for_mass, n.belief_evidence_against_mass
+             ${BELIEF_NODE_READ_COLUMNS_SQL}
       FROM nodes n
       WHERE n.id = ?
     `;
@@ -521,6 +518,7 @@ export class NodeService {
         SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
                n.chunk_status, n.embedding_updated_at, n.embedding_text,
                n.created_at, n.updated_at,
+               ${BELIEF_NODE_READ_COLUMNS_SQL},
                fm.rank
         FROM fts_matches fm
         JOIN nodes n ON n.id = fm.rowid
@@ -548,7 +546,8 @@ export class NodeService {
     let query = `
       SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
              n.chunk_status, n.embedding_updated_at, n.embedding_text,
-             n.created_at, n.updated_at
+             n.created_at, n.updated_at,
+             ${BELIEF_NODE_READ_COLUMNS_SQL}
       FROM nodes n
       WHERE 1=1
     `;
@@ -591,7 +590,8 @@ export class NodeService {
     let query = `
       SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
              n.chunk_status, n.embedding_updated_at, n.embedding_text,
-             n.created_at, n.updated_at
+             n.created_at, n.updated_at,
+             ${BELIEF_NODE_READ_COLUMNS_SQL}
       FROM nodes n
       WHERE 1=1
     `;
@@ -655,7 +655,8 @@ export class NodeService {
       const result = sqlite.query<NodeSearchRow>(`
         SELECT n.id, n.title, n.description, n.source, n.link, n.event_date, n.metadata,
                n.chunk_status, n.embedding_updated_at, n.embedding_text,
-               n.created_at, n.updated_at
+               n.created_at, n.updated_at,
+               ${BELIEF_NODE_READ_COLUMNS_SQL}
         FROM nodes n
         WHERE n.id IN (${matchIds.map(() => '?').join(',')})
         ${extraClauses}
