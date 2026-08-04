@@ -193,3 +193,29 @@ export function beliefMapNodeRingClassNames(
 
   return classes;
 }
+
+/**
+ * The MiniMap tint colour for one finished presentation decision: the CSS
+ * variable for the hue. Hue-only, so intensity and ring style are ignored.
+ *
+ * Returns null for a never-assessed node (beliefRingHue === null), allowing
+ * the caller to fall back to the role colour — belief must never repaint an
+ * unassessed node. Returns the theme token var(--rah-belief-…) for an assessed
+ * hue, never a hex literal, never a colour for any property besides hue.
+ */
+export function beliefMiniMapNodeColor(beliefPresentation: BeliefPresentation): string | null {
+  // Belief never repaints an unassessed node; the caller falls back to its role colour.
+  if (beliefPresentation.beliefRingHue === null) {
+    return null;
+  }
+
+  // Map the hue to its theme token.
+  switch (beliefPresentation.beliefRingHue) {
+    case 'for':
+      return 'var(--rah-belief-for)';
+    case 'against':
+      return 'var(--rah-belief-against)';
+    case 'neutral':
+      return 'var(--rah-belief-neutral)';
+  }
+}
