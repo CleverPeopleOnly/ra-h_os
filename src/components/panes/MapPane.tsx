@@ -16,6 +16,7 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import type { Edge as DbEdge, Node as DbNode } from '@/types/database';
+import { beliefMiniMapNodeColor } from '@/services/belief/beliefPresentation';
 import PaneHeader from './PaneHeader';
 import type { MapPaneProps } from './types';
 import { RahNode } from './map/RahNode';
@@ -500,16 +501,24 @@ function MapPaneInner({
                 maskColor={theme === 'light' ? 'rgba(255, 255, 255, 0.72)' : 'rgba(0, 0, 0, 0.7)'}
                 nodeColor={(node) => {
                   const data = node.data as RahNodeData | undefined;
-                  switch (data?.role) {
-                    case 'selected':
-                      return '#16a34a';
-                    case 'first-hop':
-                      return '#22c55e';
-                    case 'second-hop':
-                      return '#94a3b8';
-                    default:
-                      return '#64748b';
-                  }
+                  // Consult the belief tint first; fall back to the role colour when
+                  // the node carries no presentation or was never assessed (null tint).
+                  const beliefTint = data?.beliefPresentation
+                    ? beliefMiniMapNodeColor(data.beliefPresentation)
+                    : null;
+                  const roleColor = (() => {
+                    switch (data?.role) {
+                      case 'selected':
+                        return '#16a34a';
+                      case 'first-hop':
+                        return '#22c55e';
+                      case 'second-hop':
+                        return '#94a3b8';
+                      default:
+                        return '#64748b';
+                    }
+                  })();
+                  return beliefTint ?? roleColor;
                 }}
                 pannable
                 zoomable
