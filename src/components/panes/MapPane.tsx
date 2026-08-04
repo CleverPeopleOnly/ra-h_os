@@ -120,6 +120,12 @@ function MapPaneInner({
 
   const hoveredDbNode = hoveredNodeId ? nodesById.get(hoveredNodeId) ?? null : null;
 
+  // Look up the hovered node's already-derived belief presentation from
+  // the React Flow nodes state by its hovered id.
+  const hoveredBeliefPresentation = hoveredNodeId
+    ? rfNodes.find((node) => node.id === String(hoveredNodeId))?.data?.beliefPresentation
+    : null;
+
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -524,6 +530,9 @@ function MapPaneInner({
             {hoveredDbNode && hoveredNodeId !== selectedNodeId ? (
               <div style={hoverPreviewCard}>
                 <div style={hoverPreviewTitle}>{hoveredDbNode.title || 'Untitled'}</div>
+                <div className="rah-map-hover-belief-line" style={{ color: 'var(--rah-text-muted)', fontSize: 11 }}>
+                  {hoveredBeliefPresentation?.beliefAccessibleText ?? ''}
+                </div>
                 {hoveredDbNode.description ? (
                   <div style={hoverPreviewBody}>{hoveredDbNode.description}</div>
                 ) : (
