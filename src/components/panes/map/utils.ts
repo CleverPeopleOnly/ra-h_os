@@ -1,5 +1,7 @@
 import type { Node as DbNode, Edge as DbEdge } from '@/types/database';
 import type { Node as RFNode, Edge as RFEdge } from '@xyflow/react';
+import { deriveBeliefPresentation } from '@/services/belief/beliefPresentation';
+import type { BeliefPresentation, BeliefPresentationNodeFields } from '@/services/belief/beliefPresentation';
 
 export type MapViewMode = 'overview' | 'focused';
 export type MapNodeRole = 'overview' | 'selected' | 'first-hop' | 'second-hop';
@@ -18,6 +20,9 @@ export interface RahNodeData {
   role: MapNodeRole;
   connectionCount: number;
   prominence: number;
+  // The node's ready-made belief presentation decision, derived once here so
+  // the visual component never touches raw belief fields.
+  beliefPresentation: BeliefPresentation;
   [key: string]: unknown;
 }
 
@@ -313,6 +318,17 @@ export function toRFNodes(params: {
           : 'second-hop'
       : 'overview';
 
+    // The four belief fields as the presentation derivation takes them. The
+    // Node type declares them optional, so undefined (a node from a caller
+    // predating belief) normalises to null — never assessed — and the flag
+    // to 0 (not fixed). A missing field must never read as a graded 0.
+    const nodeBeliefFields: BeliefPresentationNodeFields = {
+      belief_credence: node.belief_credence ?? null,
+      belief_credence_is_fixed: node.belief_credence_is_fixed ?? 0,
+      belief_evidence_for_mass: node.belief_evidence_for_mass ?? null,
+      belief_evidence_against_mass: node.belief_evidence_against_mass ?? null,
+    };
+
     return {
       id: String(node.id),
       type: 'rahNode',
@@ -324,6 +340,7 @@ export function toRFNodes(params: {
         role,
         connectionCount: adjacency.get(node.id)?.size ?? 0,
         prominence: Math.min(1, (degreeMap.get(node.id) ?? node.edge_count ?? 0) / Math.max(...nodes.map((n) => degreeMap.get(n.id) ?? n.edge_count ?? 0), 1)),
+        beliefPresentation: deriveBeliefPresentation(nodeBeliefFields),
       },
     };
   });
