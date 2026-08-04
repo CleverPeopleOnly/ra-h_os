@@ -201,9 +201,10 @@ describe('toRFNodes populates beliefPresentation from the derivation module', ()
 
 describe('toRFNodes exemplar belief states arrive intact in the node data', () => {
   // Believed node: positive credence (+0.4) on real evidence (u = 0.2) —
-  // 'for' hue, solid ring, the committed 55% band, no badge. Literal pins,
+  // 'for' hue, solid ring, the committed band, no badge. Literal pins,
   // independent of the derivation call, so a broken derivation AND a
-  // divergent copy both fail.
+  // divergent copy both fail. The committed band is 65% since slice 10 raised
+  // the ring-intensity floor (was 55%).
   it("threads a believed node through as a solid 'for' ring", () => {
     const [emittedBelievedNode] = emitBeliefMapNodes([
       beliefMapDbNodeFixture({ nodeId: 1, nodeTitle: 'Believed', beliefFields: BELIEVED_SOLID_BELIEF_FIELDS }),
@@ -211,13 +212,14 @@ describe('toRFNodes exemplar belief states arrive intact in the node data', () =
     const believedPresentation = beliefPresentationOfEmittedNode(emittedBelievedNode);
     expect(believedPresentation.beliefRingHue).toBe('for');
     expect(believedPresentation.beliefRingStyle).toBe('solid');
-    expect(believedPresentation.beliefRingIntensityPercent).toBe(55);
+    expect(believedPresentation.beliefRingIntensityPercent).toBe(65);
     expect(believedPresentation.beliefFixedBadgeShown).toBe(false);
     expect(believedPresentation.beliefUncertainty).toBe(0.2);
   });
 
   // Disbelieved high-uncertainty node: negative credence (-0.2) on sparse
-  // masses (u = 0.8) — 'against' hue, dashed ring, the leaning 30% band.
+  // masses (u = 0.8) — 'against' hue, dashed ring, the leaning band. That
+  // band is 50% since slice 10 raised the ring-intensity floor (was 30%).
   it("threads a disbelieved sparse-evidence node through as a dashed 'against' ring", () => {
     const [emittedDisbelievedNode] = emitBeliefMapNodes([
       beliefMapDbNodeFixture({ nodeId: 1, nodeTitle: 'Disbelieved', beliefFields: DISBELIEVED_SPARSE_BELIEF_FIELDS }),
@@ -225,7 +227,7 @@ describe('toRFNodes exemplar belief states arrive intact in the node data', () =
     const disbelievedPresentation = beliefPresentationOfEmittedNode(emittedDisbelievedNode);
     expect(disbelievedPresentation.beliefRingHue).toBe('against');
     expect(disbelievedPresentation.beliefRingStyle).toBe('dashed');
-    expect(disbelievedPresentation.beliefRingIntensityPercent).toBe(30);
+    expect(disbelievedPresentation.beliefRingIntensityPercent).toBe(50);
     expect(disbelievedPresentation.beliefUncertainty).toBe(0.8);
   });
 
@@ -288,14 +290,17 @@ describe('toRFNodes nodes without belief keys get the never-assessed decision', 
 
   // The `?? 0` pin at the map layer: a missing credence must never surface
   // as an assessed 0 — no neutral hue, no smallest-step intensity, and no
-  // digit anywhere in the accessible text.
+  // digit anywhere in the accessible text. The smallest step is 35% since
+  // slice 10 raised the ring-intensity floor (was 15%), and the floor now
+  // being clearly visible is exactly why an unassessed node must never reach
+  // it.
   it('never renders a missing credence as 0', () => {
     const [emittedKeylessNode] = emitBeliefMapNodes([
       beliefMapDbNodeFixture({ nodeId: 1, nodeTitle: 'Older caller shape' }),
     ]);
     const keylessPresentation = beliefPresentationOfEmittedNode(emittedKeylessNode);
     expect(keylessPresentation.beliefRingHue).not.toBe('neutral');
-    expect(keylessPresentation.beliefRingIntensityPercent).not.toBe(15);
+    expect(keylessPresentation.beliefRingIntensityPercent).not.toBe(35);
     expect(keylessPresentation.beliefAccessibleText).not.toMatch(/\d/);
   });
 });

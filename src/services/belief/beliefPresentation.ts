@@ -65,14 +65,21 @@ export type BeliefPresentationNodeFields = {
  * Bounded at 80, never 100: credence lives in the OPEN interval (-1, +1), so
  * total certainty is not expressible and the ring must never render as if it
  * were. Monotonically non-decreasing by construction (rows ascend).
+ *
+ * Floor raised to 35 (was 15): visual verification of the seeded demo graph
+ * (slice 9) showed a 15% ring computing to rgb(45,47,48) against a plain
+ * node's rgb(42,42,42) in dark mode, and rgb(211,212,214) against
+ * rgb(212,212,212) in light — imperceptible. At 35 an assessed credence-0
+ * node carries a visibly distinct ring, while never-assessed nodes remain
+ * untreated.
  */
 export const BELIEF_RING_INTENSITY_STEPS: ReadonlyArray<BeliefRingIntensityStep> = [
   // Barely leaning: the smallest visible step.
-  { minAbsoluteCredence: 0, ringIntensityPercent: 15 },
+  { minAbsoluteCredence: 0, ringIntensityPercent: 35 },
   // Leaning.
-  { minAbsoluteCredence: 0.15, ringIntensityPercent: 30 },
+  { minAbsoluteCredence: 0.15, ringIntensityPercent: 50 },
   // Committed.
-  { minAbsoluteCredence: 0.4, ringIntensityPercent: 55 },
+  { minAbsoluteCredence: 0.4, ringIntensityPercent: 65 },
   // Strongly committed.
   { minAbsoluteCredence: 0.7, ringIntensityPercent: 80 },
 ];
