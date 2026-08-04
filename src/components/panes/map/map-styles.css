@@ -122,3 +122,17 @@
   border: 1px solid var(--rah-border);
   border-radius: 6px;
 }
+
+/* Belief ring classes (fork addition) — hue from --rah-belief-* tokens,
+   intensity percentages from BELIEF_RING_INTENSITY_STEPS in beliefPresentation.ts;
+   consumed by the map node in a later slice. */
+.rah-map-node--belief-for-15 { border-color: color-mix(in srgb, var(--rah-belief-for) 15%, var(--rah-border)); }
+.rah-map-node--belief-for-30 { border-color: color-mix(in srgb, var(--rah-belief-for) 30%, var(--rah-border)); }
+.rah-map-node--belief-for-55 { border-color: color-mix(in srgb, var(--rah-belief-for) 55%, var(--rah-border)); }
+.rah-map-node--belief-for-80 { border-color: color-mix(in srgb, var(--rah-belief-for) 80%, var(--rah-border)); }
+.rah-map-node--belief-against-15 { border-color: color-mix(in srgb, var(--rah-belief-against) 15%, var(--rah-border)); }
+.rah-map-node--belief-against-30 { border-color: color-mix(in srgb, var(--rah-belief-against) 30%, var(--rah-border)); }
+.rah-map-node--belief-against-55 { border-color: color-mix(in srgb, var(--rah-belief-against) 55%, var(--rah-border)); }
+.rah-map-node--belief-against-80 { border-color: color-mix(in srgb, var(--rah-belief-against) 80%, var(--rah-border)); }
+.rah-map-node--belief-neutral-15 { border-color: color-mix(in srgb, var(--rah-belief-neutral) 15%, var(--rah-border)); }
+.rah-map-node--belief-dashed { border-style: dashed; }
