@@ -371,13 +371,19 @@ export function toRFEdges(params: {
         type: 'rahEdge',
         animated: false,
         data: { explanation },
+        // Edge style hierarchy: resting baseline (0.5 opacity, 1.4 width) rises into focused mode
+        // with three branches above it. Resting was invisible (0.2, 1.05px hardcoded #475569 slate);
+        // raising the floor to 0.5/1.4 with theme token var(--rah-text-muted) makes it theme-aware
+        // and legible on both light and dark. Non-touching focused edges stay at baseline. Second
+        // hop (1.6, 0.62) is louder. Selection-touching (2.1, 0.85) is loudest, with accent-green
+        // mixed toward var(--rah-text-soft) instead of hex #94a3b8.
         style: focusedGraph
           ? touchesSelected
-            ? { stroke: 'color-mix(in srgb, var(--rah-accent-green) 55%, #94a3b8)', strokeWidth: 1.9, opacity: 0.72 }
+            ? { stroke: 'color-mix(in srgb, var(--rah-accent-green) 55%, var(--rah-text-soft))', strokeWidth: 2.1, opacity: 0.85 }
             : touchesSecondHop
-              ? { stroke: '#64748b', strokeWidth: 1.15, opacity: 0.3 }
-              : { stroke: '#475569', strokeWidth: 1.05, opacity: 0.22 }
-          : { stroke: '#475569', strokeWidth: 1.05, opacity: 0.2 },
+              ? { stroke: 'var(--rah-text-soft)', strokeWidth: 1.6, opacity: 0.62 }
+              : { stroke: 'var(--rah-text-muted)', strokeWidth: 1.4, opacity: 0.5 }
+          : { stroke: 'var(--rah-text-muted)', strokeWidth: 1.4, opacity: 0.5 },
         zIndex: touchesSelected ? 10 : 1,
       };
     });
