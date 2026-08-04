@@ -3,6 +3,7 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { RahNodeData } from './utils';
+import { beliefMapNodeRingClassNames } from '@/services/belief/beliefPresentation';
 import { getNodeIcon } from '@/utils/nodeIcons';
 
 type RahNodeType = Node<RahNodeData, 'rahNode'>;
@@ -27,6 +28,7 @@ function RahNodeComponent({ data, selected }: NodeProps<RahNodeType>) {
         role === 'overview' && 'rah-map-node--overview',
         isSelected && 'rah-map-node--active',
         strongNode && 'rah-map-node--strong',
+        ...beliefMapNodeRingClassNames(data.beliefPresentation),
       ].filter(Boolean).join(' ')}
       style={{ transform: `scale(${sizeScale})` }}
     >

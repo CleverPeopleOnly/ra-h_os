@@ -162,3 +162,34 @@ export function deriveBeliefPresentation(
     beliefAccessibleText: accessibleTextClauses.join(', '),
   };
 }
+
+/**
+ * Compose the CSS class names for a map node's belief ring from one finished
+ * presentation decision. Pure function only: from the hue, intensity, and style
+ * fields of a presentation to the exact class tokens the node wears.
+ *
+ * Returns the empty array for a never-assessed node (beliefRingHue === null).
+ * Otherwise returns one ring class with hue and intensity; additionally
+ * includes the dashed class iff the style is 'dashed' (solid and null both
+ * render solid, the carry-forward for the illegitimate credence-without-masses
+ * state).
+ */
+export function beliefMapNodeRingClassNames(
+  beliefPresentation: BeliefPresentation
+): string[] {
+  // Never assessed: no belief classes at all.
+  if (beliefPresentation.beliefRingHue === null) {
+    return [];
+  }
+
+  // One ring class: hue and intensity percent.
+  const ringClass = `rah-map-node--belief-${beliefPresentation.beliefRingHue}-${beliefPresentation.beliefRingIntensityPercent}`;
+  const classes = [ringClass];
+
+  // Dashed marker, only when the style is explicitly dashed.
+  if (beliefPresentation.beliefRingStyle === 'dashed') {
+    classes.push('rah-map-node--belief-dashed');
+  }
+
+  return classes;
+}
