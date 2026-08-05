@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 
+// LOCAL-ONLY DOOR — deliberately exempt from the bearer lock. The remote door
+// (app/api/mcp/route.ts) requires RAH_MCP_DOOR_TOKEN and fails closed without
+// it, because it crosses a network. This door does not: it is spawned by the
+// client it serves and speaks over its own stdio — no socket, nothing for a
+// bearer token to protect — so it never reads RAH_MCP_DOOR_TOKEN. If this
+// door ever grows a network transport, it inherits the lock first. The
+// divergence is pinned in tests/unit/mcp/mcp-doors-diverge-on-bearer-auth.test.ts.
+
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
