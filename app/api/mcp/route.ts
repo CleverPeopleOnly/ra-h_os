@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
@@ -46,6 +47,65 @@ const instructions = [
   'Every edge needs an explanation: why does this connection exist?',
   'Never create or update an edge unless the user has explicitly confirmed the relationship.',
 ].join(' ');
+
+// The one refusal message every credential failure carries — missing, wrong
+// token, or wrong scheme alike. A single constant, so the door never gives an
+// attacker an oracle separating "unknown token" from "bad scheme".
+const BEARER_REFUSAL_MESSAGE = 'Unauthorized: this MCP door requires a valid bearer token.';
+
+// Compare the presented token against the door's token in constant time:
+// both are hashed to equal-length digests first, so timingSafeEqual never
+// throws on a length mismatch and the comparison leaks nothing about how far
+// the strings matched.
+function bearerTokensMatch(presentedToken: string, doorToken: string): boolean {
+  const presentedDigest = createHash('sha256').update(presentedToken).digest();
+  const doorDigest = createHash('sha256').update(doorToken).digest();
+  return timingSafeEqual(presentedDigest, doorDigest);
+}
+
+// The bearer lock on the door, run BEFORE any MCP server is built or any
+// request forwarded. Returns null when the request may proceed — either the
+// door has no token configured (unlocked, today's behaviour) or the request
+// carries `Authorization: Bearer <door token>` exactly. Anything else gets the
+// transport-level refusal: HTTP 401, a `WWW-Authenticate: Bearer` challenge,
+// and a JSON-RPC error body — never the 200-plus-isError shape, which is
+// reserved for in-protocol tool refusals.
+function refuseUnlessBearerCredentialValid(request: NextRequest): NextResponse | null {
+  const doorToken = process.env.RAH_MCP_DOOR_TOKEN;
+  // No token configured means the door is unlocked; fail-closed is a later
+  // slice, so an unset or empty token serves exactly as today.
+  if (!doorToken) {
+    return null;
+  }
+
+  // The credential must use the Bearer scheme; the door's own token sent bare
+  // or under another scheme is malformed and refused like any wrong token.
+  const authorizationHeader = request.headers.get('authorization');
+  if (authorizationHeader !== null && authorizationHeader.startsWith('Bearer ')) {
+    const presentedToken = authorizationHeader.slice('Bearer '.length);
+    if (bearerTokensMatch(presentedToken, doorToken)) {
+      return null;
+    }
+  }
+
+  return NextResponse.json(
+    {
+      jsonrpc: '2.0',
+      error: {
+        code: -32000,
+        message: BEARER_REFUSAL_MESSAGE,
+      },
+    },
+    {
+      status: 401,
+      headers: {
+        'Content-Type': 'application/json',
+        'WWW-Authenticate': 'Bearer realm="ra-h-mcp"',
+        'Access-Control-Allow-Origin': '*',
+      },
+    }
+  );
+}
 
 function getBaseUrl(request: NextRequest): string {
   const envBase = process.env.RAH_MCP_TARGET_URL || process.env.NEXT_PUBLIC_BASE_URL;
@@ -926,6 +986,13 @@ function createServer(request: NextRequest): McpServer {
 }
 
 export async function POST(request: NextRequest) {
+  // The bearer lock runs first: a refused request builds no MCP server and
+  // does no other work.
+  const bearerRefusal = refuseUnlessBearerCredentialValid(request);
+  if (bearerRefusal) {
+    return bearerRefusal;
+  }
+
   try {
     const server = createServer(request);
     const transport = new WebStandardStreamableHTTPServerTransport({
@@ -977,12 +1044,21 @@ export async function OPTIONS() {
     headers: {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Accept, Mcp-Session-Id',
+      // Authorization is listed so browser clients can preflight the bearer;
+      // the preflight itself stays open, since it carries no credentials.
+      'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Mcp-Session-Id',
     },
   });
 }
 
 export async function GET(request: NextRequest) {
+  // The bearer lock runs first: the discovery listing is metadata about a
+  // private store, refused without the credential just like a tool call.
+  const bearerRefusal = refuseUnlessBearerCredentialValid(request);
+  if (bearerRefusal) {
+    return bearerRefusal;
+  }
+
   const tools = [
     'rah_add_node',
     'rah_search_nodes',
