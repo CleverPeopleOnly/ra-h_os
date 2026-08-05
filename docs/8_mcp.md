@@ -47,6 +47,29 @@ Important runtime distinction:
 - if standalone MCP writes `nodes.source` while the app is closed, the app later processes that node through startup recovery
 - external MCP agent model choice is separate from RA-H app utility model choice; app utility LLMs and embeddings use `LLM_PROFILE` and `EMBEDDING_PROFILE`
 
+## Door Authentication
+
+The three MCP surfaces split on authentication by whether they cross a network:
+
+- **Remote HTTP door** (`app/api/mcp/route.ts`, served at `/api/mcp`): requires a
+  bearer token. Set `RAH_MCP_DOOR_TOKEN` in the app's environment (mint one with
+  `openssl rand -hex 32`); callers send `Authorization: Bearer <token>` on every
+  POST and on the GET discovery listing. The door **fails closed**: with the
+  token unset or empty it refuses every request with a 503 naming the variable —
+  it never silently serves the store unauthenticated. A wrong or malformed
+  credential gets a 401 whose message never distinguishes the failure kind.
+  CORS preflight (OPTIONS) stays open; it carries no credentials.
+- **Local stdio door** (`apps/mcp-server/stdio-server.js`): **exempt**, and the
+  exemption is stated in its header. It is spawned by the client it serves and
+  speaks over its own stdio — no socket, nothing for a bearer token to protect.
+  If it ever grows a network transport, it inherits the lock first.
+- **Standalone MCP** (direct SQLite access): local-only by construction, same
+  exemption reasoning — file access is governed by filesystem permissions.
+
+The divergence is pinned by `tests/unit/mcp/mcp-doors-diverge-on-bearer-auth.test.ts`;
+the lock's behaviour by `remote-mcp-route-bearer-auth.test.ts` and
+`remote-mcp-route-fail-closed.test.ts`.
+
 ## WAL / Multi-Surface Safety
 
 - RA-H uses SQLite WAL as the normal local multi-surface model.
