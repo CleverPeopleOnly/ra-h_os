@@ -26,6 +26,13 @@ import { POST } from '../../../../app/api/mcp/route';
 // door that stops answering fails fast and readably.
 export const REMOTE_MCP_REPLY_TIMEOUT_MS = 4000;
 
+// The bearer token the harness installs as RAH_MCP_DOOR_TOKEN while it runs.
+// The door FAILS CLOSED — with no token configured every request answers 503
+// — so an unconfigured harness would 503 every door test. An arbitrary value;
+// exported so a test file that also drives the route directly can send the
+// same credential.
+export const REMOTE_MCP_DOOR_HARNESS_TOKEN = 'remote-mcp-door-harness-token-7c21';
+
 // One request the RA-H app stub received from the route under test. The query
 // string is kept parsed as well as raw because the read tools carry their
 // arguments there rather than in a body.
@@ -87,6 +94,11 @@ export async function startRemoteMcpDoorHarness(): Promise<RemoteMcpDoorHarness>
   let appStubResponder: RaHAppStubResponder = () => undefined;
   // The RAH_MCP_TARGET_URL value present before the harness started.
   const targetUrlBeforeHarness = process.env.RAH_MCP_TARGET_URL;
+  // The RAH_MCP_DOOR_TOKEN value present before the harness started, restored
+  // exactly in stop() — absent stays absent. The harness token replaces it
+  // because the fail-closed door refuses every request until one is set.
+  const doorTokenBeforeHarness = process.env.RAH_MCP_DOOR_TOKEN;
+  process.env.RAH_MCP_DOOR_TOKEN = REMOTE_MCP_DOOR_HARNESS_TOKEN;
   // Base URL the route is pointed at.
   let raHAppStubBaseUrl = '';
 
@@ -137,7 +149,11 @@ export async function startRemoteMcpDoorHarness(): Promise<RemoteMcpDoorHarness>
     if (method !== 'POST') {
       return new Response(null, { status: 405 });
     }
-    return POST(new Request(String(url), init) as unknown as NextRequest);
+    // The harness's own bearer credential rides every forwarded POST, so the
+    // locked door lets the test client through.
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', `Bearer ${REMOTE_MCP_DOOR_HARNESS_TOKEN}`);
+    return POST(new Request(String(url), { ...init, headers }) as unknown as NextRequest);
   }
 
   return {
@@ -166,6 +182,11 @@ export async function startRemoteMcpDoorHarness(): Promise<RemoteMcpDoorHarness>
         delete process.env.RAH_MCP_TARGET_URL;
       } else {
         process.env.RAH_MCP_TARGET_URL = targetUrlBeforeHarness;
+      }
+      if (doorTokenBeforeHarness === undefined) {
+        delete process.env.RAH_MCP_DOOR_TOKEN;
+      } else {
+        process.env.RAH_MCP_DOOR_TOKEN = doorTokenBeforeHarness;
       }
       await new Promise<void>((resolve, reject) => {
         raHAppStubServer.close((error) => (error ? reject(error) : resolve()));

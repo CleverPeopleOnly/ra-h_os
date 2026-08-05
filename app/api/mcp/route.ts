@@ -53,6 +53,15 @@ const instructions = [
 // attacker an oracle separating "unknown token" from "bad scheme".
 const BEARER_REFUSAL_MESSAGE = 'Unauthorized: this MCP door requires a valid bearer token.';
 
+// The one refusal message an UNCONFIGURED door serves — identical whether the
+// token is unset or empty, and whether or not the request carried a
+// credential. A single constant, so the responses teach a caller nothing
+// about server state beyond "unconfigured", and it names RAH_MCP_DOOR_TOKEN
+// so the operator can tell configuration failure from credential failure at a
+// glance.
+const UNCONFIGURED_DOOR_REFUSAL_MESSAGE =
+  'Service unavailable: this MCP door has no RAH_MCP_DOOR_TOKEN configured, so it refuses to serve.';
+
 // Compare the presented token against the door's token in constant time:
 // both are hashed to equal-length digests first, so timingSafeEqual never
 // throws on a length mismatch and the comparison leaks nothing about how far
@@ -63,19 +72,47 @@ function bearerTokensMatch(presentedToken: string, doorToken: string): boolean {
   return timingSafeEqual(presentedDigest, doorDigest);
 }
 
-// The bearer lock on the door, run BEFORE any MCP server is built or any
-// request forwarded. Returns null when the request may proceed — either the
-// door has no token configured (unlocked, today's behaviour) or the request
-// carries `Authorization: Bearer <door token>` exactly. Anything else gets the
-// transport-level refusal: HTTP 401, a `WWW-Authenticate: Bearer` challenge,
-// and a JSON-RPC error body — never the 200-plus-isError shape, which is
-// reserved for in-protocol tool refusals.
-function refuseUnlessBearerCredentialValid(request: NextRequest): NextResponse | null {
+// The lock on the door, run BEFORE any MCP server is built or any request
+// forwarded, in this order: an UNCONFIGURED door refuses everything with a
+// 503; a configured door refuses a bad credential with a 401. Returns null
+// only when the door has a token configured AND the request carries
+// `Authorization: Bearer <door token>` exactly. Every refusal is a
+// transport-level JSON-RPC error body — never the 200-plus-isError shape,
+// which is reserved for in-protocol tool refusals.
+function refuseUnlessDoorConfiguredAndBearerValid(request: NextRequest): NextResponse | null {
   const doorToken = process.env.RAH_MCP_DOOR_TOKEN;
-  // No token configured means the door is unlocked; fail-closed is a later
-  // slice, so an unset or empty token serves exactly as today.
+  // An unset or EMPTY token (an empty secret is no secret) means the door
+  // FAILS CLOSED: this is a server misconfiguration, not a credential
+  // failure, so the refusal is HTTP 503 with no WWW-Authenticate challenge —
+  // a challenge would invite a retry with a credential, and no credential can
+  // open an unconfigured door.
   if (!doorToken) {
-    return null;
+    // Logged server-side so the misconfiguration is visible in the deploy's
+    // logs, not only to whoever happens to call the door.
+    console.error(
+      'MCP door refused a request: RAH_MCP_DOOR_TOKEN is not configured, so the door fails closed.'
+    );
+    return NextResponse.json(
+      {
+        jsonrpc: '2.0',
+        error: {
+          // -32003, from JSON-RPC's implementation-defined server-error
+          // range: distinct from -32000 (the bearer refusal below) and
+          // -32603 (the internal-error path), and skipping -32001 and -32002
+          // because the MCP SDK already means "request timed out" and
+          // "resource not found" by those.
+          code: -32003,
+          message: UNCONFIGURED_DOOR_REFUSAL_MESSAGE,
+        },
+      },
+      {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
   }
 
   // The credential must use the Bearer scheme; the door's own token sent bare
@@ -986,11 +1023,11 @@ function createServer(request: NextRequest): McpServer {
 }
 
 export async function POST(request: NextRequest) {
-  // The bearer lock runs first: a refused request builds no MCP server and
+  // The door lock runs first: a refused request builds no MCP server and
   // does no other work.
-  const bearerRefusal = refuseUnlessBearerCredentialValid(request);
-  if (bearerRefusal) {
-    return bearerRefusal;
+  const doorRefusal = refuseUnlessDoorConfiguredAndBearerValid(request);
+  if (doorRefusal) {
+    return doorRefusal;
   }
 
   try {
@@ -1052,11 +1089,12 @@ export async function OPTIONS() {
 }
 
 export async function GET(request: NextRequest) {
-  // The bearer lock runs first: the discovery listing is metadata about a
-  // private store, refused without the credential just like a tool call.
-  const bearerRefusal = refuseUnlessBearerCredentialValid(request);
-  if (bearerRefusal) {
-    return bearerRefusal;
+  // The door lock runs first: the discovery listing is metadata about a
+  // private store, refused unconfigured or uncredentialed just like a tool
+  // call.
+  const doorRefusal = refuseUnlessDoorConfiguredAndBearerValid(request);
+  if (doorRefusal) {
+    return doorRefusal;
   }
 
   const tools = [
