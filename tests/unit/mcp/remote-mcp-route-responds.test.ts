@@ -73,6 +73,11 @@ const toolNamesTheRemoteMcpDoorAdvertises = [
   'rah_recompute_node_belief',
 ];
 
+// The bearer token this suite installs as RAH_MCP_DOOR_TOKEN: the door fails
+// closed with no token configured, so every request this file sends carries
+// this credential. An arbitrary value; only equality matters.
+const doorTokenForThisSuite = 'test-only-door-token-responds-8b4c';
+
 // The node record the app stub returns from the search endpoint, so the
 // round-trip test can assert the tool's reply carried this exact payload back
 // out through the client.
@@ -93,6 +98,9 @@ let raHAppStubBaseUrl = '';
 let recordedAppRequests: RecordedAppRequest[] = [];
 // The RAH_MCP_TARGET_URL value present before this file ran, restored after.
 let targetUrlBeforeThisSuite: string | undefined;
+// The RAH_MCP_DOOR_TOKEN value present before this file ran, restored after —
+// absent stays absent.
+let doorTokenBeforeThisSuite: string | undefined;
 
 // Collect and parse a JSON request body from an incoming stub request.
 async function readJsonRequestBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -136,7 +144,11 @@ async function fetchIntoRemoteMcpRoutePostHandler(
   if (method !== 'POST') {
     return new Response(null, { status: 405 });
   }
-  const routeRequest = new Request(String(url), init) as unknown as NextRequest;
+  // The suite's bearer credential rides every forwarded POST, so the locked
+  // door lets the test client through.
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${doorTokenForThisSuite}`);
+  const routeRequest = new Request(String(url), { ...init, headers }) as unknown as NextRequest;
   return POST(routeRequest);
 }
 
@@ -148,6 +160,7 @@ function buildRawInitializeRequest(requestId: number): NextRequest {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${doorTokenForThisSuite}`,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -215,6 +228,9 @@ beforeAll(async () => {
 
   targetUrlBeforeThisSuite = process.env.RAH_MCP_TARGET_URL;
   process.env.RAH_MCP_TARGET_URL = raHAppStubBaseUrl;
+
+  doorTokenBeforeThisSuite = process.env.RAH_MCP_DOOR_TOKEN;
+  process.env.RAH_MCP_DOOR_TOKEN = doorTokenForThisSuite;
 });
 
 afterAll(async () => {
@@ -222,6 +238,12 @@ afterAll(async () => {
     delete process.env.RAH_MCP_TARGET_URL;
   } else {
     process.env.RAH_MCP_TARGET_URL = targetUrlBeforeThisSuite;
+  }
+
+  if (doorTokenBeforeThisSuite === undefined) {
+    delete process.env.RAH_MCP_DOOR_TOKEN;
+  } else {
+    process.env.RAH_MCP_DOOR_TOKEN = doorTokenBeforeThisSuite;
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -329,6 +351,7 @@ describe('remote MCP door answers a client', () => {
   it('still lists the advertised tools from the GET metadata handler', async () => {
     const metadataRequest = new Request('http://127.0.0.1/api/mcp', {
       method: 'GET',
+      headers: { Authorization: `Bearer ${doorTokenForThisSuite}` },
     }) as unknown as NextRequest;
 
     const metadataResponse = await GET(metadataRequest);

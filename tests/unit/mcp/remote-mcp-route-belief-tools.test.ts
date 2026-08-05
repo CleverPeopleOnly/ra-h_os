@@ -30,6 +30,7 @@ import type { NextRequest } from 'next/server';
 
 import { GET } from '../../../app/api/mcp/route';
 import {
+  REMOTE_MCP_DOOR_HARNESS_TOKEN,
   startRemoteMcpDoorHarness,
   type RemoteMcpDoorHarness,
 } from './helpers/remoteMcpDoorHarness';
@@ -442,8 +443,11 @@ describe('remote MCP door advertises the new belief tools', () => {
   // in tests/unit/mcp/remote-mcp-route-responds.test.ts lists the pre-belief
   // tool set and will need its fixture extended in the same change.)
   it('names all three belief tools in the GET metadata tool list', async () => {
+    // The harness's bearer credential rides this direct GET too: the door
+    // fails closed and refuses an uncredentialed listing.
     const metadataRequest = new Request('http://127.0.0.1/api/mcp', {
       method: 'GET',
+      headers: { Authorization: `Bearer ${REMOTE_MCP_DOOR_HARNESS_TOKEN}` },
     }) as unknown as NextRequest;
 
     const metadataResponse = await GET(metadataRequest);
