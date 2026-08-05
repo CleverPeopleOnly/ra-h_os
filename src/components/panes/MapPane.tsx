@@ -579,10 +579,17 @@ const headerTools: CSSProperties = {
   gap: 10,
 };
 
+// Border declared as longhands, never the `border` shorthand: focusedBadge
+// overrides borderColor alone, and one span swaps between the two objects.
+// With the shorthand here, leaving focused mode removed borderColor while
+// border was still set — the mix React warns about, whose removal order is
+// not guaranteed. Both objects must carry the same border property names.
 const overviewBadge: CSSProperties = {
   padding: '5px 9px',
   borderRadius: 999,
-  border: '1px solid var(--rah-border-strong)',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'var(--rah-border-strong)',
   background: 'var(--rah-bg-panel)',
   color: 'var(--rah-text-muted)',
   fontSize: 11,
