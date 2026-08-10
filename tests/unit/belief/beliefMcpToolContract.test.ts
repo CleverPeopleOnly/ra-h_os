@@ -51,9 +51,9 @@ const supportInputSchemasBothWriteToolsUse = [
 const acceptedSupportValues = [0, 0.5, 1];
 
 // Values outside the unsigned range. Negatives are not merely out of bounds —
-// support says how strongly a source talks about its neighbour, never which
-// way, and credence on the source node is the only signed quantity in the
-// system, so a signed support is a category error.
+// support says how loudly a source speaks about the node deriving from it,
+// never which way, and credence on the source node is the only signed
+// quantity in the system, so a signed support is a category error.
 const rejectedOutOfRangeSupportValues = [-1, -0.5, -0.0001, 1.0001, 1.5, 2];
 
 // Values that are not numbers at all and that BOTH write tools must refuse. A

@@ -34,18 +34,19 @@ const { z } = require('zod');
 const BELIEF_PRIOR_MASS = 2;
 
 /**
- * The belief_evidence_support argument of rah_create_edge: how strongly the
- * source node talks about the target, as one unsigned number in [0, 1].
- * Optional, because omitting it on a CREATE says the edge is a plain
- * non-evidence relationship — which is why this description cannot be shared
- * with the update tool's, where omission means something else entirely.
+ * The belief_evidence_support argument of rah_create_edge: how loudly the
+ * source the edge points at speaks about the derived node at its from-end,
+ * as one unsigned number in [0, 1]. Optional, because omitting it on a
+ * CREATE says the edge is a plain non-evidence relationship — which is why
+ * this description cannot be shared with the update tool's, where omission
+ * means something else entirely.
  */
 const beliefEvidenceSupportInputSchemaForEdgeCreate = z
   .number()
   .min(0)
   .max(1)
   .optional()
-  .describe('How strongly the source node talks about the target node: one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely for a plain non-evidence edge.');
+  .describe('How loudly the source the edge points at (targetId) speaks about the derived node (sourceId) whose credence the evidence grades: one unsigned number in [0, 1]. Which way the evidence cuts comes from that source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely for a plain non-evidence edge.');
 
 /**
  * The belief_evidence_support argument of rah_update_edge: the same unsigned
@@ -56,8 +57,8 @@ const beliefEvidenceSupportInputSchemaForEdgeCreate = z
  * so a caller has three distinct things to say and needs three spellings:
  * a number corrects the support, OMISSION leaves the stored support exactly as
  * it is, and NULL un-assesses the edge — it stops being evidence at all, its
- * contribution is cleared and the target node is regraded from whatever
- * evidence remains. Without null an agent can raise and lower a support forever
+ * contribution is cleared and the derived node (the edge's from-end) is
+ * regraded from whatever evidence remains. Without null an agent can raise and lower a support forever
  * but can never take one back, and 0 is no substitute: 0 is an assessed
  * "carries nothing", a recorded judgement rather than the absence of one.
  * On a CREATE there is no stored support to withdraw, so null would say nothing
@@ -70,7 +71,7 @@ const beliefEvidenceSupportInputSchemaForEdgeUpdate = z
   .max(1)
   .nullable()
   .optional()
-  .describe('Corrected support: how strongly the source node talks about the target node, as one unsigned number in [0, 1]. The direction of the evidence comes from the source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Send null to un-assess the edge: it stops being evidence at all. Omit the field entirely to leave the edge\'s stored support unchanged.');
+  .describe('Corrected support: how loudly the source the edge points at speaks about the derived node at its from-end, as one unsigned number in [0, 1]. Which way the evidence cuts comes from that source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Send null to un-assess the edge: it stops being evidence at all. Omit the field entirely to leave the edge\'s stored support unchanged.');
 
 /**
  * The two belief columns of one edge, as an edge-read tool must report them.
@@ -100,11 +101,11 @@ function beliefEvidenceFieldsForEdgeRead(edgeRow) {
  * because the source node's credence is.
  */
 const beliefEvidenceEdgeReadOutputSchemaFields = {
-  // How strongly the from-node talks about the to-node: unsigned, 0..1.
-  // NULL means the edge is not evidence at all.
+  // How loudly the to-end source speaks about the from-end derived node:
+  // unsigned, 0..1. NULL means the edge is not evidence at all.
   belief_evidence_support: z.number().nullable(),
-  // The from-node's credence × this edge's support, stamped by the app's
-  // belief engine. NULL means never graded, and stays NULL — never 0.
+  // The to-end source node's credence × this edge's support, stamped by the
+  // app's belief engine. NULL means never graded, and stays NULL — never 0.
   belief_evidence_contribution: z.number().nullable(),
 };
 
@@ -189,7 +190,7 @@ const beliefNodeReadOutputSchemaFields = {
   // number, so a boolean or any other value is refused.
   belief_credence_is_fixed: z
     .union([z.literal(0), z.literal(1)])
-    .describe('1 when a human asserted the belief_credence by hand; 0 when the belief engine derives it from incoming evidence.'),
+    .describe('1 when a human asserted the belief_credence by hand; 0 when the belief engine derives it from the node\'s evidence (its outgoing support-bearing edges).'),
   // How little evidence the credence rests on: unsigned, derived on read —
   // 0 is a human assertion (the dogmatic opinion), values near 1 mean the
   // credence rests on almost nothing, and null means never assessed.
@@ -315,7 +316,8 @@ const beliefMovementsReadOutputSchemaFields = {
 
 /**
  * Input schema fields of rah_recompute_node_belief: ask the app's belief
- * engine to regrade one node from its incoming evidence.
+ * engine to regrade one node from its evidence — its outgoing
+ * support-bearing edges.
  */
 const beliefRecomputeInputSchemaFields = {
   node_id: z

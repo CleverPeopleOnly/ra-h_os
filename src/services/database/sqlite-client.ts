@@ -542,8 +542,9 @@ class SQLiteClient {
       ensureNodeBeliefCol('belief_credence', 'ALTER TABLE nodes ADD COLUMN belief_credence REAL;');
       ensureNodeBeliefCol('belief_computed_at', 'ALTER TABLE nodes ADD COLUMN belief_computed_at TEXT;');
       // A node with this flag set has its credence ASSERTED by a human rather
-      // than derived from its incoming evidence — the bootstrap a derived-only
-      // graph needs before anything in it can be graded. NOT NULL DEFAULT 0
+      // than derived from its evidence (its outgoing support-bearing edges) —
+      // the bootstrap a derived-only graph needs before anything in it can be
+      // graded. NOT NULL DEFAULT 0
       // makes "derived" the state every node is in without any write, and
       // backfills every existing row of a legacy database with it.
       ensureNodeBeliefCol(
@@ -667,9 +668,10 @@ class SQLiteClient {
         }
       }
 
-      // Merge migration: how strongly an edge's source talks about the target
-      // is ONE UNSIGNED number, belief_evidence_support (0..1, NULL meaning
-      // the edge is not evidence). Which way the evidence cuts lives on the
+      // Merge migration: how loudly an edge's to-end source speaks about the
+      // from-end derived node is ONE UNSIGNED number,
+      // belief_evidence_support (0..1, NULL meaning the edge is not
+      // evidence). Which way the evidence cuts lives on the
       // source NODE's signed credence, never on the edge — so the legacy
       // direction reading ('for'/'against') is deliberately DISCARDED and
       // every gradeable row keeps only its strength's MAGNITUDE: the

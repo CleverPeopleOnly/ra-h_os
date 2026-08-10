@@ -2,9 +2,9 @@
  * UNSIGNED support range on the app-MCP proxy write door
  * (apps/mcp-server/stdio-server.js, tool rah_create_edge).
  *
- * belief_evidence_support is UNSIGNED, 0..1: it says how strongly the source
- * node talks about the target node, and the sign of a contribution comes only
- * from the source NODE's credence. This file pins the ACCEPTANCE half of the
+ * belief_evidence_support is UNSIGNED, 0..1: it says how loudly the to-end
+ * source speaks about the from-end derived node, and the sign of a
+ * contribution comes only from the source NODE's credence. This file pins the ACCEPTANCE half of the
  * unsigned range on this door: 1 (full strength) and values between 0 and 1
  * are forwarded verbatim to POST /api/edges.
  * (The rest of the door's range rules live in

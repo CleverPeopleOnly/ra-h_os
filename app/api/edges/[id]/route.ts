@@ -139,8 +139,8 @@ export async function PUT(
     }
 
     // A support-only correction (fork addition): the caller is correcting how
-    // strongly the source node talks about its neighbour and touching neither
-    // the explanation nor the context JSON that holds one. It is exempt from
+    // loudly the source speaks about the node deriving from it and touching
+    // neither the explanation nor the context JSON that holds one. It is exempt from
     // the explanation requirement below because there is no read-one-edge-by-id
     // tool for an agent to fetch the stored reasoning and hand it back, so
     // demanding one would force it to invent prose over recorded human words.
