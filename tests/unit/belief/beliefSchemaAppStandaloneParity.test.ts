@@ -100,9 +100,10 @@ describe('app and standalone agree on the belief schema', () => {
       beliefCredence: 0.9,
     });
     const claimNodeId = db.insertNodeFixture({ title: 'claim the expert supports' });
+    // Canon direction: the claim derives from the expert (claim→expert).
     const expertEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: expertNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: expertNodeId,
       support: 0.8,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -155,9 +156,10 @@ describe('app and standalone agree on the belief schema', () => {
       beliefCredence: 0.9,
     });
     const claimNodeId = db.insertNodeFixture({ title: 'claim the expert supports' });
+    // Canon direction: the claim derives from the expert (claim→expert).
     const expertEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: expertNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: expertNodeId,
       support: 0.8,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();

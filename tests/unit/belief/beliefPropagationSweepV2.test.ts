@@ -4,17 +4,19 @@
  * database (see tempBeliefDatabase.ts for the safety seam).
  *
  * The one-node recompute becomes a sweep: when a regraded node's projected
- * credence moves by more than BELIEF_CREDENCE_CHANGE_EPSILON, every target of
- * its OUTGOING evidence edges is enqueued for regrade in the same sweep, with
- * a visited set (each node regrades at most once per sweep — the echo guard
- * that terminates cycles). Fixed-credence nodes are never regraded but their
- * targets are enqueued when the fixed node itself was the write target, which
- * only happens via set/clear-fixed.
+ * credence moves by more than BELIEF_CREDENCE_CHANGE_EPSILON, every node
+ * DERIVING from it — the from-ends of its INCOMING support-bearing edges
+ * (canon direction, spec §8) — is enqueued for regrade in the same sweep,
+ * with a visited set (each node regrades at most once per sweep — the echo
+ * guard that terminates cycles). Fixed-credence nodes are never regraded but
+ * the nodes deriving from them are enqueued when the fixed node itself was
+ * the write target, which only happens via set/clear-fixed.
  *
  * Pinned here:
- *  - one hop: regrading a node regrades the targets of its outgoing evidence,
- *  - two hops: a source-credence change reaches a target two evidence edges
- *    away — the v1 stale-credence bug (audit finding 3) as a failing test,
+ *  - one hop: regrading a node regrades the from-ends of its incoming
+ *    support-bearing edges — the nodes that derive from it,
+ *  - two hops: a source-credence change reaches a derived node two evidence
+ *    edges away — the v1 stale-credence bug (audit finding 3) as a failing test,
  *  - propagation writes movement rows with trigger 'propagation' (spec §5),
  *  - a cycle A→B→A terminates with each node regraded at most once per sweep,
  *  - a fixed node in the sweep's path is never regraded (GUARD; already true
@@ -39,15 +41,17 @@ afterEach(() => {
   db = undefined;
 });
 
-// A three-node evidence chain expert → middle → downstream, the minimal graph
-// on which propagation is observable: regrading the middle node must reach
-// the downstream node through the middle's outgoing evidence edge.
+// A three-node derivation chain downstream → middle → expert (each canon
+// evidence edge points AT the node it derives from), the minimal graph on
+// which propagation is observable: regrading the middle node must reach the
+// downstream node, which derives from the middle over its own outgoing
+// canon edge — i.e. the from-end of the middle's INCOMING support edge.
 interface EvidenceChainFixture {
   // The fixed-credence bootstrap source at the head of the chain.
   expertNodeId: number;
-  // The node directly fed by the expert; the sweep's first regrade target.
+  // The node deriving directly from the expert; the sweep's first regrade target.
   middleNodeId: number;
-  // The node fed only by the middle node; only propagation can grade it.
+  // The node deriving only from the middle node; only propagation can grade it.
   downstreamNodeId: number;
 }
 
@@ -61,28 +65,33 @@ function seedEvidenceChain(
     title: 'fixed expert at the head of the chain',
     beliefCredence: expertBeliefCredence,
   });
-  const middleNodeId = context.insertNodeFixture({ title: 'middle node fed by the expert' });
-  const downstreamNodeId = context.insertNodeFixture({
-    title: 'downstream node fed only by the middle node',
+  const middleNodeId = context.insertNodeFixture({
+    title: 'middle node deriving from the expert',
   });
+  const downstreamNodeId = context.insertNodeFixture({
+    title: 'downstream node deriving only from the middle node',
+  });
+  // Canon: middle→expert ("the middle's credence derives from the expert").
   context.insertEvidenceEdgeFixture({
-    fromNodeId: expertNodeId,
-    toNodeId: middleNodeId,
+    derivedNodeId: middleNodeId,
+    sourceNodeId: expertNodeId,
     support: 1.0,
   });
+  // Canon: downstream→middle.
   context.insertEvidenceEdgeFixture({
-    fromNodeId: middleNodeId,
-    toNodeId: downstreamNodeId,
+    derivedNodeId: downstreamNodeId,
+    sourceNodeId: middleNodeId,
     support: 1.0,
   });
   return { expertNodeId, middleNodeId, downstreamNodeId };
 }
 
 describe('propagation sweep (v2)', () => {
-  // The core hop: regrading the middle node must regrade the downstream
-  // target of its outgoing evidence edge IN THE SAME SWEEP — under v1 the
-  // downstream node stays NULL forever, which is this test's red.
-  it('regrading a node regrades the targets of its outgoing evidence edges in the same sweep', async () => {
+  // The core hop: regrading the middle node must regrade the downstream node
+  // that DERIVES from it (the from-end of the middle's incoming support
+  // edge) IN THE SAME SWEEP — under the pre-canon engine the downstream node
+  // stays NULL forever, which is this test's red.
+  it('regrading a node regrades the from-ends of its incoming support-bearing edges in the same sweep', async () => {
     db = await openTempBeliefDatabase();
     const { middleNodeId, downstreamNodeId } = seedEvidenceChain(db, 0.9);
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -116,10 +125,11 @@ describe('propagation sweep (v2)', () => {
   });
 
   // Audit finding 3 as a test: after the chain is graded, moving the expert's
-  // asserted credence must reach the node TWO hops away. Under v1,
+  // asserted credence must reach the node TWO hops away — through the
+  // derivation chain downstream→middle→expert. Under v1,
   // setBeliefFixedCredence regrades nothing at all, so both the middle and
   // the downstream node keep stale credences forever.
-  it('a fixed-credence change propagates two hops to a downstream target', async () => {
+  it('a fixed-credence change propagates two hops to a node deriving through the chain', async () => {
     db = await openTempBeliefDatabase();
     const { expertNodeId, middleNodeId, downstreamNodeId } = seedEvidenceChain(db, 0.5);
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -151,16 +161,17 @@ describe('propagation sweep (v2)', () => {
   // observable as at most one new movement row per node for the one write.
   it('a cycle A→B→A terminates with each node regraded at most once per sweep', async () => {
     db = await openTempBeliefDatabase();
-    // A fixed seed feeds A, and A and B form the evidence cycle.
+    // A derives from a fixed seed, and A and B derive from each other — the
+    // evidence cycle, written in canon (each edge points at its source).
     const seedExpertNodeId = db.insertFixedBeliefCredenceNodeFixture({
-      title: 'fixed seed feeding the cycle',
+      title: 'fixed seed the cycle derives from',
       beliefCredence: 0.9,
     });
     const cycleNodeAId = db.insertNodeFixture({ title: 'cycle node A' });
     const cycleNodeBId = db.insertNodeFixture({ title: 'cycle node B' });
-    db.insertEvidenceEdgeFixture({ fromNodeId: seedExpertNodeId, toNodeId: cycleNodeAId, support: 1.0 });
-    db.insertEvidenceEdgeFixture({ fromNodeId: cycleNodeAId, toNodeId: cycleNodeBId, support: 1.0 });
-    db.insertEvidenceEdgeFixture({ fromNodeId: cycleNodeBId, toNodeId: cycleNodeAId, support: 1.0 });
+    db.insertEvidenceEdgeFixture({ derivedNodeId: cycleNodeAId, sourceNodeId: seedExpertNodeId, support: 1.0 });
+    db.insertEvidenceEdgeFixture({ derivedNodeId: cycleNodeBId, sourceNodeId: cycleNodeAId, support: 1.0 });
+    db.insertEvidenceEdgeFixture({ derivedNodeId: cycleNodeAId, sourceNodeId: cycleNodeBId, support: 1.0 });
     const { recomputeNodeBelief } = await db.importBeliefService();
 
     // If the sweep has no visited set this call never returns; its returning
@@ -181,14 +192,15 @@ describe('propagation sweep (v2)', () => {
   it('GUARD: a fixed node reached by the sweep keeps its asserted credence and logs nothing', async () => {
     db = await openTempBeliefDatabase();
     const { middleNodeId } = seedEvidenceChain(db, 0.9);
-    // A fixed node sitting where the sweep will arrive: fed by the middle node.
+    // A fixed node sitting where the sweep will arrive: it DERIVES from the
+    // middle node, so the sweep reaches it as an incoming-edge from-end.
     const fixedTargetNodeId = db.insertFixedBeliefCredenceNodeFixture({
       title: 'fixed node in the sweep path',
       beliefCredence: 0.2,
     });
     db.insertEvidenceEdgeFixture({
-      fromNodeId: middleNodeId,
-      toNodeId: fixedTargetNodeId,
+      derivedNodeId: fixedTargetNodeId,
+      sourceNodeId: middleNodeId,
       support: 1.0,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();

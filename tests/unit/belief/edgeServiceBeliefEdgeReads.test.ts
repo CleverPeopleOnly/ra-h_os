@@ -17,9 +17,11 @@
  *    IN SQL rather than returning the entire edges table and trimming
  *    afterwards,
  *  - direction names which side of the node an edge sits on: 'into' means the
- *    node is the to_node_id (the evidence feeding its credence), 'out_of'
- *    means the node is the from_node_id, 'both' is either side and is the
- *    default,
+ *    node is the to_node_id, 'out_of' means the node is the from_node_id,
+ *    'both' is either side and is the default. (Under the canon direction of
+ *    spec §8 a node's own evidence basis is its OUTGOING support-bearing
+ *    edges; an 'into' read shows the edges of nodes that derive FROM this
+ *    node. The filter is a plain column match either way.)
  *  - paging with limit + offset is deterministic: the order is
  *    created_at DESC, id DESC, so paging to exhaustion returns every edge
  *    exactly once with no duplicates and no gaps even when several rows were
@@ -37,8 +39,10 @@ import {
   type TempBeliefDatabase,
 } from './helpers/tempBeliefDatabase';
 
-// Which side of a node an edge read is asking for. 'into' is the evidence
-// side: those edges point AT the node and feed its credence.
+// Which side of a node an edge read is asking for: 'into' matches
+// to_node_id, 'out_of' matches from_node_id. (Canon note: a node's own
+// evidence basis is its OUTGOING edges; edges INTO a node belong to the
+// nodes that derive from it.)
 type BeliefEdgeReadDirection = 'into' | 'out_of' | 'both';
 
 // The filter an edge read accepts. Declared here rather than imported because
@@ -136,11 +140,15 @@ interface DirectionFixtureGraph {
 // Seed the direction fixture graph described above.
 function seedDirectionFixtureGraph(context: TempBeliefDatabase): DirectionFixtureGraph {
   const claimNodeId = context.insertNodeFixture({ title: 'Claim node under read' });
-  const gradedSourceNodeId = context.insertNodeFixture({
-    title: 'Graded evidence source node',
+  // Under canon these two nodes DERIVE from the claim node: their evidence
+  // edges point at it (the claim is their source).
+  const gradedDerivedNodeId = context.insertNodeFixture({
+    title: 'Graded node deriving from the claim',
     beliefCredence: 0.8,
   });
-  const ungradedSourceNodeId = context.insertNodeFixture({ title: 'Ungraded evidence source node' });
+  const ungradedDerivedNodeId = context.insertNodeFixture({
+    title: 'Ungraded node deriving from the claim',
+  });
   const bystanderNodeId = context.insertNodeFixture({ title: 'Bystander node' });
   const otherBystanderNodeId = context.insertNodeFixture({ title: 'Second bystander node' });
 
@@ -148,7 +156,7 @@ function seedDirectionFixtureGraph(context: TempBeliefDatabase): DirectionFixtur
     claimNodeId,
     // Evidence that has been graded: support AND contribution.
     gradedEvidenceEdgeId: insertBeliefEdgeReadFixture(context, {
-      fromNodeId: gradedSourceNodeId,
+      fromNodeId: gradedDerivedNodeId,
       toNodeId: claimNodeId,
       createdAt: NEWER_EDGE_CREATED_AT,
       support: 0.75,
@@ -156,7 +164,7 @@ function seedDirectionFixtureGraph(context: TempBeliefDatabase): DirectionFixtur
     }),
     // Evidence nobody has graded yet: support set, contribution still NULL.
     ungradedEvidenceEdgeId: insertBeliefEdgeReadFixture(context, {
-      fromNodeId: ungradedSourceNodeId,
+      fromNodeId: ungradedDerivedNodeId,
       toNodeId: claimNodeId,
       createdAt: TIED_EDGE_CREATED_AT,
       support: 0.5,
@@ -211,8 +219,8 @@ describe('EdgeService.getEdges belief-evidence edge reads', () => {
     expect(plainEdge?.belief_evidence_contribution).toBeNull();
   });
 
-  // Direction 'into' is the evidence side: only edges whose to_node_id is the
-  // node, because those are the ones feeding its credence.
+  // Direction 'into': only edges whose to_node_id is the node. (Under canon
+  // these are the edges of nodes deriving FROM it, not its own basis.)
   it('reads only edges whose to_node_id is the node when direction is into', async () => {
     db = await openTempBeliefDatabase();
     const graph = seedDirectionFixtureGraph(db);

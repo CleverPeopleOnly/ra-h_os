@@ -10,9 +10,11 @@
  *    the SAME quantity before and after a recompute, so it uses the same word
  *    (the old from_value / to_value names are renamed, never re-created)
  *  - edges.belief_evidence_support / belief_evidence_contribution — support
- *    is the ONE UNSIGNED number (0..1) saying how strongly the source node
- *    talks about its target (NULL meaning the edge is not evidence at all;
- *    the SIGN of a contribution comes from the source node's credence). It
+ *    is the ONE UNSIGNED number (0..1) saying how loudly the source speaks
+ *    about the derived node (canon direction, spec §8: the edge runs
+ *    Derivative→Source, so the source is the edge's TARGET; NULL means the
+ *    edge is not evidence at all; the SIGN of a contribution comes from the
+ *    source node's credence). It
  *    replaces the old belief_evidence_direction + belief_evidence_strength
  *    pair, which could disagree: an edge could carry a strength with no
  *    direction, storable but impossible to grade. MIGRATION DECISION =

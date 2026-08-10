@@ -13,7 +13,8 @@
  *
  * V2 (docs/belief-model-subjective-logic.md §2, §4 point 5): set/clear-fixed
  * are the ONLY writes that move a fixed node's projection, so both doors here
- * push the change through the node's outgoing evidence. New in v2 is the
+ * push the change to the nodes DERIVING FROM it — the from-ends of its
+ * incoming support-bearing edges (canon direction, spec §8). New in v2 is the
  * un-fix door, clearBeliefFixedCredence: clear the flag and immediately
  * regrade the node from its actual evidence (movement trigger
  * 'belief-fixed-credence-cleared').
@@ -96,8 +97,8 @@ export function setBeliefFixedCredence(
       );
 
     // Spec §4 point 5: an assertion is one of the two writes that move a
-    // fixed node's projection, so the changed credence sweeps through the
-    // node's outgoing evidence (targets regrade with trigger 'propagation').
+    // fixed node's projection, so the changed credence sweeps out to the
+    // nodes deriving from it (each regrades with trigger 'propagation').
     // An unchanged re-assertion moves nothing and propagates nothing.
     propagateBeliefFromSourceNode(nodeId);
   }
@@ -116,7 +117,7 @@ export interface BeliefFixedCredenceClearance {
 // The un-fix door (v2): withdraw one node's asserted credence. Clears
 // belief_credence_is_fixed to 0 and IMMEDIATELY regrades the node from its
 // actual evidence (movement trigger 'belief-fixed-credence-cleared'), which
-// also sweeps through the node's outgoing evidence — the clear is the other
+// also sweeps out to the nodes deriving from it — the clear is the other
 // write that moves a fixed node's projection (spec §4 point 5). When the
 // regrade lands ungraded, no movement is logged: an ungraded outcome has no
 // to_credence to record. Returns null when no such node exists — clearing an

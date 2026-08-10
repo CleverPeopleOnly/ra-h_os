@@ -76,7 +76,7 @@ function readEdgeExplanationColumn(
 }
 
 // Open a database seeded with one graded source node, one claim node, and one
-// evidence edge between them carrying SUPPORT_BEFORE_CORRECTION.
+// canon evidence edge (claim→source) carrying SUPPORT_BEFORE_CORRECTION.
 async function openDatabaseWithOneEvidenceEdge(): Promise<{
   context: TempBeliefDatabase;
   evidenceEdgeId: number;
@@ -85,14 +85,14 @@ async function openDatabaseWithOneEvidenceEdge(): Promise<{
   const context = await openTempBeliefDatabase();
   const claimNodeId = context.insertNodeFixture({ title: 'claim node' });
   // The source carries its own credence: that credence IS the weight its
-  // evidence would contribute if anything regraded the target.
+  // evidence would contribute if anything regraded the derived node.
   const sourceNodeId = context.insertNodeFixture({
     title: 'evidence source node',
     beliefCredence: 0.9,
   });
   const evidenceEdgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeId,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId,
     support: SUPPORT_BEFORE_CORRECTION,
   });
   const { edgeService } = await context.importEdgeService();

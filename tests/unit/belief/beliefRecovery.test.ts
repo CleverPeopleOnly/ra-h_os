@@ -54,8 +54,8 @@ describe('belief recovery sweep (MR-B)', () => {
     // Simulates a standalone write while the app was closed: evidence fields
     // set, belief_evidence_contribution left NULL (never graded).
     const ungradedEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: evidenceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: evidenceNodeId,
       support: 0.8,
     });
 
@@ -93,8 +93,8 @@ describe('belief recovery sweep (MR-B)', () => {
     });
     const claimNodeId = db.insertNodeFixture({ title: 'claim node already fully graded' });
     db.insertEvidenceEdgeFixture({
-      fromNodeId: evidenceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: evidenceNodeId,
       support: 0.6,
     });
 
@@ -112,8 +112,8 @@ describe('belief recovery sweep (MR-B)', () => {
     expect(db.readBeliefMovements(claimNodeId)).toHaveLength(1);
   });
 
-  // Ungraded source is not evidence: an evidence edge whose from-node has a
-  // NULL belief_credence is excluded from grading entirely, so
+  // Ungraded source is not evidence: an evidence edge whose source (its
+  // TO-node under canon) has a NULL belief_credence is excluded from grading entirely, so
   // recomputeNodeBelief never stamps it and it stays pending. The sweep's
   // NULL-stamp query still matches this node every run (the edge's stamp
   // never clears) and recomputes it — matching the current recovery
@@ -128,8 +128,8 @@ describe('belief recovery sweep (MR-B)', () => {
     // The source has no belief_credence of its own, so its edge is left
     // ungraded/pending on purpose.
     db.insertEvidenceEdgeFixture({
-      fromNodeId: ungradedSourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: ungradedSourceNodeId,
       support: 0.8,
     });
     // Positive control swept in the same run, so the NULL below means the
@@ -139,11 +139,11 @@ describe('belief recovery sweep (MR-B)', () => {
       beliefCredence: 0.9,
     });
     const controlClaimNodeId = db.insertNodeFixture({
-      title: 'control claim fed by a graded source',
+      title: 'control claim deriving from a graded source',
     });
     db.insertEvidenceEdgeFixture({
-      fromNodeId: gradedSourceNodeId,
-      toNodeId: controlClaimNodeId,
+      derivedNodeId: controlClaimNodeId,
+      sourceNodeId: gradedSourceNodeId,
       support: 0.8,
     });
 
@@ -167,11 +167,11 @@ describe('belief recovery sweep (MR-B)', () => {
       beliefCredence: -0.9,
     });
     const claimNodeId = db.insertNodeFixture({
-      title: 'claim node fed only by a disbelieved source',
+      title: 'claim node deriving only from a disbelieved source',
     });
     const disbelievedSourceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: disbelievedSourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: disbelievedSourceNodeId,
       support: 0.8,
     });
 
@@ -197,7 +197,7 @@ describe('belief recovery sweep (MR-B)', () => {
 
   // The sweep must EXCLUDE a fixed node from its candidate query outright,
   // not merely recompute it to no effect. A fixed node with unstamped
-  // incoming evidence matches the pending-work condition (support set,
+  // outgoing evidence matches the pending-work condition (support set,
   // contribution NULL) on every run, so unless the query filters it out the
   // one bootstrap node in the graph is reported as regraded work forever.
   it('never picks up a fixed-credence node as a sweep candidate', async () => {
@@ -207,14 +207,14 @@ describe('belief recovery sweep (MR-B)', () => {
       beliefCredence: 0.9,
     });
     const credibleSourceNodeId = db.insertNodeFixture({
-      title: 'credible source pointing at the expert',
+      title: 'credible source the expert would derive from',
       beliefCredence: 1.0,
     });
     // Exactly the shape the sweep looks for: support set (in the unsigned
     // 0..1 range), contribution NULL.
     db.insertEvidenceEdgeFixture({
-      fromNodeId: credibleSourceNodeId,
-      toNodeId: fixedExpertNodeId,
+      derivedNodeId: fixedExpertNodeId,
+      sourceNodeId: credibleSourceNodeId,
       support: 1.0,
     });
     // Positive control with the identical shape on an ORDINARY node, so a
@@ -222,8 +222,8 @@ describe('belief recovery sweep (MR-B)', () => {
     // the sweep finding nothing at all.
     const ordinaryClaimNodeId = db.insertNodeFixture({ title: 'ordinary claim with the same shape' });
     db.insertEvidenceEdgeFixture({
-      fromNodeId: credibleSourceNodeId,
-      toNodeId: ordinaryClaimNodeId,
+      derivedNodeId: ordinaryClaimNodeId,
+      sourceNodeId: credibleSourceNodeId,
       support: 0.8,
     });
 
@@ -238,11 +238,11 @@ describe('belief recovery sweep (MR-B)', () => {
   });
 
   // A node whose credence is human-asserted must survive the startup sweep
-  // untouched, even when evidence pointing at it was written offline. The
+  // untouched, even when evidence it would derive from was written offline. The
   // sweep runs recomputeNodeBelief, and a recompute of a fixed node is a
   // no-op — otherwise the one bootstrap node in the graph would be silently
   // regraded away on the next app start.
-  it('leaves a fixed-credence node untouched even when it has ungraded incoming evidence', async () => {
+  it('leaves a fixed-credence node untouched even when it has ungraded outgoing evidence', async () => {
     db = await openTempBeliefDatabase();
     const fixedExpertNodeId = db.insertFixedBeliefCredenceNodeFixture({
       title: 'human expert whose credence is asserted',
@@ -251,12 +251,12 @@ describe('belief recovery sweep (MR-B)', () => {
     // A disbelieved source at full strength: under the counted-negatives rule
     // this is hard contradiction mass that WOULD regrade an ordinary node.
     const criticNodeId = db.insertNodeFixture({
-      title: 'disbelieved critic pointing at the expert',
+      title: 'disbelieved critic the expert would derive from',
       beliefCredence: -1.0,
     });
     const offlineCriticEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: criticNodeId,
-      toNodeId: fixedExpertNodeId,
+      derivedNodeId: fixedExpertNodeId,
+      sourceNodeId: criticNodeId,
       support: 1.0,
     });
 
@@ -290,13 +290,15 @@ describe('belief recovery sweep (MR-B)', () => {
   // on "belief_evidence_support IS NOT NULL". A node joined only by a plain
   // edge (NULL support, NULL contribution) has no pending evidence, so the
   // sweep must not pick it up even though its stamp is NULL.
-  it('does not regrade a node whose only incoming edge has NULL belief_evidence_support', async () => {
+  it('does not regrade a node whose only outgoing edge has NULL belief_evidence_support', async () => {
     db = await openTempBeliefDatabase();
     const plainNeighbourNodeId = db.insertNodeFixture({ title: 'plain neighbour node' });
     const claimNodeId = db.insertNodeFixture({ title: 'claim joined only by a plain edge' });
+    // Canon arrangement: the plain edge sits exactly where an evidence edge
+    // would (claim at the from-end), so only its NULL support keeps it out.
     db.insertNonEvidenceEdgeFixture({
-      fromNodeId: plainNeighbourNodeId,
-      toNodeId: claimNodeId,
+      fromNodeId: claimNodeId,
+      toNodeId: plainNeighbourNodeId,
     });
     // Precondition: the marker column the sweep must select on actually
     // exists, so "not swept" below means "support was NULL", not "there is no

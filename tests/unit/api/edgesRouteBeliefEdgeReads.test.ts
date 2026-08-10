@@ -149,7 +149,8 @@ describe('GET /api/edges belief-evidence edge reads', () => {
     expect(typeof forwardedFilter?.offset).toBe('number');
   });
 
-  // The out_of side must be reachable too, not just the evidence side.
+  // The out_of side must be reachable too — under canon (spec §8) it is the
+  // side carrying a node's own evidence basis.
   it('forwards a direction of out_of to edgeService.getEdges', async () => {
     await readEdgesRoute(buildEdgesGetRequest('?nodeId=1&direction=out_of'));
 
@@ -228,7 +229,7 @@ describe('GET /api/edges belief-evidence edge reads', () => {
   });
 
   // A direction the read path does not implement must be an error, not a
-  // silent fall back to 'both': a caller asking for the evidence side and
+  // silent fall back to 'both': a caller asking for one side and
   // getting both sides would read edges that do not feed the node's credence.
   it('rejects an unknown direction with 400 and never reads edges', async () => {
     const response = await readEdgesRoute(buildEdgesGetRequest('?nodeId=1&direction=sideways'));

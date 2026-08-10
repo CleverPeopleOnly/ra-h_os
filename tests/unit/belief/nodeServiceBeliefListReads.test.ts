@@ -79,10 +79,11 @@ async function readListedNodeBeliefFieldsThroughNodeService(
   return listedNode!;
 }
 
-// Seed the smallest gradeable graph — a fixed-credence source (0.8) talking
-// about a target through one evidence edge (support 0.5) — and grade the
-// target through the REAL engine, so the listed row carries exactly what the
-// engine persisted: r = 0.8 x 0.5 = 0.4, s = 0, credence = 0.4/2.4.
+// Seed the smallest gradeable graph — a derived node deriving from a
+// fixed-credence source (0.8) over one canon evidence edge (support 0.5) —
+// and grade the derived node through the REAL engine, so the listed row
+// carries exactly what the engine persisted: r = 0.8 x 0.5 = 0.4, s = 0,
+// credence = 0.4/2.4.
 async function seedAndGradeTargetNodeThroughRealEngine(): Promise<number> {
   // The bootstrap source: its human-asserted credence is the credence its
   // evidence carries.
@@ -92,11 +93,11 @@ async function seedAndGradeTargetNodeThroughRealEngine(): Promise<number> {
   });
   // The node the engine will grade and the list read must report.
   const gradedTargetNodeId = tempBeliefDb.insertNodeFixture({
-    title: 'Engine-graded target node the list read must report belief for',
+    title: 'Engine-graded derived node the list read must report belief for',
   });
   tempBeliefDb.insertEvidenceEdgeFixture({
-    fromNodeId: fixedCredenceSourceNodeId,
-    toNodeId: gradedTargetNodeId,
+    derivedNodeId: gradedTargetNodeId,
+    sourceNodeId: fixedCredenceSourceNodeId,
     support: 0.5,
   });
   // Grade through the real engine bound to this database generation, so the

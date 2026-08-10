@@ -1,6 +1,12 @@
 /**
- * Belief service — regrades a node's belief from its incoming evidence edges
- * and SWEEPS the change forward (docs/belief-model-subjective-logic.md §2–§5).
+ * Belief service — regrades a node's belief from its evidence basis and
+ * SWEEPS the change forward (docs/belief-model-subjective-logic.md §2–§5,
+ * direction per the §8 canon amendment).
+ *
+ * An evidence edge runs in RA-H's canonical direction, Derivative→Source: the
+ * derived node points at the node it derives from ("my credence derives from
+ * you"). A node's evidence basis is therefore its OUTGOING support-bearing
+ * edges, and each edge's source credence is read from the edge's TARGET.
  *
  * A regrade persists the node's two evidence masses
  * (nodes.belief_evidence_for_mass / belief_evidence_against_mass), the cached
@@ -8,11 +14,12 @@
  * each evidence edge's belief_evidence_contribution, and appends a
  * belief_movements row whenever the credence actually changed. When a
  * regraded node's projection moves by more than
- * BELIEF_CREDENCE_CHANGE_EPSILON, every target of its OUTGOING evidence edges
- * is regraded in the same sweep (movement trigger 'propagation'), with a
- * visited set so each node regrades at most once per sweep — the echo guard
- * that terminates cycles. The whole sweep runs inside ONE better-sqlite3
- * transaction, so a failure mid-way leaves no partial writes behind.
+ * BELIEF_CREDENCE_CHANGE_EPSILON, every node DERIVING FROM it — the from-ends
+ * of its INCOMING support-bearing edges — is regraded in the same sweep
+ * (movement trigger 'propagation'), with a visited set so each node regrades
+ * at most once per sweep — the echo guard that terminates cycles. The whole
+ * sweep runs inside ONE better-sqlite3 transaction, so a failure mid-way
+ * leaves no partial writes behind.
  *
  * A source is just a node: its influence over the evidence it supplies IS its
  * own nodes.belief_credence — the same number and the same word as the belief
@@ -71,19 +78,23 @@ export interface BeliefRecomputeResult {
   contributions: BeliefEdgeContribution[];
 }
 
-// One incoming evidence edge row as read for grading, joined with the
-// from-node's own credence — the weight the edge's evidence carries.
+// One evidence edge row of a node's basis as read for grading — an OUTGOING
+// support-bearing edge (canon: Derivative→Source), joined with the source
+// node's own credence read from the edge's TARGET — the weight the edge's
+// evidence carries.
 interface EvidenceEdgeRow {
   id: number;
-  // How strongly the source node talks about the target, unsigned 0..1.
-  // Which way the evidence cuts comes from the source node's credence,
+  // How strongly the source node talks about the derived node, unsigned
+  // 0..1. Which way the evidence cuts comes from the source node's credence,
   // never from this number.
   belief_evidence_support: number;
-  // The source node's own credence; NULL when nobody has graded that node.
-  from_node_belief_credence: number | null;
+  // The source node's own credence (the edge's to-node under canon); NULL
+  // when nobody has graded that node.
+  source_node_belief_credence: number | null;
 }
 
-// The belief state a regrade finds on its target before writing anything:
+// The belief state a regrade finds on the node it grades before writing
+// anything:
 // the credence the node currently holds, and whether a human asserted that
 // credence by hand (in which case the regrade leaves it alone).
 interface BeliefStateRowBeforeRecompute {
@@ -127,17 +138,18 @@ interface BeliefNodeRegradeOutcome {
   regraded: boolean;
 }
 
-// Regrade exactly one node from its incoming evidence — the single-node core
+// Regrade exactly one node from its evidence basis — the single-node core
 // of every sweep. Must run inside the sweep's transaction:
 //  - a node whose belief_credence_is_fixed is set has its credence ASSERTED
 //    by a human, so it is returned untouched: nothing written, nothing
 //    stamped, nothing logged,
-//  - otherwise its incoming evidence edges (belief_evidence_support IS NOT
+//  - otherwise its OUTGOING evidence edges (belief_evidence_support IS NOT
 //    NULL — a NULL support is the one thing that makes an edge not evidence)
-//    are weighted by their FROM-node's own belief_credence: a source nobody
-//    has graded (credence NULL) casts no vote and its edge's stamp clears,
-//    but every graded source is COUNTED — a disbelieved source contributes
-//    negatively and a zero-credence source casts a counted vote of zero,
+//    are weighted by their TO-node's own belief_credence — the source each
+//    edge derives from under canon: a source nobody has graded (credence
+//    NULL) casts no vote and its edge's stamp clears, but every graded
+//    source is COUNTED — a disbelieved source contributes negatively and a
+//    zero-credence source casts a counted vote of zero,
 //  - zero COUNTED contributions leaves the node NEVER ASSESSED: credence,
 //    timestamp and both masses cleared to NULL (§3 row 7, the service half),
 //  - otherwise the contributions accumulate into the two evidence masses,
@@ -167,15 +179,16 @@ function regradeOneBeliefNodeLocked(
     };
   }
 
-  // All evidence edges pointing at this node, each carrying its source node's
+  // The node's evidence basis: its outgoing support-bearing edges (canon:
+  // the derived node points at its sources), each carrying its source node's
   // own credence — the weight that edge's evidence gets.
   const evidenceEdges = sqlite
     .prepare(
       `SELECT e.id, e.belief_evidence_support,
-              n.belief_credence AS from_node_belief_credence
+              n.belief_credence AS source_node_belief_credence
        FROM edges e
-       JOIN nodes n ON n.id = e.from_node_id
-       WHERE e.to_node_id = ? AND e.belief_evidence_support IS NOT NULL`
+       JOIN nodes n ON n.id = e.to_node_id
+       WHERE e.from_node_id = ? AND e.belief_evidence_support IS NOT NULL`
     )
     .all(nodeId) as EvidenceEdgeRow[];
 
@@ -189,16 +202,16 @@ function regradeOneBeliefNodeLocked(
   // contribution stamp, so an earlier regrade's stamp is cleared.
   const skippedEvidenceEdgeIds: number[] = [];
   for (const evidenceEdge of evidenceEdges) {
-    if (evidenceEdge.from_node_belief_credence === null) {
+    if (evidenceEdge.source_node_belief_credence === null) {
       // The source has never been graded, so it says nothing about anything.
       skippedEvidenceEdgeIds.push(evidenceEdge.id);
       continue;
     }
     // Every graded source is counted — including a disbelieved one, whose
-    // negative credence makes its contribution count AGAINST the target, and
-    // a zero-credence one, whose counted contribution is exactly 0.
+    // negative credence makes its contribution count AGAINST the derived
+    // node, and a zero-credence one, whose counted contribution is exactly 0.
     const effectiveContribution =
-      evidenceEdge.from_node_belief_credence * evidenceEdge.belief_evidence_support;
+      evidenceEdge.source_node_belief_credence * evidenceEdge.belief_evidence_support;
     contributions.push({ edgeId: evidenceEdge.id, effectiveContribution });
     policyContributions.push({
       edgeId: evidenceEdge.id,
@@ -301,26 +314,27 @@ interface BeliefSweepQueueEntry {
   movementTrigger: BeliefMovementTrigger;
 }
 
-// Enqueue every target of one node's OUTGOING evidence edges for regrade —
-// the propagation step of spec §4.
-function enqueueOutgoingBeliefEvidenceTargetsLocked(
+// Enqueue every node DERIVING FROM one node for regrade — the from-ends of
+// its INCOMING support-bearing edges (canon: a derived node points at its
+// source) — the propagation step of spec §4.
+function enqueueNodesDerivingFromLocked(
   sqlite: SQLiteClient,
   sourceNodeId: number,
   sweepQueue: BeliefSweepQueueEntry[]
 ): void {
-  // Distinct targets of the node's outgoing evidence edges; a NULL support
+  // Distinct from-ends of the node's incoming evidence edges; a NULL support
   // means the edge is not evidence, so it carries nothing forward.
-  const outgoingEvidenceTargetRows = sqlite
+  const derivingNodeRows = sqlite
     .prepare(
-      `SELECT DISTINCT to_node_id AS node_id
+      `SELECT DISTINCT from_node_id AS node_id
        FROM edges
-       WHERE from_node_id = ? AND belief_evidence_support IS NOT NULL
-       ORDER BY to_node_id ASC`
+       WHERE to_node_id = ? AND belief_evidence_support IS NOT NULL
+       ORDER BY from_node_id ASC`
     )
     .all(sourceNodeId) as Array<{ node_id: number }>;
-  for (const outgoingEvidenceTargetRow of outgoingEvidenceTargetRows) {
+  for (const derivingNodeRow of derivingNodeRows) {
     sweepQueue.push({
-      nodeId: outgoingEvidenceTargetRow.node_id,
+      nodeId: derivingNodeRow.node_id,
       movementTrigger: 'propagation',
     });
   }
@@ -329,10 +343,10 @@ function enqueueOutgoingBeliefEvidenceTargetsLocked(
 // Drain one sweep queue with a visited set: each node regrades AT MOST ONCE
 // per sweep (the echo guard — a visited node is never re-entered, so cycles
 // terminate), a fixed node is never regraded and never propagated FROM inside
-// a sweep (spec §4 point 5: its targets enqueue only on set/clear-fixed,
-// which the fixed-credence module drives directly), and a node whose
-// projection moved enqueues the targets of its outgoing evidence. Returns the
-// root node's outcome. Must run inside one transaction.
+// a sweep (spec §4 point 5: the nodes deriving from it enqueue only on
+// set/clear-fixed, which the fixed-credence module drives directly), and a
+// node whose projection moved enqueues the nodes deriving from it. Returns
+// the root node's outcome. Must run inside one transaction.
 function drainBeliefSweepQueueLocked(
   sqlite: SQLiteClient,
   sweepQueue: BeliefSweepQueueEntry[],
@@ -365,17 +379,18 @@ function drainBeliefSweepQueueLocked(
     if (
       beliefCredenceMoved(regradeOutcome.previousBeliefCredence, regradeOutcome.newBeliefCredence)
     ) {
-      enqueueOutgoingBeliefEvidenceTargetsLocked(sqlite, sweepQueueEntry.nodeId, sweepQueue);
+      enqueueNodesDerivingFromLocked(sqlite, sweepQueueEntry.nodeId, sweepQueue);
     }
   }
   return rootRegradeOutcome;
 }
 
-// Recompute one node's belief from its incoming evidence and sweep the change
-// through its outgoing evidence (spec §4), all inside one better-sqlite3
-// transaction. movementTrigger names the entry point for the root regrade's
-// movement row; downstream regrades log 'propagation'. Defaults to
-// 'mcp-recompute' — the engine door the app's recompute endpoint forwards to.
+// Recompute one node's belief from its evidence basis (its outgoing
+// support-bearing edges) and sweep the change through the nodes deriving
+// from it (spec §4), all inside one better-sqlite3 transaction.
+// movementTrigger names the entry point for the root regrade's movement row;
+// downstream regrades log 'propagation'. Defaults to 'mcp-recompute' — the
+// engine door the app's recompute endpoint forwards to.
 export async function recomputeNodeBelief(
   nodeId: number,
   movementTrigger: BeliefMovementTrigger = 'mcp-recompute'
@@ -396,12 +411,13 @@ export async function recomputeNodeBelief(
   };
 }
 
-// Sweep FROM a node without regrading the node itself: regrade every target
-// of its outgoing evidence edges (and onward per spec §4), in one
-// transaction. This is how a fixed node's projection change reaches its
-// targets — set/clear-fixed are the only writes that move a fixed node's
-// projection (spec §4 point 5), so the fixed-credence module calls this after
-// such a write. Synchronous, because setBeliefFixedCredence is.
+// Sweep FROM a source node without regrading the node itself: regrade every
+// node DERIVING FROM it — the from-ends of its incoming support-bearing
+// edges — and onward per spec §4, in one transaction. This is how a fixed
+// node's projection change reaches the nodes deriving from it —
+// set/clear-fixed are the only writes that move a fixed node's projection
+// (spec §4 point 5), so the fixed-credence module calls this after such a
+// write. Synchronous, because setBeliefFixedCredence is.
 export function propagateBeliefFromSourceNode(sourceNodeId: number): void {
   const sqlite = getSQLiteClient();
   sqlite.transaction(() => {
@@ -409,7 +425,7 @@ export function propagateBeliefFromSourceNode(sourceNodeId: number): void {
     // caller and must not be regraded by its own sweep.
     const visitedNodeIds = new Set<number>([sourceNodeId]);
     const sweepQueue: BeliefSweepQueueEntry[] = [];
-    enqueueOutgoingBeliefEvidenceTargetsLocked(sqlite, sourceNodeId, sweepQueue);
+    enqueueNodesDerivingFromLocked(sqlite, sourceNodeId, sweepQueue);
     drainBeliefSweepQueueLocked(sqlite, sweepQueue, visitedNodeIds);
   });
 }

@@ -1,22 +1,24 @@
 /**
  * The evidence hook on EdgeService.updateEdge — correcting an edge's support
- * must REGRADE the node that edge points at (src/services/database/edges.ts).
+ * must REGRADE the edge's FROM-end, the derived node under the canon
+ * direction (spec §8: an evidence edge runs Derivative→Source), in
+ * src/services/database/edges.ts.
  *
  * createEdge already fires this hook: a new gradeable evidence edge calls
- * recomputeNodeBelief(to_node_id) before it returns. updateEdge has no
+ * recomputeNodeBelief on the derived end before it returns. updateEdge has no
  * equivalent, and that is a correctness hole rather than a missing nicety:
  *
  *  - edges.belief_evidence_contribution was stamped from the OLD support, so
  *    after a correction it is stale AND STILL NON-NULL,
  *  - beliefRecoveryService finds ungraded evidence by looking for a NULL
  *    contribution, so a stale non-NULL stamp is invisible to it,
- *  - the target node's belief_credence is therefore wrong permanently, not
+ *  - the derived node's belief_credence is therefore wrong permanently, not
  *    "until the next sweep".
  *
  * This file pins, at the same door and in the same fixture style as
  * tests/unit/belief/edgeServiceUpdateEdgeSupportRange.test.ts:
  *
- *  - an accepted in-range correction regrades the target node to what the
+ *  - an accepted in-range correction regrades the derived node to what the
  *    two-variable model gives for the CORRECTED support (source credence ×
  *    corrected support, fed through the pinned grading policy) — a value the
  *    test derives by asking beliefGradingPolicyV1 itself, never by restating
@@ -128,15 +130,17 @@ function readEdgeExplanationColumn(context: TempBeliefDatabase, edgeId: number):
 }
 
 // Everything a correction test drives, in the state a real corrected edge is in:
-// the target node ALREADY GRADED from the old support and the edge ALREADY
+// the derived node ALREADY GRADED from the old support and the edge ALREADY
 // STAMPED with the contribution that support produced.
 interface GradedEvidenceEdgeFixture {
   context: TempBeliefDatabase;
-  // The node the evidence edge points at — the one a correction must regrade.
+  // The derived node at the evidence edge's from-end — the one a correction
+  // must regrade.
   claimNodeId: number;
   // The evidence edge whose support the tests correct.
   evidenceEdgeId: number;
-  // The target's credence before any correction, as the initial grade left it.
+  // The derived node's credence before any correction, as the initial grade
+  // left it.
   claimBeliefCredenceBeforeCorrection: number;
   // The edge's stamped contribution before any correction (source credence ×
   // the old support).
@@ -148,9 +152,10 @@ interface GradedEvidenceEdgeFixture {
 }
 
 // Open a database holding one graded source node, one claim node and one
-// evidence edge between them, then run the initial recompute so the fixture
-// starts where a real graph does: target graded, edge stamped, one movement
-// logged. Returns the pre-correction readings the assertions compare against.
+// canon evidence edge (claim→source), then run the initial recompute so the
+// fixture starts where a real graph does: derived node graded, edge stamped,
+// one movement logged. Returns the pre-correction readings the assertions
+// compare against.
 async function openDatabaseWithGradedEvidenceEdge(): Promise<GradedEvidenceEdgeFixture> {
   const context = await openTempBeliefDatabase();
   const claimNodeId = context.insertNodeFixture({ title: 'claim node' });
@@ -159,8 +164,8 @@ async function openDatabaseWithGradedEvidenceEdge(): Promise<GradedEvidenceEdgeF
     beliefCredence: SOURCE_BELIEF_CREDENCE,
   });
   const evidenceEdgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeId,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId,
     support: SUPPORT_BEFORE_CORRECTION,
   });
 
@@ -202,28 +207,30 @@ function expectedBeliefCredenceForTwoEvidenceEdges(
   ]);
 }
 
-// Everything an UN-ASSESSMENT test drives: one target fed by two evidence edges
-// from two graded source nodes, already regraded, so removing one edge from the
-// evidence leaves a known non-NULL credence to assert against.
+// Everything an UN-ASSESSMENT test drives: one derived node with two outgoing
+// evidence edges to two graded source nodes, already regraded, so removing
+// one edge from the evidence leaves a known non-NULL credence to assert
+// against.
 interface TwoGradedEvidenceEdgesFixture {
   context: TempBeliefDatabase;
-  // The node both evidence edges point at — the one un-assessing must regrade.
+  // The derived node at both evidence edges' from-ends — the one un-assessing
+  // must regrade.
   claimNodeId: number;
   // The edge the tests un-assess by setting its support to NULL.
   unassessedEvidenceEdgeId: number;
   // The edge that stays evidence, and whose contribution alone must therefore
   // decide the target's credence afterwards.
   remainingEvidenceEdgeId: number;
-  // The target's credence while BOTH edges still count.
+  // The derived node's credence while BOTH edges still count.
   claimBeliefCredenceBeforeUnassessment: number;
   // The contribution stamped on the edge that is about to be un-assessed.
   unassessedEdgeContributionBeforeUnassessment: number;
   edgeService: (typeof import('@/services/database/edges'))['edgeService'];
 }
 
-// Open a database holding one claim node fed by two evidence edges from two
-// graded source nodes, then run the initial recompute so both edges are stamped
-// and the target is graded from the pair.
+// Open a database holding one claim node deriving from two graded source
+// nodes over two canon evidence edges, then run the initial recompute so both
+// edges are stamped and the derived node is graded from the pair.
 async function openDatabaseWithTwoGradedEvidenceEdges(): Promise<TwoGradedEvidenceEdgesFixture> {
   const context = await openTempBeliefDatabase();
   const claimNodeId = context.insertNodeFixture({ title: 'claim node' });
@@ -236,18 +243,18 @@ async function openDatabaseWithTwoGradedEvidenceEdges(): Promise<TwoGradedEviden
     beliefCredence: SECOND_SOURCE_BELIEF_CREDENCE,
   });
   const unassessedEvidenceEdgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeToBeUnassessed,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId: sourceNodeToBeUnassessed,
     support: SUPPORT_BEFORE_CORRECTION,
   });
   const remainingEvidenceEdgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeThatRemainsEvidence,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId: sourceNodeThatRemainsEvidence,
     support: SECOND_EDGE_SUPPORT,
   });
 
-  // Grade through the real engine, so both stamps and the target's credence are
-  // the engine's own output rather than numbers written by hand.
+  // Grade through the real engine, so both stamps and the derived node's
+  // credence are the engine's own output rather than numbers written by hand.
   const { recomputeNodeBelief } = await context.importBeliefService();
   await recomputeNodeBelief(claimNodeId);
 
@@ -274,7 +281,7 @@ describe('EdgeService.updateEdge evidence hook', () => {
   // Sanity check on the fixture itself: the pre-correction state really is the
   // graded-and-stamped one the correction tests assume, so a failure below is
   // about the hook and not about a fixture that never graded.
-  it('starts from a target graded and an edge stamped from the support before the correction', async () => {
+  it('starts from a derived node graded and an edge stamped from the support before the correction', async () => {
     const fixture = await openDatabaseWithGradedEvidenceEdge();
     db = fixture.context;
 
@@ -292,9 +299,10 @@ describe('EdgeService.updateEdge evidence hook', () => {
     expect(fixture.claimBeliefMovementCountBeforeCorrection).toBe(1);
   });
 
-  // The correctness hole: after an accepted correction the target's credence
-  // must be what the corrected support grades to, not what the old one did.
-  it('regrades the target node to the credence the corrected support produces', async () => {
+  // The correctness hole: after an accepted correction the derived node's
+  // credence must be what the corrected support grades to, not what the old
+  // one did.
+  it('regrades the derived node (the from-end) to the credence the corrected support produces', async () => {
     const fixture = await openDatabaseWithGradedEvidenceEdge();
     db = fixture.context;
 
@@ -357,10 +365,10 @@ describe('EdgeService.updateEdge evidence hook', () => {
   });
 
   // A correction to exactly 0 is an assessed judgement that the edge carries
-  // nothing, so it must still regrade: the target lands on the graded value 0
-  // (the formula's answer for S = 0, C = 0), never on its old credence and never
-  // back on NULL, which would claim the edge had never been assessed.
-  it('regrades the target node when the support is corrected to exactly 0', async () => {
+  // nothing, so it must still regrade: the derived node lands on the graded
+  // value 0 (the formula's answer for S = 0, C = 0), never on its old credence
+  // and never back on NULL, which would claim the edge had never been assessed.
+  it('regrades the derived node when the support is corrected to exactly 0', async () => {
     const fixture = await openDatabaseWithGradedEvidenceEdge();
     db = fixture.context;
 
@@ -388,10 +396,11 @@ describe('EdgeService.updateEdge evidence hook', () => {
     expect(fixture.context.readEvidenceStamp(fixture.evidenceEdgeId)).toBe(0);
   });
 
-  // Sanity check on the two-edge fixture: the target really is graded from BOTH
-  // contributions and both edges really are stamped, so an un-assessment failure
-  // below is about the hook and not about a fixture that never graded.
-  it('starts from a target graded by both evidence edges before either is un-assessed', async () => {
+  // Sanity check on the two-edge fixture: the derived node really is graded
+  // from BOTH contributions and both edges really are stamped, so an
+  // un-assessment failure below is about the hook and not about a fixture
+  // that never graded.
+  it('starts from a derived node graded by both evidence edges before either is un-assessed', async () => {
     const fixture = await openDatabaseWithTwoGradedEvidenceEdges();
     db = fixture.context;
 
@@ -415,10 +424,10 @@ describe('EdgeService.updateEdge evidence hook', () => {
   });
 
   // UN-ASSESSING is a real change to the evidence: an edge that was evidence
-  // stops being evidence, so the target must be regraded from what is LEFT. The
-  // `!= null` guard borrowed from createEdge skips exactly this write, leaving
-  // the target graded from evidence that no longer exists.
-  it('regrades the target node to the remaining edge alone when an evidence edge is un-assessed', async () => {
+  // stops being evidence, so the derived node must be regraded from what is
+  // LEFT. The `!= null` guard borrowed from createEdge skips exactly this
+  // write, leaving the derived node graded from evidence that no longer exists.
+  it('regrades the derived node to the remaining edge alone when an evidence edge is un-assessed', async () => {
     const fixture = await openDatabaseWithTwoGradedEvidenceEdges();
     db = fixture.context;
 
@@ -457,7 +466,7 @@ describe('EdgeService.updateEdge evidence hook', () => {
   // Un-assessing the ONLY evidence edge leaves the node with no evidence at all,
   // and a node with no evidence has NO credence: NULL, never 0. 0 would claim
   // the node was graded and came out balanced, which is a different statement.
-  it('leaves the target node with a NULL credence when its only evidence edge is un-assessed', async () => {
+  it('leaves the derived node with a NULL credence when its only evidence edge is un-assessed', async () => {
     const fixture = await openDatabaseWithGradedEvidenceEdge();
     db = fixture.context;
 
@@ -541,7 +550,7 @@ describe('EdgeService.updateEdge evidence hook', () => {
   // GUARD: rewording an explanation is not new evidence. The credence must not
   // move and no movement row may be appended — a spurious movement would put a
   // change into the credence history that never happened.
-  it('GUARD: an explanation-only update neither regrades the target node nor appends a belief movement', async () => {
+  it('GUARD: an explanation-only update neither regrades the derived node nor appends a belief movement', async () => {
     const fixture = await openDatabaseWithGradedEvidenceEdge();
     db = fixture.context;
 

@@ -17,9 +17,10 @@
  *    means evidence nobody has graded yet — the state the app's recovery sweep
  *    looks for, which must never be coerced to 0 (the standalone server never
  *    grades, so every edge it writes is in exactly that state),
- *  - direction picks the side: 'into' means the node is the to_node_id (the
- *    evidence feeding its credence), 'out_of' means the node is the
- *    from_node_id, 'both' is either side and is the default,
+ *  - direction picks the side: 'into' means the node is the to_node_id,
+ *    'out_of' means the node is the from_node_id, 'both' is either side and
+ *    is the default (canon, spec §8: a node's own evidence basis is its
+ *    OUTGOING support-bearing edges — the 'out_of' side),
  *  - the direction filter runs in SQL, not after the page cap,
  *  - limit + offset page deterministically over the order
  *    created_at DESC, id DESC, so paging to exhaustion returns every edge
@@ -345,8 +346,8 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
     });
   });
 
-  // Direction 'into' is the evidence side: only edges whose to_node_id is the
-  // node, because those are the ones feeding its credence.
+  // Direction 'into': only edges whose to_node_id is the node. (Under canon
+  // these are the edges of nodes deriving FROM it, not its own basis.)
   it('reads only edges whose to_node_id is the node when direction is into', async () => {
     const graph = seedDirectionFixtureGraph();
 
@@ -559,9 +560,10 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
   });
 
   // A direction the read path does not implement must be a tool error, not a
-  // silent fall back to both sides: an agent asking for the evidence feeding a
-  // node's credence and getting the node's own outgoing edges would draw a
-  // conclusion from the wrong half of the graph.
+  // silent fall back to both sides: an agent asking for one side of a node
+  // and getting both would draw a conclusion from the wrong half of the
+  // graph. (Canon note, spec §8: a node's evidence basis is its OUTGOING
+  // support-bearing edges — the 'out_of' side.)
   it('rejects an unknown direction with a tool error', async () => {
     seedDirectionFixtureGraph();
 

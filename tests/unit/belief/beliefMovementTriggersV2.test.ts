@@ -49,19 +49,20 @@ afterEach(() => {
   db = undefined;
 });
 
-// Seed a claim fed by one evidence edge from a fixed source, so any entry
-// point that regrades the claim produces a real movement row to inspect.
+// Seed a claim deriving from one fixed source over one canon evidence edge
+// (claim→source), so any entry point that regrades the claim produces a real
+// movement row to inspect.
 function seedGradeableClaim(
   context: TempBeliefDatabase
 ): { claimNodeId: number; sourceNodeId: number; edgeId: number } {
   const claimNodeId = context.insertNodeFixture({ title: 'claim awaiting a trigger' });
   const sourceNodeId = context.insertFixedBeliefCredenceNodeFixture({
-    title: 'fixed source feeding the claim',
+    title: 'fixed source the claim derives from',
     beliefCredence: 0.9,
   });
   const edgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeId,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId,
     support: 0.5,
   });
   return { claimNodeId, sourceNodeId, edgeId };
@@ -87,9 +88,11 @@ describe('movement triggers name their entry point (v2)', () => {
     const { edgeService } = await db.importEdgeService();
 
     // skip_inference + explicit explanation: no LLM path is ever exercised.
+    // Canon direction: the claim (derived end) is the from-node — "my
+    // credence derives from you" — and the regrade must land on it.
     const evidenceEdgeInput: EdgeData = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
       explanation: 'Evidence edge written to pin its movement trigger.',
       created_via: 'workflow',
       source: 'user',

@@ -216,7 +216,7 @@ describe('app-MCP proxy rah_query_edges belief-evidence edge reads', () => {
     });
   });
 
-  // The proxy has to be able to ASK for the evidence side and for one page:
+  // The proxy has to be able to ASK for one side of a node and for one page:
   // all four filter parts must appear in the query string it sends the app.
   it('sends nodeId, direction, limit and offset to GET /api/edges', async () => {
     await withMcpClient(async (client) => {
@@ -237,7 +237,8 @@ describe('app-MCP proxy rah_query_edges belief-evidence edge reads', () => {
     });
   });
 
-  // The out_of side must be reachable too, not just the evidence side.
+  // The out_of side must be reachable too — under canon (spec §8) it is the
+  // side carrying a node's own evidence basis.
   it('sends a direction of out_of to GET /api/edges', async () => {
     await withMcpClient(async (client) => {
       await client.callTool({
@@ -269,9 +270,10 @@ describe('app-MCP proxy rah_query_edges belief-evidence edge reads', () => {
   });
 
   // A direction the read path does not implement must be a tool error, not a
-  // silent fall back to both sides: an agent asking for the evidence feeding a
-  // node's credence and getting the node's own outgoing edges would draw a
-  // conclusion from the wrong half of the graph.
+  // silent fall back to both sides: an agent asking for one side of a node
+  // and getting both would draw a conclusion from the wrong half of the
+  // graph. (Canon note, spec §8: a node's evidence basis is its OUTGOING
+  // support-bearing edges — the 'out_of' side.)
   it('rejects an unknown direction with a tool error and sends no request to /api/edges', async () => {
     await withMcpClient(async (client) => {
       const toolResult = await client.callTool({

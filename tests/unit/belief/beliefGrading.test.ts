@@ -8,14 +8,20 @@
  * trustOriginKey-in-metadata convention that used to supply that number are
  * deleted, so nothing outside the nodes table takes part in grading.
  *
+ * DIRECTION (canon, docs/belief-model-subjective-logic.md §8): an evidence
+ * edge runs Derivative→Source — the graded (derived) node is the edge's
+ * FROM end, and the source whose credence weights the evidence is the
+ * edge's TARGET (to_node_id). A node's evidence basis is its OUTGOING
+ * support-bearing edges.
+ *
  * Semantics pinned here:
  *  - WEIGHT: an evidence edge's contribution is its UNSIGNED
- *    belief_evidence_support (0..1) × the FROM-node's own SIGNED
- *    belief_credence. Credence is the ONLY signed term, so a contribution is
- *    negative exactly when the source is disbelieved
- *  - GATE: a from-node with a NULL belief_credence has never been graded, so
- *    its edge is skipped entirely — no contribution, no stamp, not counted.
- *    This is the ONLY skip: there is no clamp any more
+ *    belief_evidence_support (0..1) × the SOURCE node's (the edge target's)
+ *    own SIGNED belief_credence. Credence is the ONLY signed term, so a
+ *    contribution is negative exactly when the source is disbelieved
+ *  - GATE: a source (edge target) with a NULL belief_credence has never been
+ *    graded, so its edge is skipped entirely — no contribution, no stamp,
+ *    not counted. This is the ONLY skip: there is no clamp any more
  *  - COUNTED NEGATIVES: a source we disbelieve (negative credence) IS
  *    counted — its edge is stamped with its negative contribution and that
  *    contribution feeds the contradiction mass C
@@ -64,8 +70,9 @@ function expectedBeliefCredence(supportSum: number, contradictionSum: number): n
 }
 
 // Create a claim node plus one evidence source node, joined by one evidence
-// edge whose UNSIGNED support runs 0..1 (how strongly the source talks about
-// the claim). sourceBeliefCredence is the source node's OWN signed credence —
+// edge in canon direction (claim→source: "my credence derives from you")
+// whose UNSIGNED support runs 0..1 (how loudly the source speaks about the
+// claim). sourceBeliefCredence is the source node's OWN signed credence —
 // the weight AND the sign its evidence carries; omit it for a source nobody
 // has graded, whose credence is NULL. Returns all the ids.
 function seedClaimWithOneEvidenceEdge(
@@ -81,16 +88,16 @@ function seedClaimWithOneEvidenceEdge(
     beliefCredence: options.sourceBeliefCredence,
   });
   const edgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeId,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId,
     support: options.support,
   });
   return { claimNodeId, sourceNodeId, edgeId };
 }
 
-// Add one more evidence edge, from a BRAND-NEW source node, pointing at an
-// existing claim node. Returns both ids so a test can move that one source's
-// credence afterwards.
+// Add one more evidence edge, from the existing claim node to a BRAND-NEW
+// source node (canon: the claim derives from the new source). Returns both
+// ids so a test can move that one source's credence afterwards.
 function addEvidenceEdgeFromNewSource(
   context: TempBeliefDatabase,
   claimNodeId: number,
@@ -104,8 +111,8 @@ function addEvidenceEdgeFromNewSource(
     beliefCredence: options.sourceBeliefCredence,
   });
   const edgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeId,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId,
     support: options.support,
   });
   return { sourceNodeId, edgeId };
@@ -280,11 +287,11 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
     const credenceBeforeRepeat = Number(db.readNodeBelief(claimNodeId).belief_credence);
 
-    // Second edge from the SAME source node — this is what "repetition" means
+    // Second edge to the SAME source node — this is what "repetition" means
     // now that a source is just a node.
     db.insertEvidenceEdgeFixture({
-      fromNodeId: sourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId,
       support: 0.7,
     });
     await recomputeNodeBelief(claimNodeId);
@@ -307,8 +314,8 @@ describe('recomputeNodeBelief grading behavior', () => {
     await recomputeNodeBelief(claimNodeId);
 
     db.insertEvidenceEdgeFixture({
-      fromNodeId: sourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId,
       support: 0.9,
     });
     await recomputeNodeBelief(claimNodeId);
@@ -348,7 +355,7 @@ describe('recomputeNodeBelief grading behavior', () => {
     expect(db.readNodeBelief(ungradedSourceClaim.claimNodeId).belief_credence).toBeNull();
   });
 
-  // 7b. The gate is exact: a support edge whose from-node has a NULL
+  // 7b. The gate is exact: a support edge whose source (edge target) has a NULL
   //     belief_credence contributes zero evidence mass and leaves the claim
   //     ungraded (NULL) — no default weight is ever invented for it.
   it('a support from a source with NULL belief_credence is not counted — the claim stays NULL', async () => {
@@ -357,8 +364,8 @@ describe('recomputeNodeBelief grading behavior', () => {
     // Source node that has never been graded: belief_credence NULL.
     const ungradedSourceNodeId = db.insertNodeFixture({ title: 'ungraded evidence source' });
     const ungradedSourceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: ungradedSourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: ungradedSourceNodeId,
       support: 1.0,
     });
     // Positive control: an identical claim fed by a GRADED source, so a NULL
@@ -394,8 +401,8 @@ describe('recomputeNodeBelief grading behavior', () => {
       .prepare('UPDATE nodes SET metadata = ? WHERE id = ?')
       .run(JSON.stringify({ trustOriginKey: 'origin-legacy' }), legacyMetadataSourceNodeId);
     db.insertEvidenceEdgeFixture({
-      fromNodeId: legacyMetadataSourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: legacyMetadataSourceNodeId,
       support: 1.0,
     });
     // Positive control fed by a source with a real credence, so the NULL
@@ -583,9 +590,11 @@ describe('recomputeNodeBelief grading behavior', () => {
       title: 'credible source joined by a plain edge',
       beliefCredence: 1.0,
     });
+    // Canon arrangement: the plain edge runs claim→source, exactly where an
+    // evidence edge would sit — so only the NULL support keeps it out.
     const plainEdgeId = db.insertNonEvidenceEdgeFixture({
-      fromNodeId: credibleSourceNodeId,
-      toNodeId: claimNodeId,
+      fromNodeId: claimNodeId,
+      toNodeId: credibleSourceNodeId,
     });
     // Precondition: the marker column this test is about actually exists, so
     // "no credence" below means "support was NULL", not "there is no support
@@ -785,8 +794,8 @@ describe('recomputeNodeBelief weights evidence by the source node credence', () 
     });
     const claimNodeId = db.insertNodeFixture({ title: 'claim the expert supports' });
     const expertEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: expertNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: expertNodeId,
       support: 0.8,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -1037,7 +1046,7 @@ describe('recomputeNodeBelief leaves a fixed-credence node alone', () => {
   // The bootstrap rule. A node with belief_credence_is_fixed set has its
   // credence ASSERTED by a human, not derived from the graph, so a recompute
   // must not touch it: same credence, same computed-at timestamp, no movement
-  // row — even though it has incoming evidence that would otherwise regrade
+  // row — even though it has outgoing evidence that would otherwise regrade
   // it. Without at least one such node, a derived-only graph could never
   // grade anything at all.
   it('leaves the credence and the computed-at timestamp of a fixed node exactly as they were', async () => {
@@ -1047,16 +1056,16 @@ describe('recomputeNodeBelief leaves a fixed-credence node alone', () => {
       beliefCredence: 0.9,
     });
     const beliefBeforeRecompute = db.readNodeBelief(fixedExpertNodeId);
-    // Incoming evidence that WOULD regrade an ordinary node: a disbelieved
-    // source (negative credence) talking about the expert at full strength,
-    // which under the counted-negatives rule is hard contradiction mass.
+    // Evidence that WOULD regrade an ordinary node: the expert derives from a
+    // disbelieved source (negative credence) at full strength, which under
+    // the counted-negatives rule is hard contradiction mass.
     const criticNodeId = db.insertNodeFixture({
-      title: 'disbelieved critic pointing at the expert',
+      title: 'disbelieved critic the expert would derive from',
       beliefCredence: -1.0,
     });
     const criticEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: criticNodeId,
-      toNodeId: fixedExpertNodeId,
+      derivedNodeId: fixedExpertNodeId,
+      sourceNodeId: criticNodeId,
       support: 1.0,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -1097,7 +1106,7 @@ describe('recomputeNodeBelief leaves a fixed-credence node alone', () => {
   });
 
   // There is exactly ONE kind of node. A venue, an agent and a claim are all
-  // ordinary nodes: each is graded from its own incoming evidence by the same
+  // ordinary nodes: each is graded from its own outgoing evidence by the same
   // rule, with no per-class behaviour anywhere.
   it('grades venue, agent and claim nodes by the identical rule — no node class is special', async () => {
     db = await openTempBeliefDatabase();
@@ -1112,8 +1121,8 @@ describe('recomputeNodeBelief leaves a fixed-credence node alone', () => {
     const claimNodeId = db.insertNodeFixture({ title: 'a claim node' });
     for (const gradedNodeId of [venueNodeId, agentNodeId, claimNodeId]) {
       db.insertEvidenceEdgeFixture({
-        fromNodeId: fixedExpertNodeId,
-        toNodeId: gradedNodeId,
+        derivedNodeId: gradedNodeId,
+        sourceNodeId: fixedExpertNodeId,
         support: 0.6,
       });
     }

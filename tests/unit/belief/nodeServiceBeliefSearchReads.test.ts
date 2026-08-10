@@ -91,9 +91,10 @@ async function seedAndGradeSearchableTargetNodeThroughRealEngine(): Promise<numb
   const gradedTargetNodeId = tempBeliefDb.insertNodeFixture({
     title: 'Osteology target the searched read must report belief for',
   });
+  // Canon direction: the graded node derives from the fixed source.
   tempBeliefDb.insertEvidenceEdgeFixture({
-    fromNodeId: fixedCredenceSourceNodeId,
-    toNodeId: gradedTargetNodeId,
+    derivedNodeId: gradedTargetNodeId,
+    sourceNodeId: fixedCredenceSourceNodeId,
     support: 0.5,
   });
   // Grade through the real engine bound to this database generation, so the
