@@ -416,7 +416,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_create_edge',
     {
       title: 'Create RA-H edge',
-      description: 'Create a connection between two nodes only after the user has explicitly confirmed the proposed relationship.',
+      description: 'Create a connection between two nodes only after the user has explicitly confirmed the proposed relationship. When the edge carries belief_evidence_support it is evidence, and it must run from the derived node (the node whose credence the evidence grades) to its source: sourceId names the derived node, targetId the source it derives from.',
       inputSchema: {
         sourceId: z.number().int().positive(),
         targetId: z.number().int().positive(),
@@ -484,7 +484,7 @@ function createServer(request: NextRequest): McpServer {
         direction: z
           .enum(['into', 'out_of', 'both'])
           .optional()
-          .describe('Which side of nodeId to read: "into" returns edges whose to_node_id is the node — the evidence feeding its belief_credence; "out_of" returns edges whose from_node_id is the node; "both" returns either side. Defaults to "both".'),
+          .describe('Which side of nodeId to read: "out_of" returns edges whose from_node_id is the node — its evidence basis, the support-bearing edges it derives its belief_credence from; "into" returns edges whose to_node_id is the node — the edges through which other nodes derive from it; "both" returns either side. Defaults to "both".'),
         limit: z.number().min(1).max(50).optional().describe('Max edges to return'),
         // Page position. min(0) makes a negative offset a schema rejection,
         // since there is no page before the first one.
@@ -562,8 +562,9 @@ function createServer(request: NextRequest): McpServer {
       inputSchema: {
         id: z.number().int().positive(),
         // The explanation is OPTIONAL: it is the recorded human reasoning for
-        // why the connection exists, and correcting how strongly the source
-        // talks about its neighbour is not an occasion to rewrite it. There is
+        // why the connection exists, and correcting how loudly the source
+        // speaks about the node deriving from it is not an occasion to
+        // rewrite it. There is
         // no read-one-edge-by-id tool to fetch the stored words and hand them
         // back, so a required explanation would force a support correction to
         // invent prose over them. A blank one is refused by the handler rather
@@ -653,7 +654,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_set_belief_fixed_credence',
     {
       title: 'Set RA-H fixed belief credence',
-      description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from incoming evidence. This is the bootstrap a graph needs before anything in it can be graded: a node\'s credence is also the credence carried by every piece of evidence that node supplies. Calling it again replaces the asserted credence in place.',
+      description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from the node\'s evidence (its outgoing support-bearing edges). This is the bootstrap a graph needs before anything in it can be graded: a node\'s credence is also the credence carried by every piece of evidence that node supplies. Calling it again replaces the asserted credence in place.',
       inputSchema: beliefSetFixedCredenceInputSchemaFields,
       outputSchema: beliefSetFixedCredenceOutputSchemaFields,
     },
@@ -685,7 +686,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_clear_belief_fixed_credence',
     {
       title: 'Clear RA-H fixed belief credence',
-      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the app-owned belief engine immediately regrade the node from its actual incoming evidence. A null credence in the reply is a real answer, not an error: the node has no counted evidence and is now ungraded — never reported as 0.',
+      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the app-owned belief engine immediately regrade the node from its actual evidence (its outgoing support-bearing edges). A null credence in the reply is a real answer, not an error: the node has no counted evidence and is now ungraded — never reported as 0.',
       inputSchema: beliefClearFixedCredenceInputSchemaFields,
       outputSchema: beliefClearFixedCredenceOutputSchemaFields,
     },
@@ -748,7 +749,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_recompute_node_belief',
     {
       title: 'Recompute RA-H node belief',
-      description: 'Ask the app-owned belief engine to regrade one node\'s belief_credence from its incoming evidence. A null credence in the reply is a real answer, not an error: the node has no counted evidence and stays ungraded — never reported as 0.',
+      description: 'Ask the app-owned belief engine to regrade one node\'s belief_credence from its evidence — its outgoing support-bearing edges, each counted as the credence of the source node it points at times the edge\'s support. A null credence in the reply is a real answer, not an error: the node has no counted evidence and stays ungraded — never reported as 0.',
       inputSchema: beliefRecomputeInputSchemaFields,
       outputSchema: beliefRecomputeOutputSchemaFields,
     },

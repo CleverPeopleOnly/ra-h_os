@@ -71,21 +71,22 @@ export interface Edge {
   created_at: string;
   // Belief-engine evidence columns (fork addition). Both are read straight off
   // the edges row, and NULL is a meaningful state on each of them.
-  // How strongly the from-node talks about the to-node: one UNSIGNED number in
-  // [0, 1]. NULL means the edge is not evidence at all (a plain relationship
-  // edge, never assessed); 0 means it was assessed and carries nothing.
+  // How loudly the to-end source speaks about the from-end derived node: one
+  // UNSIGNED number in [0, 1]. NULL means the edge is not evidence at all (a
+  // plain relationship edge, never assessed); 0 means it was assessed and
+  // carries nothing.
   belief_evidence_support?: number | null;
-  // What this edge adds to its target: the from-node's signed belief_credence
-  // × this edge's support, stamped by the belief engine. NULL means the edge
-  // has never been graded — the state the recovery sweep looks for — so it
-  // must never be reported as 0.
+  // What this edge adds to its from-end derived node: the to-end source's
+  // signed belief_credence × this edge's support, stamped by the belief
+  // engine. NULL means the edge has never been graded — the state the
+  // recovery sweep looks for — so it must never be reported as 0.
   belief_evidence_contribution?: number | null;
 }
 
-// Which side of a node an edge read is asking for. 'into' is the evidence
-// side: those edges point AT the node and feed its belief_credence. 'out_of'
-// is the mirror side, the edges the node itself supplies. 'both' is either
-// side and is the default.
+// Which side of a node an edge read is asking for. 'out_of' is the node's
+// evidence basis: the support-bearing edges it derives its belief_credence
+// from. 'into' is the mirror side, the edges through which other nodes
+// derive from it. 'both' is either side and is the default.
 export type BeliefEdgeReadDirection = 'into' | 'out_of' | 'both';
 
 // The filter an edge read accepts. Applied IN SQL by every edge read, so both
@@ -163,13 +164,14 @@ export interface EdgeData {
   source: EdgeSource;
   skip_inference?: boolean; // reserved for bulk imports / migrations
   // Belief-engine evidence field (MR-A). When belief_evidence_support is set
-  // the edge is evidence bearing on the to-node and edge creation triggers a
-  // belief recompute of that node. Stored in a dedicated edge column, never
-  // in the app-owned context JSON.
-  // How strongly the from-node talks about the to-node, as one unsigned
-  // number in [0, 1]: 0 means assessed and carries nothing, absent means the
-  // edge is not evidence at all. Which way the evidence cuts comes from the
-  // from-node's signed belief_credence, never from this field.
+  // the edge is evidence bearing on the from-end derived node and edge
+  // creation triggers a belief recompute of that node. Stored in a dedicated
+  // edge column, never in the app-owned context JSON.
+  // How loudly the to-end source speaks about the from-end derived node, as
+  // one unsigned number in [0, 1]: 0 means assessed and carries nothing,
+  // absent means the edge is not evidence at all. Which way the evidence
+  // cuts comes from the source's signed belief_credence, never from this
+  // field.
   belief_evidence_support?: number;
 }
 

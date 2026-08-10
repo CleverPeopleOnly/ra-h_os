@@ -329,8 +329,8 @@ describe('queryEdge tool node filtering', () => {
     expectEverySqlReadWasACappedPageOfOneNodeSide(CLAIM_NODE_ID, 'out_of');
   });
 
-  // to_node_id is the mirror side: the edges pointing AT the node, which the
-  // belief engine reads as the evidence feeding that node's credence.
+  // to_node_id is the mirror side: the edges pointing AT the node — the
+  // edges through which OTHER nodes derive their credence from this one.
   it('asks SQL for a capped page of the into side of the node when to_node_id is given', async () => {
     await callQueryEdgeTool({ to_node_id: CLAIM_NODE_ID, limit: 50 });
 

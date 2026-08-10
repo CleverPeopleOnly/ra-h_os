@@ -43,9 +43,11 @@ function edgesTableHasBeliefSupportColumn(db) {
  * @param {object} filters                Edge-read filter.
  * @param {number} [filters.nodeId]       Only edges touching this node.
  * @param {'into'|'out_of'|'both'} [filters.direction]
- *        Which side of nodeId to read: 'into' means the node is the
- *        to_node_id (the evidence feeding its credence), 'out_of' means the
- *        node is the from_node_id, 'both' is either side and is the default.
+ *        Which side of nodeId to read: 'out_of' means the node is the
+ *        from_node_id (its evidence basis — the support-bearing edges it
+ *        derives its credence from), 'into' means the node is the to_node_id
+ *        (the edges through which other nodes derive from it), 'both' is
+ *        either side and is the default.
  * @param {number} [filters.limit]        Page size, default 50.
  * @param {number} [filters.offset]       Edges to skip before the page, default 0.
  *
@@ -103,8 +105,8 @@ function createEdge(edgeData) {
     explanation,
     source = 'mcp',
     // Belief evidence field (fork addition): one unsigned support value in
-    // [0, 1] — how strongly the source node talks about the target — stored
-    // verbatim in the dedicated belief_ edge column. The standalone server
+    // [0, 1] — how loudly the to-end source speaks about the from-end
+    // derived node — stored verbatim in the dedicated belief_ edge column. The standalone server
     // stores evidence but NEVER grades — belief_evidence_contribution is
     // never written here.
     belief_evidence_support

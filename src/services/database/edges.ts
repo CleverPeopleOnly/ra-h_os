@@ -320,9 +320,9 @@ export class EdgeService {
     const sqlite = getSQLiteClient();
 
     // Belief-evidence door check: a non-NULL support must sit in [0, 1].
-    // Support is UNSIGNED — how strongly the source node talks about the
-    // target — and contradiction is expressed by the source NODE's negative
-    // credence, never by the edge. NULL passes (the edge is simply not
+    // Support is UNSIGNED — how loudly the to-end source speaks about the
+    // from-end derived node — and contradiction is expressed by the source
+    // NODE's negative credence, never by the edge. NULL passes (the edge is simply not
     // evidence) and 0 passes (assessed, carries nothing). Checked before any
     // inference or insert so a rejected support writes no edge row.
     if (

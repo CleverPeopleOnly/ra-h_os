@@ -160,7 +160,8 @@ opinions add). Two standing decisions carry over unchanged:
 `belief_credence_is_fixed = 1` is Subjective Logic's dogmatic opinion (u = 0): a
 credence a human asserts, which the engine reports and never recomputes. Its masses are
 NULL — there is no evidence ledger behind an assertion. As a *source*, a fixed node's
-projection is simply its asserted credence, feeding contributions like any other.
+projection is simply its asserted credence, supplying contributions to the nodes that
+derive from it like any other source.
 
 New in v2: **an un-fix door.** A single operation clears `belief_credence_is_fixed` to
 0 and immediately regrades the node from its actual evidence (movement trigger
@@ -255,7 +256,7 @@ there is no back-solving problem:
 1. Add `belief_evidence_for_mass` and `belief_evidence_against_mass` (REAL, NULL) to
    `nodes`, in `ensureBeliefSchemaLocked` and in the standalone CLI's parallel DDL.
 2. Run a global regrade: seed from fixed-credence nodes, sweep outward with the
-   propagation mechanism of §4 until every non-fixed node with incoming evidence has
+   propagation mechanism of §4 until every non-fixed node with an evidence basis has
    been regraded once per pass; iterate passes to a bounded depth (the graph is small;
    convergence is asymptotic and epsilon-bounded).
 3. Each node whose credence changes gets a movement row, trigger `model-migration` —

@@ -215,7 +215,8 @@ function ensureBeliefSchema(db) {
     ['nodes', 'belief_credence', 'REAL'],
     ['nodes', 'belief_computed_at', 'TEXT'],
     // Set when a human asserted this node's credence instead of the app's
-    // belief engine deriving it from incoming evidence.
+    // belief engine deriving it from the node's evidence (its outgoing
+    // support-bearing edges).
     ['nodes', 'belief_credence_is_fixed', 'INTEGER NOT NULL DEFAULT 0'],
     // The two v2 evidence masses (belief model v2, spec §2): the primary
     // belief state behind the cached credence projection. Both REAL and
