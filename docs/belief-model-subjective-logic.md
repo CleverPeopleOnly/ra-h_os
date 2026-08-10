@@ -1,9 +1,13 @@
 # Belief model v2 — Subjective Logic evidence masses
 
-Status: **design, approved direction — not yet implemented.** This document records the
-research that led to the decision, the model itself, and what the implementation must
-change. It amends the model shipped in PR#12 (`e^(−C) − e^(−S)` grading); it does not
-amend the vocabulary rules in `CLAUDE.md`, which this document follows throughout.
+Status: **implemented** (the §7 follow-on shipped; this line previously lagged the
+code). This document records the research that led to the decision, the model itself,
+and what the implementation changed. It amends the model shipped in PR#12
+(`e^(−C) − e^(−S)` grading); it does not amend the vocabulary rules in `CLAUDE.md`,
+which this document follows throughout. **Amended 2026-08-10: edge direction** — the
+engine now reads evidence along RA-H's own edge canon (Derivative→Source) instead of
+imposing a direction of its own; see §8, and note that §2 and §4 are corrected in
+place to the canon reading.
 
 ---
 
@@ -118,7 +122,10 @@ An edge's **contribution** is exactly what it is today:
 contribution = source credence × support        signed
 ```
 
-What changes is where the contribution lands. Split by sign into the target's masses:
+Since the 2026-08-10 direction amendment (§8), the edge runs in RA-H's canon —
+**Derivative→Source** — so the source is the edge's *target* and the derived node
+(whose credence the evidence feeds) is the edge's *from-end*. The contribution lands
+in the derived node's masses, split by sign:
 
 ```
 contribution ≥ 0  →  adds  contribution  to belief_evidence_for_mass
@@ -135,9 +142,10 @@ mere uncertainty; we chose, and keep, the variant where they count against.
 
 ### Aggregation — cumulative fusion
 
-A node's masses are the plain sums of its incoming contributions, split by sign. This
-is Subjective Logic's **cumulative fusion** (evidence masses of independent opinions
-add). Two standing decisions carry over unchanged:
+A node's masses are the plain sums of the contributions arriving over its **outgoing
+support-bearing edges** (its evidence basis under the canon direction, §8), split by
+sign. This is Subjective Logic's **cumulative fusion** (evidence masses of independent
+opinions add). Two standing decisions carry over unchanged:
 
 - **Repetition reinforces** (averaging fusion is rejected): ten edges carrying the same
   content add ten times the mass. Anti-gaming remains the credence of the sources
@@ -192,20 +200,23 @@ Reading the table:
 
 ## 4. Propagation (fixes audit finding 3)
 
-The one-node recompute becomes a **sweep**:
+The one-node recompute becomes a **sweep** (directions below per the 2026-08-10 canon
+amendment, §8):
 
 1. A write lands (edge support changed, source graded, fixed credence set/cleared).
-2. Regrade the directly affected target, as today.
+2. Regrade the directly affected derived node — the support-bearing edge's from-end.
 3. If a regraded node's projected credence moved by more than
-   `BELIEF_CREDENCE_CHANGE_EPSILON`, enqueue every target of its *outgoing* evidence
-   edges (`belief_evidence_support IS NOT NULL`) for regrade.
+   `BELIEF_CREDENCE_CHANGE_EPSILON`, enqueue every node that **derives from it** —
+   the from-ends of its *incoming* support-bearing edges
+   (`belief_evidence_support IS NOT NULL`) — for regrade.
 4. Repeat with a **visited set per sweep**: each node regrades at most once per sweep —
    the echo guard. Cycles terminate because a visited node is never re-entered; the
    next sweep (triggered by the next write) picks up any residual drift. One direction
    of flow per sweep, no fixpoint iteration inside a sweep.
-5. Fixed-credence nodes are never regraded but do propagate *through* (their targets
-   are still enqueued when the fixed node was the write target — which only happens via
-   set/clear-fixed, the only writes that move a fixed node's projection).
+5. Fixed-credence nodes are never regraded but do propagate *through* (the nodes
+   deriving from them are still enqueued when the fixed node was the write target —
+   which only happens via set/clear-fixed, the only writes that move a fixed node's
+   projection).
 
 **Stale stamps become impossible rather than repaired**: `recomputeNodeBelief` already
 re-derives every contribution from the live source credence — the stamp is a record of
@@ -275,3 +286,67 @@ not data fidelity.
   new tool for the un-fix door.
 - Tests: the pinned-behaviour tests in `tests/unit/belief/` change numbers per §3 —
   each changed expectation cites its row in the worked-examples table.
+
+---
+
+## 8. Edge direction — the engine reads RA-H's canon (2026-08-10 amendment)
+
+### The decision
+
+**The belief layer reads RA-H's edge direction; it does not impose one of its own.**
+An evidence edge runs in RA-H's canonical direction, **Derivative→Source** — the
+derived node points at the node it derives from: "my credence derives from you". The
+engine's gathering rule follows: **a node's evidence basis is its outgoing
+support-bearing edges, and the source credences are read from those edges' targets.**
+RA-H's semantic model, edge storage, and prose inference are untouched by this
+amendment — no skip-inference flag, no re-orientation fight, no upstream change.
+
+### Why (found live, 2026-08-10)
+
+The engine previously assumed evidence ran Source→Derivative, so writers had to store
+edges against RA-H's own canon. RA-H classifies every edge from its explanation prose
+and applies the inferred type's canonical direction — so a correctly working inference
+*reliably re-oriented* a correctly written evidence edge (observed live: "X is the
+source of Y" prose, inferred `source_of` at confidence 0.92–0.95, stored swapped, the
+regrade landing on the wrong node). The failure was ours, not the classifier's: two
+direction vocabularies on one edge table, with the engine's invented one losing.
+
+Written in canon, both inference paths preserve the direction: a working inference
+agrees (the from-node *is* the Derivative — no swap), and the inference-failure
+fallback (`related_to`, confidence 0.2) stores as-written. The classifier's
+nondeterminism stops mattering.
+
+### What marks evidence
+
+**The presence of a support figure alone.** An outgoing edge with non-NULL
+`belief_evidence_support` is in the basis whatever type the prose classifier assigned;
+an edge without one is not evidence, whatever its type. The classifier's output stays
+what it always was — RA-H's semantic annotation — with no vote in belief. The support
+figure itself is a semantic judgement of the relationship's loudness, made by the
+caller when the connection is made; the engine consumes the number mechanically and
+never judges.
+
+### Scoped residual risk (accepted)
+
+A new node cannot be a source — nothing derives from a node that just arrived — so
+evidence written at ingestion is never direction-ambiguous, and its explanation
+naturally takes the new node as subject (source-shaped prose, which the classifier
+keeps in canon). The only theoretical exposure is an evidence edge between two
+already-existing nodes whose explanation is phrased with the source end as
+grammatical subject ("Wrote…", "Contains…") — rare, and avoided by writing the
+explanation from the derived end, which good explanations do anyway. Accepted; no
+store-side mitigation.
+
+### What implementation must touch (the MR sequence after this document)
+
+- The per-node regrade gathers the node's outgoing support-bearing edges; source
+  credence from each edge's target (`beliefService.ts`).
+- The edge-create and edge-update evidence hooks regrade the edge's **from-end** —
+  the derived node (`edges.ts`).
+- The sweep enqueue and `propagateBeliefFromSourceNode` invert per §4's corrected
+  steps; echo guard, one-direction-per-sweep and one-transaction rules unchanged.
+- The duplicate-guard collision (inference flipping an edge into an occupied
+  direction slot) gets its behaviour pinned by a test — consumers need to know what
+  the store answers.
+- Fork test fixtures and the demo graph seed flip to canon so the examples model the
+  rule.
