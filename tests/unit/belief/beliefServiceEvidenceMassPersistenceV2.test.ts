@@ -37,8 +37,9 @@ afterEach(() => {
   db = undefined;
 });
 
-// Create one claim node fed by one evidence edge from a FIXED-credence source
-// (the bootstrap of every gradeable graph), returning all the ids.
+// Create one claim node deriving from one FIXED-credence source over one
+// canon evidence edge, claim→source (the bootstrap of every gradeable
+// graph), returning all the ids.
 function seedClaimFedByFixedSource(
   context: TempBeliefDatabase,
   options: { sourceBeliefCredence: number; support: number }
@@ -49,8 +50,8 @@ function seedClaimFedByFixedSource(
     beliefCredence: options.sourceBeliefCredence,
   });
   const edgeId = context.insertEvidenceEdgeFixture({
-    fromNodeId: sourceNodeId,
-    toNodeId: claimNodeId,
+    derivedNodeId: claimNodeId,
+    sourceNodeId,
     support: options.support,
   });
   return { claimNodeId, sourceNodeId, edgeId };
@@ -128,8 +129,8 @@ describe('recomputeNodeBelief persists evidence masses and the credence projecti
       beliefCredence: -0.9,
     });
     db.insertEvidenceEdgeFixture({
-      fromNodeId: disbelievedSourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: disbelievedSourceNodeId,
       support: 0.4,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -158,8 +159,8 @@ describe('recomputeNodeBelief persists evidence masses and the credence projecti
       beliefCredence: 0.8,
     });
     const edgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: sourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId,
       support: 0.5,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -219,8 +220,8 @@ describe('recomputeNodeBelief persists evidence masses and the credence projecti
     // The never-graded source: its edge must be skipped and left unstamped.
     const ungradedSourceNodeId = db.insertNodeFixture({ title: 'never-graded source' });
     const skippedEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: ungradedSourceNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: ungradedSourceNodeId,
       support: 0.9,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();

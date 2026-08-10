@@ -8,8 +8,10 @@
  *    between, and REJECTS a negative or greater-than-1 support without
  *    writing a row — support is unsigned, the sign of a contribution comes
  *    only from the source node's credence,
- *  - triggers recomputeNodeBelief(to_node_id) so the target node's
- *    belief_credence becomes non-NULL WITHOUT any explicit belief call,
+ *  - triggers recomputeNodeBelief(from_node_id) — the DERIVED end under the
+ *    canon direction (spec §8: an evidence edge runs Derivative→Source, so
+ *    the from-node is the node the evidence grades) — making its
+ *    belief_credence non-NULL WITHOUT any explicit belief call,
  *  - leaves belief_credence NULL and belief_evidence_support NULL when called
  *    without evidence fields,
  *  - IGNORES the merged-away belief_evidence_direction /
@@ -106,10 +108,11 @@ describe('EdgeService evidence hook', () => {
     const sourceNodeId = db.insertNodeFixture({ title: 'evidence source node' });
     const { edgeService } = await db.importEdgeService();
 
+    // Canon direction: the claim (derived end) is the from-node.
     const evidenceInput: EvidenceEdgeInput = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
-      explanation: 'Evidence fixture supporting the claim node.',
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
+      explanation: 'Evidence fixture the claim node derives from.',
       created_via: 'workflow',
       source: 'user',
       skip_inference: true,
@@ -142,9 +145,10 @@ describe('EdgeService evidence hook', () => {
     // Both a plainly negative value and the old range's -1 boundary must be
     // refused: nothing below 0 is a support any more.
     for (const rejectedNegativeSupport of [-0.4, -1]) {
+      // Canon direction: the claim (derived end) is the from-node.
       const negativeSupportInput: EvidenceEdgeInput = {
-        from_node_id: sourceNodeId,
-        to_node_id: claimNodeId,
+        from_node_id: claimNodeId,
+        to_node_id: sourceNodeId,
         explanation: 'Evidence fixture carrying an invalid negative support.',
         created_via: 'workflow',
         source: 'user',
@@ -158,8 +162,8 @@ describe('EdgeService evidence hook', () => {
     }
 
     // No row was written for either attempt...
-    expect(countEdgesBetween(db, sourceNodeId, claimNodeId)).toBe(0);
-    // ...and no recompute ran, so the target is still ungraded.
+    expect(countEdgesBetween(db, claimNodeId, sourceNodeId)).toBe(0);
+    // ...and no recompute ran, so the derived end is still ungraded.
     expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
   });
 
@@ -171,9 +175,10 @@ describe('EdgeService evidence hook', () => {
     const sourceNodeId = db.insertNodeFixture({ title: 'full-strength evidence source' });
     const { edgeService } = await db.importEdgeService();
 
+    // Canon direction: the claim (derived end) is the from-node.
     const fullStrengthInput: EvidenceEdgeInput = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
       explanation: 'Evidence fixture at the full-strength boundary of the range.',
       created_via: 'workflow',
       source: 'user',
@@ -193,9 +198,10 @@ describe('EdgeService evidence hook', () => {
     const sourceNodeId = db.insertNodeFixture({ title: 'source attempting an oversized support' });
     const { edgeService } = await db.importEdgeService();
 
+    // Canon direction: the claim (derived end) is the from-node.
     const oversizedSupportInput: EvidenceEdgeInput = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
       explanation: 'Evidence fixture carrying an invalid oversized support.',
       created_via: 'workflow',
       source: 'user',
@@ -205,7 +211,7 @@ describe('EdgeService evidence hook', () => {
     await expect(edgeService.createEdge(oversizedSupportInput)).rejects.toThrow(
       /belief_evidence_support/
     );
-    expect(countEdgesBetween(db, sourceNodeId, claimNodeId)).toBe(0);
+    expect(countEdgesBetween(db, claimNodeId, sourceNodeId)).toBe(0);
   });
 
   // A support of exactly 0 must survive the write path as 0, never collapse
@@ -213,8 +219,9 @@ describe('EdgeService evidence hook', () => {
   // `if (support)` instead of `if (support != null)` silently turns an
   // assessed "leans neither way" into an unassessed plain edge, erasing the
   // one distinction the field carries. The edge must also still count as
-  // evidence, so the target node gets graded rather than left ungraded.
-  it('stores a belief_evidence_support of exactly 0 as 0, not NULL, and still grades the target node', async () => {
+  // evidence, so the derived node (the from-end) gets graded rather than
+  // left ungraded.
+  it('stores a belief_evidence_support of exactly 0 as 0, not NULL, and still grades the derived node', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
     // The source needs a credence of its own, so the triggered recompute can
@@ -225,9 +232,10 @@ describe('EdgeService evidence hook', () => {
     });
     const { edgeService } = await db.importEdgeService();
 
+    // Canon direction: the claim (derived end) is the from-node.
     const neutralEvidenceInput: EvidenceEdgeInput = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
       explanation: 'Evidence fixture that bears neither way on the claim node.',
       created_via: 'workflow',
       source: 'user',
@@ -242,7 +250,7 @@ describe('EdgeService evidence hook', () => {
     expect(storedSupport).toBe(0);
     expect(storedSupport).not.toBeNull();
 
-    // Still evidence, so the hook grades the target node.
+    // Still evidence, so the hook grades the derived node — the from-end.
     await vi.waitFor(
       () => {
         expect(db!.readNodeBelief(claimNodeId).belief_credence).not.toBeNull();
@@ -261,9 +269,10 @@ describe('EdgeService evidence hook', () => {
     const sourceNodeId = db.insertNodeFixture({ title: 'evidence source node' });
     const { edgeService } = await db.importEdgeService();
 
+    // Canon direction: the claim (derived end) is the from-node.
     const staleTwoFieldInput: StaleTwoFieldEdgeInput = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
       explanation: 'Evidence fixture from a caller that still sends the old pair.',
       created_via: 'workflow',
       source: 'user',
@@ -281,9 +290,10 @@ describe('EdgeService evidence hook', () => {
     expect(edgeColumnNames).not.toContain('belief_evidence_strength');
   });
 
-  // Creating an evidence edge must, by itself, grade the target node: its
-  // belief_credence becomes non-NULL with no explicit belief-service call.
-  it('triggers a belief recompute of the target node when an evidence edge is created', async () => {
+  // Creating an evidence edge must, by itself, grade the DERIVED node — the
+  // edge's from-end under canon: its belief_credence becomes non-NULL with
+  // no explicit belief-service call.
+  it('triggers a belief recompute of the derived node (the from-end) when an evidence edge is created', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
     // The source must itself be GRADED — its own belief_credence is the
@@ -295,10 +305,11 @@ describe('EdgeService evidence hook', () => {
     });
     const { edgeService } = await db.importEdgeService();
 
+    // Canon direction: the claim (derived end) is the from-node.
     const evidenceInput: EvidenceEdgeInput = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
-      explanation: 'Evidence fixture supporting the claim node.',
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
+      explanation: 'Evidence fixture the claim node derives from.',
       created_via: 'workflow',
       source: 'user',
       skip_inference: true,
@@ -315,6 +326,49 @@ describe('EdgeService evidence hook', () => {
     );
   });
 
+  // NEW (canon, spec §8): the hook must regrade the derived end AS STORED —
+  // finalFromId — even when inference SWAPPED the ends. The edge is written
+  // backwards (source at the from-end) with an explanation the classifier
+  // deterministically re-orients (the "contains" heuristic fast-path infers
+  // part_of with swap_direction: true, no LLM involved), so the STORED row
+  // is claim→source. The hook must then regrade the stored from-end — the
+  // claim — not whichever node the caller happened to put in to_node_id.
+  it('regrades the stored from-end (finalFromId) even when inference swapped the ends', async () => {
+    db = await openTempBeliefDatabase();
+    const claimNodeId = db.insertNodeFixture({ title: 'claim node' });
+    // The source is graded so the regrade of the claim lands on a number.
+    const sourceNodeId = db.insertNodeFixture({
+      title: 'graded source the claim derives from',
+      beliefCredence: 0.9,
+    });
+    const { edgeService } = await db.importEdgeService();
+
+    // Deliberately backwards: the source is the from-node as WRITTEN. The
+    // "contains" prefix makes the heuristic classifier swap the stored ends.
+    const backwardsWrittenInput: EvidenceEdgeInput = {
+      from_node_id: sourceNodeId,
+      to_node_id: claimNodeId,
+      explanation: 'Contains the finding the claim node derives from.',
+      created_via: 'workflow',
+      source: 'user',
+      belief_evidence_support: 0.8,
+    };
+    const createdEdge = await edgeService.createEdge(backwardsWrittenInput);
+
+    // Precondition: inference really did swap — the STORED row runs
+    // claim→source (canon), whatever the caller wrote.
+    expect(createdEdge.from_node_id).toBe(claimNodeId);
+    expect(createdEdge.to_node_id).toBe(sourceNodeId);
+
+    // The hook regraded the stored from-end — the derived claim.
+    await vi.waitFor(
+      () => {
+        expect(db!.readNodeBelief(claimNodeId).belief_credence).not.toBeNull();
+      },
+      { timeout: 1500, interval: 25 }
+    );
+  });
+
   // A plain (non-evidence) edge must change nothing belief-wise: target stays
   // ungraded and belief_evidence_support stays NULL.
   it('leaves belief_credence NULL and belief_evidence_support NULL for a non-evidence createEdge', async () => {
@@ -323,9 +377,11 @@ describe('EdgeService evidence hook', () => {
     const sourceNodeId = db.insertNodeFixture({ title: 'plain neighbor node' });
     const { edgeService } = await db.importEdgeService();
 
+    // Canon arrangement: the claim sits at the from-end, exactly where a
+    // derived node would — only the absent support keeps this edge plain.
     const plainInput: EdgeData = {
-      from_node_id: sourceNodeId,
-      to_node_id: claimNodeId,
+      from_node_id: claimNodeId,
+      to_node_id: sourceNodeId,
       explanation: 'Plain non-evidence connection between the nodes.',
       created_via: 'workflow',
       source: 'user',

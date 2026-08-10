@@ -4,8 +4,9 @@
  *
  * WHY THIS FILE EXISTS. Setting belief_evidence_support back to NULL returns a
  * graded evidence edge to a plain relationship: the edge stops being evidence
- * at all, its belief_evidence_contribution is cleared and the target node is
- * regraded from whatever evidence is left. edgeService.updateEdge and
+ * at all, its belief_evidence_contribution is cleared and the derived node
+ * (the edge's from-end, canon direction) is regraded from whatever evidence
+ * is left. edgeService.updateEdge and
  * PUT /api/edges/[id] both accept that write and are already tested for it.
  * The one thing that makes it unreachable from an MCP client is this module:
  * beliefEvidenceSupportInputSchemaForEdgeUpdate is `.optional()` but not

@@ -206,7 +206,8 @@ describe('PUT /api/edges/[id] support correction', () => {
 
   // GUARD: a NULL support is an UN-ASSESSMENT, not an out-of-range value: it
   // says this edge is no longer evidence at all. It must reach the service so
-  // the un-assessment can be written and the target regraded — pinned here
+  // the un-assessment can be written and the derived node (the edge's
+  // from-end, canon direction) regraded — pinned here
   // explicitly so nobody later "hardens" the range check by refusing null.
   it('GUARD: accepts a belief_evidence_support of null and forwards the un-assessment to updateEdge', async () => {
     const response = await PUT(

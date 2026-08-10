@@ -221,10 +221,12 @@ function buildBeliefEdgeReadNarrowing(
 
   if (nodeId !== undefined) {
     if (direction === 'into') {
-      // The evidence side: edges pointing AT the node.
+      // Edges pointing AT the node. Under canon (spec §8) these belong to
+      // the nodes deriving FROM it, not to the node's own evidence basis.
       whereClauses.push('to_node_id = ?');
       boundValues.push(nodeId);
     } else if (direction === 'out_of') {
+      // Edges leaving the node — under canon, its own evidence basis.
       whereClauses.push('from_node_id = ?');
       boundValues.push(nodeId);
     } else {
@@ -380,8 +382,9 @@ export class EdgeService {
     };
 
     // Whether this edge is evidence the belief engine must grade, which decides
-    // one thing only: whether writing it regrades the node it points at. A
-    // non-NULL unsigned support is what makes an edge evidence (0 counts —
+    // one thing only: whether writing it regrades its derived end — the
+    // from-node under canon (spec §8: an evidence edge runs Derivative→Source).
+    // A non-NULL unsigned support is what makes an edge evidence (0 counts —
     // assessed, carries nothing; NULL means never assessed, so nothing to
     // grade). Evidence lives in a dedicated column; the context JSON stays
     // app-owned.
@@ -408,11 +411,13 @@ export class EdgeService {
       throw new Error('Failed to create edge');
     }
 
-    // Evidence hook: a new evidence edge must regrade the node it points at.
-    // The movement trigger names this entry point (spec §5): the write door
-    // is the edge write, whichever verb carried it.
+    // Evidence hook: a new evidence edge must regrade its derived end — the
+    // from-node AS STORED (finalFromId survives any inference swap), since
+    // under canon the from-end is the node the evidence grades. The movement
+    // trigger names this entry point (spec §5): the write door is the edge
+    // write, whichever verb carried it.
     if (edgeIsGradeableBeliefEvidence) {
-      await recomputeNodeBelief(finalToId, 'evidence-edge-write');
+      await recomputeNodeBelief(finalFromId, 'evidence-edge-write');
     }
 
     // Broadcast edge creation event (use final IDs from the saved edge)
@@ -442,7 +447,7 @@ export class EdgeService {
     // The support this update writes, if it writes one at all. Read once here
     // because it decides three things: whether the write is allowed, whether
     // the edge stops being evidence, and whether the write must regrade the
-    // node the edge points at.
+    // edge's derived end (its from-node, canon direction).
     const writtenBeliefEvidenceSupport = updates.belief_evidence_support;
 
     // Whether this update TOUCHES the support column at all. The dynamic UPDATE
@@ -584,23 +589,25 @@ export class EdgeService {
       throw new Error(`Failed to retrieve updated edge with ID ${id}`);
     }
 
-    // Evidence hook: any write to the support must regrade the node this edge
-    // points at, which is why the row is re-read above before returning — an
-    // update receives only an id, so to_node_id has to be loaded to be
-    // regraded. Without this the edge keeps the belief_evidence_contribution
-    // stamped from the OLD support: stale and still NON-NULL, so invisible to
-    // beliefRecoveryService (which finds ungraded evidence by looking for a
-    // NULL contribution), leaving the target's credence wrong permanently
-    // rather than until the next sweep. A correction to exactly 0 regrades:
+    // Evidence hook: any write to the support must regrade this edge's
+    // derived end — its from-node under canon — which is why the row is
+    // re-read above before returning: an update receives only an id, so
+    // from_node_id has to be loaded to be regraded. Without this the edge
+    // keeps the belief_evidence_contribution stamped from the OLD support:
+    // stale and still NON-NULL, so invisible to beliefRecoveryService (which
+    // finds ungraded evidence by looking for a NULL contribution), leaving
+    // the derived node's credence wrong permanently rather than until the
+    // next sweep. A correction to exactly 0 regrades:
     // assessed-carries-nothing is a recorded judgement, not an absence of one.
     // Un-assessing to NULL regrades too, from the evidence that is LEFT — and
     // when nothing is left recomputeNodeBelief clears the credence to NULL,
     // because a node with no evidence is ungraded rather than balanced at 0.
     // Rewording an explanation is NOT new evidence and deliberately regrades
-    // nothing. Exactly ONE target ever needs regrading, because a support
-    // write cannot swap the edge's direction today — swaps happen only on the
-    // context.explanation inference path above. If a support write ever gains
-    // that power, both the old and the new target would need it.
+    // nothing. Exactly ONE derived node ever needs regrading, because a
+    // support write cannot swap the edge's direction today — swaps happen
+    // only on the context.explanation inference path above. If a support
+    // write ever gains that power, both the old and the new derived end would
+    // need it.
     if (updateWritesBeliefEvidenceSupport) {
       // An edge that is no longer evidence must not keep a contribution: it
       // would be a lying column, and a trap — were support later restored, the
@@ -619,7 +626,7 @@ export class EdgeService {
       }
       // The movement trigger names this entry point (spec §5): a support
       // correction is still an evidence-edge write.
-      await recomputeNodeBelief(updatedEdge.to_node_id, 'evidence-edge-write');
+      await recomputeNodeBelief(updatedEdge.from_node_id, 'evidence-edge-write');
 
       // The edge as it stands once the regrade has finished with it. Everything
       // above — the clear on the un-assessment path, and the re-stamp the

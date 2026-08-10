@@ -81,9 +81,10 @@ describe('clearBeliefFixedCredence (v2 un-fix door, service semantics)', () => {
       beliefCredence: 0.9,
     });
     const clearedNodeId = db.insertNodeFixture({ title: 'node whose assertion is withdrawn' });
+    // Canon: the cleared node derives from the expert (cleared→expert).
     db.insertEvidenceEdgeFixture({
-      fromNodeId: evidenceExpertNodeId,
-      toNodeId: clearedNodeId,
+      derivedNodeId: clearedNodeId,
+      sourceNodeId: evidenceExpertNodeId,
       support: 0.5,
     });
     const { setBeliefFixedCredence } = await import('@/services/belief/beliefFixedCredence');
@@ -150,18 +151,19 @@ describe('clearBeliefFixedCredence (v2 un-fix door, service semantics)', () => {
   });
 
   // Spec §4 point 5: set/clear-fixed are the only writes that move a fixed
-  // node's projection, so the clear must sweep THROUGH the node — its
-  // evidence targets regrade from the node's post-clear state. Here the
-  // cleared node ends ungraded, so its target loses its only counted vote.
-  it('propagates through the cleared node: its evidence target regrades in the same sweep', async () => {
+  // node's projection, so the clear must sweep THROUGH the node — the nodes
+  // DERIVING from it (the from-ends of its incoming support-bearing edges)
+  // regrade from the node's post-clear state. Here the cleared node ends
+  // ungraded, so the claim deriving from it loses its only counted vote.
+  it('propagates through the cleared node: the node deriving from it regrades in the same sweep', async () => {
     db = await openTempBeliefDatabase();
-    // The expert is fixed WITHOUT evidence behind it; the claim is graded
-    // solely from the expert's asserted credence.
+    // The expert is fixed WITHOUT evidence behind it; the claim derives
+    // solely from the expert's asserted credence (canon edge claim→expert).
     const expertNodeId = db.insertNodeFixture({ title: 'expert asserted then withdrawn' });
-    const claimNodeId = db.insertNodeFixture({ title: 'claim fed only by the expert' });
+    const claimNodeId = db.insertNodeFixture({ title: 'claim deriving only from the expert' });
     const expertEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: expertNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: expertNodeId,
       support: 0.8,
     });
     const { setBeliefFixedCredence } = await import('@/services/belief/beliefFixedCredence');

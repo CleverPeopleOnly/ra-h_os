@@ -52,24 +52,25 @@ export interface BeliefDemoGraphSeedResult {
 // dogmatic opinion). The anchor doubles as a graded source for other exemplars.
 const BELIEF_DEMO_FIXED_ANCHOR_CREDENCE = 0.9;
 
-// Credence fixed on each supporting scaffolding source feeding the believed
-// node. Three supporting edges at support 0.9 give the believed node a for
-// mass of 3 x (0.9 x 0.9) = 2.43, so uncertainty 2 / (2.43 + 2) ~= 0.45 < 0.5:
-// a solid 'for' ring resting on real evidence. Two edges could not get there —
-// each contribution is < 1, so two of them can never push the total mass
-// past the prior mass of 2.
+// Credence fixed on each supporting scaffolding source the believed node
+// derives from. Three supporting edges at support 0.9 give the believed node
+// a for mass of 3 x (0.9 x 0.9) = 2.43, so uncertainty 2 / (2.43 + 2) ~= 0.45
+// < 0.5: a solid 'for' ring resting on real evidence. Two edges could not get
+// there — each contribution is < 1, so two of them can never push the total
+// mass past the prior mass of 2.
 const BELIEF_DEMO_SUPPORTING_SOURCE_CREDENCE = 0.9;
 
 // Support carried by each of the believed node's three supporting edges.
 const BELIEF_DEMO_SUPPORTING_EDGE_SUPPORT = 0.9;
 
-// Credence fixed on the discredited source feeding the disbelieved node:
-// negative, so the evidence it supplies counts AGAINST its target — the sign
-// lives on the source node's credence, never on an edge.
+// Credence fixed on the discredited source the disbelieved node derives from:
+// negative, so the evidence it supplies counts AGAINST the node deriving from
+// it — the sign lives on the source node's credence, never on an edge.
 const BELIEF_DEMO_DISBELIEVED_SOURCE_CREDENCE = -0.8;
 
-// Support on the single edge feeding the disbelieved node: against mass
-// 0.8 x 0.8 = 0.64, projecting the target's credence below zero ('against').
+// Support on the disbelieved node's single evidence edge: against mass
+// 0.8 x 0.8 = 0.64, projecting the derived node's credence below zero
+// ('against').
 const BELIEF_DEMO_DISBELIEVED_EDGE_SUPPORT = 0.8;
 
 // Magnitude of the credence fixed on each of the four contested-side sources
@@ -83,9 +84,9 @@ const BELIEF_DEMO_CONTESTED_SOURCE_CREDENCE_MAGNITUDE = 0.9;
 // never confusable with barely assessed.
 const BELIEF_DEMO_CONTESTED_EDGE_SUPPORT = 1;
 
-// Support on the barely-assessed node's single weak edge (from the anchor):
-// for mass 0.9 x 0.3 = 0.27, uncertainty 2 / (0.27 + 2) ~= 0.88 >= 0.5 — the
-// dashed "assessed, but questionable" ring.
+// Support on the barely-assessed node's single weak edge (citing the anchor
+// as its source): for mass 0.9 x 0.3 = 0.27, uncertainty 2 / (0.27 + 2) ~=
+// 0.88 >= 0.5 — the dashed "assessed, but questionable" ring.
 const BELIEF_DEMO_WEAK_EDGE_SUPPORT = 0.3;
 
 /**
@@ -156,17 +157,20 @@ export async function seedBeliefDemoGraph(
   }
 
   // Create one evidence edge through the real edge service on the no-LLM path
-  // (skip_inference), so the edge write itself makes the engine regrade the
-  // node the edge points at.
+  // (skip_inference, which also pins swap_direction to false, so the row is
+  // STORED with exactly the ends written here). The edge runs in RA-H's canon
+  // direction, Derivative→Source: the derived node at from_node_id, the
+  // source it derives from at to_node_id — so the edge write itself makes the
+  // engine regrade the derived node, the edge's from-end.
   async function createBeliefDemoEvidenceEdge(evidenceEdge: {
-    fromNodeId: number;
-    toNodeId: number;
+    derivedNodeId: number;
+    sourceNodeId: number;
     support: number;
     explanation: string;
   }): Promise<void> {
     await edgeService.createEdge({
-      from_node_id: evidenceEdge.fromNodeId,
-      to_node_id: evidenceEdge.toNodeId,
+      from_node_id: evidenceEdge.derivedNodeId,
+      to_node_id: evidenceEdge.sourceNodeId,
       explanation: evidenceEdge.explanation,
       created_via: 'workflow',
       source: 'user',
@@ -184,8 +188,8 @@ export async function seedBeliefDemoGraph(
   assertBeliefDemoFixedCredence(fixedAnchorNodeId, BELIEF_DEMO_FIXED_ANCHOR_CREDENCE);
 
   // ---- scaffolding sources ------------------------------------------------
-  // Every source is fixed BEFORE its outgoing evidence exists, so each later
-  // edge write regrades its target from an already-graded source.
+  // Every source is fixed BEFORE any evidence cites it, so each later edge
+  // write regrades its derived from-end against an already-graded source.
 
   // Two extra supporting sources for the believed node (the anchor is its third).
   const supportingSourceAlphaNodeId = await createBeliefDemoNode(
@@ -199,11 +203,12 @@ export async function seedBeliefDemoGraph(
   );
   assertBeliefDemoFixedCredence(supportingSourceBetaNodeId, BELIEF_DEMO_SUPPORTING_SOURCE_CREDENCE);
 
-  // The discredited source feeding the disbelieved node: its NEGATIVE fixed
-  // credence is what turns its evidence into against mass on the target.
+  // The discredited source the disbelieved node derives from: its NEGATIVE
+  // fixed credence is what turns its evidence into against mass on the node
+  // deriving from it.
   const disbelievedSourceNodeId = await createBeliefDemoNode(
     'Belief demo source: discredited origin',
-    'Scaffolding — a disbelieved source; evidence it supplies counts against its target.'
+    'Scaffolding — a disbelieved source; evidence it supplies counts against the node deriving from it.'
   );
   assertBeliefDemoFixedCredence(disbelievedSourceNodeId, BELIEF_DEMO_DISBELIEVED_SOURCE_CREDENCE);
 
@@ -250,22 +255,22 @@ export async function seedBeliefDemoGraph(
     'Exemplar 2 — engine-graded for on three supporting evidence edges; solid ring.'
   );
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: fixedAnchorNodeId,
-    toNodeId: believedNodeId,
+    derivedNodeId: believedNodeId,
+    sourceNodeId: fixedAnchorNodeId,
     support: BELIEF_DEMO_SUPPORTING_EDGE_SUPPORT,
-    explanation: 'The fixed anchor speaks strongly for the believed exemplar.',
+    explanation: 'The believed exemplar derives its credence strongly from the fixed anchor.',
   });
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: supportingSourceAlphaNodeId,
-    toNodeId: believedNodeId,
+    derivedNodeId: believedNodeId,
+    sourceNodeId: supportingSourceAlphaNodeId,
     support: BELIEF_DEMO_SUPPORTING_EDGE_SUPPORT,
-    explanation: 'Corroborator alpha speaks strongly for the believed exemplar.',
+    explanation: 'The believed exemplar derives its credence strongly from corroborator alpha.',
   });
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: supportingSourceBetaNodeId,
-    toNodeId: believedNodeId,
+    derivedNodeId: believedNodeId,
+    sourceNodeId: supportingSourceBetaNodeId,
     support: BELIEF_DEMO_SUPPORTING_EDGE_SUPPORT,
-    explanation: 'Corroborator beta speaks strongly for the believed exemplar.',
+    explanation: 'The believed exemplar derives its credence strongly from corroborator beta.',
   });
 
   // ---- exemplar 3: the disbelieved node -----------------------------------
@@ -275,10 +280,10 @@ export async function seedBeliefDemoGraph(
     'Exemplar 3 — engine-graded against on evidence from a disbelieved source.'
   );
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: disbelievedSourceNodeId,
-    toNodeId: disbelievedNodeId,
+    derivedNodeId: disbelievedNodeId,
+    sourceNodeId: disbelievedSourceNodeId,
     support: BELIEF_DEMO_DISBELIEVED_EDGE_SUPPORT,
-    explanation: 'The discredited origin speaks strongly about the disbelieved exemplar.',
+    explanation: 'The disbelieved exemplar derives its credence solely from the discredited origin.',
   });
 
   // ---- exemplar 4: the contested node -------------------------------------
@@ -289,28 +294,28 @@ export async function seedBeliefDemoGraph(
     'Exemplar 4 — engine-graded neutral on balanced heavy evidence both ways; solid ring.'
   );
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: contestedForSourceAlphaNodeId,
-    toNodeId: contestedNodeId,
+    derivedNodeId: contestedNodeId,
+    sourceNodeId: contestedForSourceAlphaNodeId,
     support: BELIEF_DEMO_CONTESTED_EDGE_SUPPORT,
-    explanation: 'For-side alpha speaks fully for the contested exemplar.',
+    explanation: 'The contested exemplar derives credence fully from for-side alpha.',
   });
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: contestedForSourceBetaNodeId,
-    toNodeId: contestedNodeId,
+    derivedNodeId: contestedNodeId,
+    sourceNodeId: contestedForSourceBetaNodeId,
     support: BELIEF_DEMO_CONTESTED_EDGE_SUPPORT,
-    explanation: 'For-side beta speaks fully for the contested exemplar.',
+    explanation: 'The contested exemplar derives credence fully from for-side beta.',
   });
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: contestedAgainstSourceAlphaNodeId,
-    toNodeId: contestedNodeId,
+    derivedNodeId: contestedNodeId,
+    sourceNodeId: contestedAgainstSourceAlphaNodeId,
     support: BELIEF_DEMO_CONTESTED_EDGE_SUPPORT,
-    explanation: 'Against-side alpha speaks fully about the contested exemplar.',
+    explanation: 'The contested exemplar derives credence fully from against-side alpha.',
   });
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: contestedAgainstSourceBetaNodeId,
-    toNodeId: contestedNodeId,
+    derivedNodeId: contestedNodeId,
+    sourceNodeId: contestedAgainstSourceBetaNodeId,
     support: BELIEF_DEMO_CONTESTED_EDGE_SUPPORT,
-    explanation: 'Against-side beta speaks fully about the contested exemplar.',
+    explanation: 'The contested exemplar derives credence fully from against-side beta.',
   });
 
   // ---- exemplar 5: the barely-assessed node -------------------------------
@@ -320,10 +325,10 @@ export async function seedBeliefDemoGraph(
     'Exemplar 5 — engine-graded on one weak evidence edge; dashed ring.'
   );
   await createBeliefDemoEvidenceEdge({
-    fromNodeId: fixedAnchorNodeId,
-    toNodeId: barelyAssessedNodeId,
+    derivedNodeId: barelyAssessedNodeId,
+    sourceNodeId: fixedAnchorNodeId,
     support: BELIEF_DEMO_WEAK_EDGE_SUPPORT,
-    explanation: 'The fixed anchor mentions the barely-assessed exemplar in passing.',
+    explanation: 'The barely-assessed exemplar derives its credence faintly from the fixed anchor.',
   });
 
   // ---- exemplar 6: the ungraded node --------------------------------------

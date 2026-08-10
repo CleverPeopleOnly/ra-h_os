@@ -98,9 +98,10 @@ async function seedAndGradeTargetNodeThroughRealEngine(): Promise<number> {
   const gradedTargetNodeId = tempBeliefDb.insertNodeFixture({
     title: 'Engine-graded target node the route must report belief for',
   });
+  // Canon direction: the graded node derives from the fixed source.
   tempBeliefDb.insertEvidenceEdgeFixture({
-    fromNodeId: fixedCredenceSourceNodeId,
-    toNodeId: gradedTargetNodeId,
+    derivedNodeId: gradedTargetNodeId,
+    sourceNodeId: fixedCredenceSourceNodeId,
     support: 0.5,
   });
   const { recomputeNodeBelief } = await tempBeliefDb.importBeliefService();

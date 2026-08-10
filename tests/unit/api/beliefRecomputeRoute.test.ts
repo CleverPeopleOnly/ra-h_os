@@ -63,8 +63,9 @@ async function postBeliefRecompute(body: Record<string, unknown>): Promise<Respo
   return POST(recomputeRequest);
 }
 
-// Seed the smallest gradeable graph — a fixed-credence source node talking
-// about a target through one evidence edge — and return the target's id.
+// Seed the smallest gradeable graph — a derived node deriving from a
+// fixed-credence source over one canon evidence edge (derived→source) — and
+// return the derived node's id.
 function seedGradeableTargetNode(): number {
   // The bootstrap source: its human-asserted credence is the credence its
   // evidence carries.
@@ -74,11 +75,11 @@ function seedGradeableTargetNode(): number {
   });
   // The node the recompute will grade.
   const gradeableTargetNodeId = tempBeliefDb.insertNodeFixture({
-    title: 'Target node awaiting a grade',
+    title: 'Derived node awaiting a grade',
   });
   tempBeliefDb.insertEvidenceEdgeFixture({
-    fromNodeId: fixedCredenceSourceNodeId,
-    toNodeId: gradeableTargetNodeId,
+    derivedNodeId: gradeableTargetNodeId,
+    sourceNodeId: fixedCredenceSourceNodeId,
     support: 0.5,
   });
   return gradeableTargetNodeId;

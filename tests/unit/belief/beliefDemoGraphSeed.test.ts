@@ -192,16 +192,18 @@ function readRawRowsFromSeededBeliefDemoDatabase<RawRow>(
   }
 }
 
-// Count a node's incoming evidence edges (support NOT NULL is the one thing
-// that makes an edge evidence) in the seeded file.
-function countIncomingEvidenceEdgesInSeededDatabase(
+// Count the evidence edges GRADING a node in the seeded file: under the
+// canon direction (spec §8, Derivative→Source) a node's evidence basis is
+// its OUTGOING support-bearing edges (support NOT NULL is the one thing that
+// makes an edge evidence), with the sources at those edges' to-ends.
+function countEvidenceEdgesGradingNodeInSeededDatabase(
   databasePath: string,
-  toNodeId: number
+  derivedNodeId: number
 ): number {
   const countRows = readRawRowsFromSeededBeliefDemoDatabase<{ evidence_edge_count: number }>(
     databasePath,
-    'SELECT COUNT(*) AS evidence_edge_count FROM edges WHERE to_node_id = ? AND belief_evidence_support IS NOT NULL',
-    [toNodeId]
+    'SELECT COUNT(*) AS evidence_edge_count FROM edges WHERE from_node_id = ? AND belief_evidence_support IS NOT NULL',
+    [derivedNodeId]
   );
   return countRows[0].evidence_edge_count;
 }
@@ -316,9 +318,10 @@ describe('seedBeliefDemoGraph (scripts/seed-belief-demo-graph.ts)', () => {
     // Engine-graded, never asserted: no badge.
     expect(believedPresentation.beliefFixedBadgeShown).toBe(false);
 
-    // "Multiple" is structural: at least two incoming evidence edges.
+    // "Multiple" is structural: at least two outgoing evidence edges — the
+    // believed node's own basis under canon.
     expect(
-      countIncomingEvidenceEdgesInSeededDatabase(databasePath, seedResult.believedNodeId)
+      countEvidenceEdgesGradingNodeInSeededDatabase(databasePath, seedResult.believedNodeId)
     ).toBeGreaterThanOrEqual(2);
   });
 
@@ -383,9 +386,9 @@ describe('seedBeliefDemoGraph (scripts/seed-belief-demo-graph.ts)', () => {
     expect(barelyAssessedPresentation.beliefUncertainty).not.toBeNull();
     expect(barelyAssessedPresentation.beliefUncertainty!).toBeGreaterThanOrEqual(0.5);
 
-    // "One weak edge" is structural: exactly one incoming evidence edge.
+    // "One weak edge" is structural: exactly one outgoing evidence edge.
     expect(
-      countIncomingEvidenceEdgesInSeededDatabase(databasePath, seedResult.barelyAssessedNodeId)
+      countEvidenceEdgesGradingNodeInSeededDatabase(databasePath, seedResult.barelyAssessedNodeId)
     ).toBe(1);
   });
 
@@ -406,10 +409,11 @@ describe('seedBeliefDemoGraph (scripts/seed-belief-demo-graph.ts)', () => {
     expect(ungradedPresentation.beliefUncertainty).toBeNull();
     expect(ungradedPresentation.beliefAccessibleText).toBe('belief not assessed');
 
-    // Truly ungraded in storage too: no incoming evidence, and credence and
-    // both masses NULL — the never-assessed state, not a zero.
+    // Truly ungraded in storage too: no outgoing evidence to derive from,
+    // and credence and both masses NULL — the never-assessed state, not a
+    // zero.
     expect(
-      countIncomingEvidenceEdgesInSeededDatabase(databasePath, seedResult.ungradedNodeId)
+      countEvidenceEdgesGradingNodeInSeededDatabase(databasePath, seedResult.ungradedNodeId)
     ).toBe(0);
     const ungradedRows = readRawRowsFromSeededBeliefDemoDatabase<{
       belief_credence: number | null;
@@ -426,23 +430,25 @@ describe('seedBeliefDemoGraph (scripts/seed-belief-demo-graph.ts)', () => {
   });
 
   // Engine-provenance spot-pin: the believed node's persisted masses must
-  // reproduce its OWN evidence ledger (each counted contribution = from-node
-  // credence x support, split by sign), and its cached credence must be the
+  // reproduce its OWN evidence ledger (each counted contribution = source
+  // credence x support, the source being each outgoing edge's TO-end under
+  // the canon direction, split by sign), and its cached credence must be the
   // v2 projection of those masses — proof the numbers came from the real
   // engine, not from any hand-written credence.
   it('grades the believed node from its own evidence ledger through the real engine', async () => {
     const { databasePath, seedResult } = await seedFreshBeliefDemoGraph();
 
-    // The believed node's incoming evidence ledger, joined with each source
-    // node's own credence — the same join the engine grades from.
+    // The believed node's OUTGOING evidence ledger, joined with each source
+    // node's own credence read from the edge's to-end — the same join the
+    // canon engine grades from.
     const evidenceLedgerRows = readRawRowsFromSeededBeliefDemoDatabase<{
       belief_evidence_support: number;
-      from_node_belief_credence: number | null;
+      source_node_belief_credence: number | null;
     }>(
       databasePath,
-      `SELECT e.belief_evidence_support, n.belief_credence AS from_node_belief_credence
-       FROM edges e JOIN nodes n ON n.id = e.from_node_id
-       WHERE e.to_node_id = ? AND e.belief_evidence_support IS NOT NULL`,
+      `SELECT e.belief_evidence_support, n.belief_credence AS source_node_belief_credence
+       FROM edges e JOIN nodes n ON n.id = e.to_node_id
+       WHERE e.from_node_id = ? AND e.belief_evidence_support IS NOT NULL`,
       [seedResult.believedNodeId]
     );
 
@@ -452,10 +458,10 @@ describe('seedBeliefDemoGraph (scripts/seed-belief-demo-graph.ts)', () => {
     let handAccumulatedForMass = 0;
     let handAccumulatedAgainstMass = 0;
     for (const evidenceLedgerRow of evidenceLedgerRows) {
-      if (evidenceLedgerRow.from_node_belief_credence === null) continue;
+      if (evidenceLedgerRow.source_node_belief_credence === null) continue;
       // This edge's signed contribution: source credence x unsigned support.
       const signedContribution =
-        evidenceLedgerRow.from_node_belief_credence * evidenceLedgerRow.belief_evidence_support;
+        evidenceLedgerRow.source_node_belief_credence * evidenceLedgerRow.belief_evidence_support;
       if (signedContribution >= 0) {
         handAccumulatedForMass += signedContribution;
       } else {

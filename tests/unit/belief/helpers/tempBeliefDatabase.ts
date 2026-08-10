@@ -105,12 +105,15 @@ export interface TempBeliefDatabase {
   readNodeBeliefCredenceIsFixed(nodeId: number): number | null;
   // Insert an evidence edge fixture directly (bypasses EdgeService and its
   // LLM inference paths — and therefore bypasses every write-door range
-  // check, which have their own tests). Support is UNSIGNED, 0..1: it says
-  // how strongly the source node talks about the to-node. The sign of a
-  // contribution comes from the SOURCE NODE's credence, never from support.
+  // check, which have their own tests). The edge is stored in RA-H's canon
+  // direction, Derivative→Source: the derived node's credence derives from
+  // the source, so derivedNodeId lands in the row's from_node_id and
+  // sourceNodeId in its to_node_id. Support says how loudly the source
+  // speaks about the derived node — UNSIGNED, 0..1; the sign of a
+  // contribution comes from the SOURCE node's credence, never from support.
   insertEvidenceEdgeFixture(options: {
-    fromNodeId: number;
-    toNodeId: number;
+    derivedNodeId: number;
+    sourceNodeId: number;
     support: number;
   }): number;
   // Insert a plain, NON-evidence edge fixture: belief_evidence_support is
@@ -247,7 +250,9 @@ export async function openTempBeliefDatabase(
       return row?.belief_credence_is_fixed ?? null;
     },
 
-    insertEvidenceEdgeFixture({ fromNodeId, toNodeId, support }) {
+    insertEvidenceEdgeFixture({ derivedNodeId, sourceNodeId, support }) {
+      // Canon storage: the derived node is the row's from-end ("my credence
+      // derives from you"), the source is the row's to-end.
       const result = activeSqliteClient
         .prepare(
           `INSERT INTO edges
@@ -255,7 +260,7 @@ export async function openTempBeliefDatabase(
               belief_evidence_support)
            VALUES (?, ?, 'user', 'evidence edge fixture', ?)`
         )
-        .run(fromNodeId, toNodeId, support);
+        .run(derivedNodeId, sourceNodeId, support);
       return Number(result.lastInsertRowid);
     },
 

@@ -34,7 +34,8 @@
  * database).
  *
  * NOT DUPLICATED HERE: that an un-assessment clears the edge's
- * belief_evidence_contribution and regrades the target node is service-layer
+ * belief_evidence_contribution and regrades the derived node (the edge's
+ * from-end, canon direction) is service-layer
  * behaviour and is already covered against a real database in
  * tests/unit/belief/edgeServiceUpdateEdgeEvidenceHook.test.ts. This file's job
  * is only to prove the un-assessment now REACHES that service through the

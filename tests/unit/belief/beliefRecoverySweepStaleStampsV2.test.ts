@@ -8,7 +8,8 @@
  * written when the source held a different credence — is invisible to it
  * forever (audit finding 3's recovery-side half). The v2 sweep additionally
  * flags an edge whose stamp differs from (source credence × support) by more
- * than epsilon and regrades its target.
+ * than epsilon and regrades its FROM-end — the derived node, under the canon
+ * direction (spec §8: an evidence edge runs Derivative→Source).
  *
  * Because the sweep now recovers BOTH stale-stamped and never-stamped
  * evidence, the v1 name no longer says what the function does; the v2 export
@@ -60,8 +61,9 @@ describe('belief recovery sweep detects stale stamps (v2)', () => {
   // the source's stored credence moves to 0.9 OUTSIDE the engine (the raw
   // UPDATE below stands in for any write path that bypassed the sweep, e.g. a
   // pre-propagation database). The sweep must notice |0.4 − 0.72| > epsilon,
-  // regrade the target from the live credence, and refresh the stamp.
-  it('flags an edge whose stamp differs from source credence × support and regrades its target', async () => {
+  // regrade the derived node (the edge's from-end) from the live credence,
+  // and refresh the stamp.
+  it('flags an edge whose stamp differs from source credence × support and regrades its derived end', async () => {
     db = await openTempBeliefDatabase();
     const expertNodeId = db.insertFixedBeliefCredenceNodeFixture({
       title: 'expert whose credence moves behind the stamp',
@@ -69,8 +71,8 @@ describe('belief recovery sweep detects stale stamps (v2)', () => {
     });
     const claimNodeId = db.insertNodeFixture({ title: 'claim with a soon-stale stamp' });
     const evidenceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: expertNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: expertNodeId,
       support: 0.8,
     });
     const { recomputeNodeBelief } = await db.importBeliefService();
@@ -106,8 +108,8 @@ describe('belief recovery sweep detects stale stamps (v2)', () => {
     });
     const claimNodeId = db.insertNodeFixture({ title: 'claim with unstamped evidence' });
     const offlineEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      fromNodeId: expertNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: expertNodeId,
       support: 0.5,
     });
     const runBeliefRecoverySweep = await importBeliefRecoverySweep();
@@ -132,8 +134,8 @@ describe('belief recovery sweep detects stale stamps (v2)', () => {
     });
     const claimNodeId = db.insertNodeFixture({ title: 'claim recovered once' });
     db.insertEvidenceEdgeFixture({
-      fromNodeId: expertNodeId,
-      toNodeId: claimNodeId,
+      derivedNodeId: claimNodeId,
+      sourceNodeId: expertNodeId,
       support: 0.6,
     });
     const runBeliefRecoverySweep = await importBeliefRecoverySweep();
@@ -153,16 +155,18 @@ describe('belief recovery sweep detects stale stamps (v2)', () => {
       title: 'graded neighbour on a plain edge',
       beliefCredence: 0.9,
     });
-    const plainTargetNodeId = db.insertNodeFixture({ title: 'target of a plain edge' });
+    const plainFromEndNodeId = db.insertNodeFixture({ title: 'from-end of a plain edge' });
+    // Canon arrangement: the ungraded node sits at the from-end (where a
+    // derived node would), so only the NULL support keeps it out of the sweep.
     db.insertNonEvidenceEdgeFixture({
-      fromNodeId: gradedNeighbourNodeId,
-      toNodeId: plainTargetNodeId,
+      fromNodeId: plainFromEndNodeId,
+      toNodeId: gradedNeighbourNodeId,
     });
     const runBeliefRecoverySweep = await importBeliefRecoverySweep();
 
     const sweepResult = await runBeliefRecoverySweep();
 
-    expect(sweepResult.regradedNodeIds).not.toContain(plainTargetNodeId);
-    expect(db.readNodeBelief(plainTargetNodeId).belief_credence).toBeNull();
+    expect(sweepResult.regradedNodeIds).not.toContain(plainFromEndNodeId);
+    expect(db.readNodeBelief(plainFromEndNodeId).belief_credence).toBeNull();
   });
 });
