@@ -216,10 +216,43 @@ const createEdgeInputSchema = {
   belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeCreate
 };
 
+// The stored-row object both edge-write tools declare under `edge` on their
+// output schemas: the four minimum fields every consumer can rely on. Fields
+// beyond the id are optional because some forwarded REST replies (a
+// support-only correction, for one) answer a row carrying only the id.
+const edgeWriteStoredRowOutputSchema = z
+  .object({
+    id: z.number(),
+    from_node_id: z.number().optional(),
+    to_node_id: z.number().optional(),
+    explanation: z.string().nullable().optional()
+  })
+  .optional();
+
+// The stored-row fields an edge-write answer relays under `edge`, taken from
+// the row the app's REST layer returned — the FINAL stored orientation (the
+// classifier may have swapped the caller's ends), never an echo of the
+// request. A missing explanation normalises to null, the same rule
+// rah_query_edges applies to a missing key.
+function edgeWriteStoredRowAnswerFields(storedEdgeRow) {
+  return {
+    id: storedEdgeRow.id,
+    from_node_id: storedEdgeRow.from_node_id,
+    to_node_id: storedEdgeRow.to_node_id,
+    explanation: storedEdgeRow.explanation ?? null
+  };
+}
+
 const createEdgeOutputSchema = {
   success: z.boolean(),
   edgeId: z.number(),
-  message: z.string()
+  message: z.string(),
+  // Whether the answer describes an edge that was ALREADY there: the REST
+  // duplicate short-circuit's indication relayed structurally, so a caller
+  // never has to parse the message to learn nothing new was written.
+  already_existed: z.boolean().optional(),
+  // The stored row as the app's REST layer returned it.
+  edge: edgeWriteStoredRowOutputSchema
 };
 
 // rah_query_edges schemas
@@ -293,7 +326,12 @@ const updateEdgeInputSchema = {
 
 const updateEdgeOutputSchema = {
   success: z.boolean(),
-  message: z.string()
+  // The corrected edge's id, answered in the same shape as rah_create_edge so
+  // a caller reads one answer contract for both edge writes.
+  edgeId: z.number(),
+  message: z.string(),
+  // The UPDATED stored row as the app's REST layer returned it.
+  edge: edgeWriteStoredRowOutputSchema
 };
 
 // rah_search_embeddings schemas
@@ -666,13 +704,21 @@ server.registerTool(
       body: JSON.stringify(payload)
     });
 
-    const edge = result.edge || result.data;
+    // The stored row the REST layer answered: on a create it is the row that
+    // was written (in its FINAL stored orientation), on the duplicate path it
+    // is the EXISTING edge's row. The real id and the row itself both come
+    // from here, never from the caller's input.
+    const storedEdgeRow = result.edge || result.data;
     return {
       content: [{ type: 'text', text: `Created edge from #${sourceId} to #${targetId}` }],
       structuredContent: {
         success: true,
-        edgeId: edge?.id || 0,
-        message: result.message || `Created edge from #${sourceId} to #${targetId}`
+        edgeId: storedEdgeRow?.id,
+        message: result.message || `Created edge from #${sourceId} to #${targetId}`,
+        // The already-existed indication rides only when REST answered it, so
+        // a fresh create never carries a false flag it must explain.
+        ...(result.already_existed === true ? { already_existed: true } : {}),
+        ...(storedEdgeRow ? { edge: edgeWriteStoredRowAnswerFields(storedEdgeRow) } : {})
       }
     };
   }
@@ -777,11 +823,17 @@ server.registerTool(
       body: JSON.stringify(payload)
     });
 
+    // The UPDATED stored row the REST PUT answered. The corrected edge's id
+    // comes from the row when it carries one, otherwise from the request that
+    // named it — the same edge either way.
+    const updatedEdgeRow = result.edge || result.data;
     return {
       content: [{ type: 'text', text: `Updated edge #${id}` }],
       structuredContent: {
         success: true,
-        message: result.message || `Updated edge #${id}`
+        edgeId: updatedEdgeRow?.id ?? id,
+        message: result.message || `Updated edge #${id}`,
+        ...(updatedEdgeRow ? { edge: edgeWriteStoredRowAnswerFields(updatedEdgeRow) } : {})
       }
     };
   }

@@ -574,7 +574,16 @@ async function main() {
         structuredContent: {
           success: true,
           edgeId: edge.id,
-          message: `Created edge from #${sourceId} to #${targetId}`
+          message: `Created edge from #${sourceId} to #${targetId}`,
+          // The stored row, read back after the write (createEdge answers
+          // getEdgeById): the row that actually landed, not an echo of the
+          // request.
+          edge: {
+            id: edge.id,
+            from_node_id: edge.from_node_id,
+            to_node_id: edge.to_node_id,
+            explanation: edge.explanation ?? null
+          }
         }
       };
     }
@@ -599,7 +608,16 @@ async function main() {
         structuredContent: {
           success: true,
           edgeId: edge.id,
-          message: `Updated edge #${id}`
+          message: `Updated edge #${id}`,
+          // The UPDATED stored row, read back after the correction
+          // (updateEdge answers getEdgeById): corrected explanation over the
+          // unchanged stored ends.
+          edge: {
+            id: edge.id,
+            from_node_id: edge.from_node_id,
+            to_node_id: edge.to_node_id,
+            explanation: edge.explanation ?? null
+          }
         }
       };
     }
