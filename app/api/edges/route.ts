@@ -168,13 +168,26 @@ export async function POST(request: NextRequest) {
     }
     const skipInference = Boolean(body.skip_inference);
 
-    // Idempotency: prevent duplicate edges between same pair
+    // Idempotency: prevent duplicate edges between same pair. The
+    // short-circuit keeps its semantics (200, success, the already-exists
+    // message, no row written) but answers honestly: an explicit
+    // already_existed indication plus the EXISTING edge's full stored row —
+    // real id, stored orientation, stored explanation — so a caller (and the
+    // MCP doors built on this reply) can follow up on the edge that actually
+    // exists instead of receiving an id-less echo of the refused request.
     try {
       const exists = await edgeService.edgeExists(fromId, toId);
       if (exists) {
+        // The row already occupying this exact direction slot: the edges out
+        // of the from-end, narrowed to the requested to-end.
+        const edgesOutOfFromNode = await edgeService.getEdges({ nodeId: fromId, direction: 'out_of' });
+        const existingEdgeInSlot = edgesOutOfFromNode.find(
+          (storedEdge) => storedEdge.to_node_id === toId
+        );
         return NextResponse.json({
           success: true,
-          data: { from_node_id: fromId, to_node_id: toId },
+          already_existed: true,
+          data: existingEdgeInSlot ?? { from_node_id: fromId, to_node_id: toId },
           message: `Edge already exists between nodes ${fromId} and ${toId}`
         }, { status: 200 });
       }

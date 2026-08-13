@@ -7,7 +7,8 @@
  * consumer needs to know what the store answers when a write collides with an
  * edge that already occupies a direction slot — and, crucially, what happens
  * when the prose classifier SWAPS a write into an occupied slot. The recorded
- * answer, pinned here against current code (no change is planned):
+ * answer, pinned here (one deliberate exception aside — see case 3 — no
+ * change is planned):
  *
  *  - the edges table has NO uniqueness constraint on (from_node_id,
  *    to_node_id), and edgeService.createEdge has no duplicate guard of its
@@ -24,16 +25,22 @@
  *    repetition-reinforces decision (§2), but a consumer deduplicating
  *    evidence must do it before writing,
  *  - the same-direction guard short-circuit answers success:true with an
- *    "Edge already exists" message, NO id of the existing edge, writes no
- *    row — and a support carried on the refused write is silently dropped:
- *    no column write, no regrade, no movement.
+ *    "Edge already exists" message and writes no row — and a support carried
+ *    on the refused write is silently dropped: no column write, no regrade,
+ *    no movement. The ANSWER SHAPE of this branch is the one planned change
+ *    (the door-answers-carry-stored-row slice): case 3 now pins the HONEST
+ *    duplicate answer — an explicit already_existed indication and the
+ *    EXISTING edge's full stored row, real id included — and is RED until
+ *    that slice lands. Its belief half (the dropped support) is unchanged
+ *    and stays pinned.
  *
  * The tool-side guard (src/tools/database/createEdge.ts answers
  * success:false) is already pinned in tests/unit/tools/createEdge.test.ts and
  * is not repeated here; the route is the door the samai adapter meets.
  *
- * These tests are GREEN by design: they record what the store actually does
- * today. Runs against a fresh temp-file database per test (see
+ * These tests are GREEN by design — they record what the store actually does
+ * today — except case 3's answer-shape half, red on purpose as part of the
+ * door-answers-carry-stored-row slice's failing set. Runs against a fresh temp-file database per test (see
  * tempBeliefDatabase.ts for the safety seam); the route module is imported
  * dynamically AFTER the temp database opens so it binds to the same client
  * generation. The swap is induced deterministically with a "Contains…"
@@ -62,10 +69,17 @@ afterEach(() => {
 });
 
 // The reply shape POST /api/edges answers with; data carries a full edge row
-// on a create and only the two node ids on a guard short-circuit.
+// on a create AND (once the door-answers-carry-stored-row slice lands) on a
+// guard short-circuit, where already_existed marks that nothing was written.
 interface EdgesRouteReply {
   success: boolean;
-  data?: { id?: number; from_node_id: number; to_node_id: number };
+  already_existed?: boolean;
+  data?: {
+    id?: number;
+    from_node_id: number;
+    to_node_id: number;
+    explanation?: string | null;
+  };
   message?: string;
   error?: string;
 }
@@ -237,14 +251,18 @@ describe('duplicate-guard / inference-swap collision (characterization pin)', ()
     expect(claimCredence).toBeGreaterThan(expectedBeliefCredenceProjection(0.8 * 0.7, 0));
   });
 
-  // Case 3 — the same-direction guard short-circuit, and what it silently
-  // drops. A second A→B write answers 200 success:true with an "already
-  // exists" message, returns NO id of the existing edge (only the two node
-  // ids), writes no row — and the support riding on the refused write goes
-  // nowhere: the stored support keeps its old value, no regrade runs, no
-  // movement is appended. A caller "correcting" a support through a repeated
-  // create is silently ignored.
-  it('a same-direction duplicate is answered success-with-message, no id, and its support is silently dropped', async () => {
+  // Case 3 — the same-direction guard short-circuit: its honest answer, and
+  // what it silently drops. The ANSWER half pins the shape the
+  // door-answers-carry-stored-row slice introduces (RED until it lands): a
+  // second A→B write still answers 200 success:true with an "already exists"
+  // message and writes no row, but now says already_existed explicitly and
+  // carries the EXISTING edge's full stored row — real id included — instead
+  // of just the two node ids. The BELIEF half is unchanged, recorded
+  // behaviour: the support riding on the refused write goes nowhere — the
+  // stored support keeps its old value, no regrade runs, no movement is
+  // appended. A caller "correcting" a support through a repeated create is
+  // silently ignored (true until a later slice removes that parameter).
+  it('a same-direction duplicate answers the existing edge row with already_existed, and its support is silently dropped', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeAId = db.insertNodeFixture({ title: 'claim node A, the derived end' });
     const sourceNodeBId = db.insertFixedBeliefCredenceNodeFixture({
@@ -272,20 +290,15 @@ describe('duplicate-guard / inference-swap collision (characterization pin)', ()
       })
     );
 
-    // The guard's answer shape: 200 success:true with the message, and data
-    // carrying ONLY the two node ids — no id of the existing edge for the
-    // caller to follow up on.
+    // The unchanged half of the answer: 200 success:true with the message.
     expect(duplicateWriteResponse.status).toBe(200);
     const duplicateWriteReply = (await duplicateWriteResponse.json()) as EdgesRouteReply;
     expect(duplicateWriteReply.success).toBe(true);
     expect(duplicateWriteReply.message).toMatch(/already exists/i);
-    expect(duplicateWriteReply.data).toEqual({
-      from_node_id: claimNodeAId,
-      to_node_id: sourceNodeBId,
-    });
-    expect(Object.keys(duplicateWriteReply.data ?? {})).not.toContain('id');
 
-    // Nothing was written and nothing regraded: one row, old support, same
+    // The BELIEF half — recorded behaviour, asserted BEFORE the red block
+    // below so it stays verified while the answer-shape half is failing:
+    // nothing was written and nothing regraded — one row, old support, same
     // credence, same movement log.
     expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
     const storedSupportRow = db.sqlite
@@ -297,6 +310,24 @@ describe('duplicate-guard / inference-swap collision (characterization pin)', ()
       10
     );
     expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(claimMovementCountBeforeDuplicate);
+
+    // The guard's HONEST answer shape (RED until the
+    // door-answers-carry-stored-row slice lands): the explicit already_existed
+    // indication and the EXISTING edge's stored row, so the caller (and the
+    // MCP doors built on this reply) can follow up on the edge that actually
+    // exists.
+    expect(
+      duplicateWriteReply.already_existed,
+      'the duplicate answer must say already_existed: true'
+    ).toBe(true);
+    // The existing edge's row: real id, stored orientation, stored prose (the
+    // evidence-edge fixture's explanation — not the refused write's).
+    expect(duplicateWriteReply.data).toMatchObject({
+      id: existingEvidenceEdgeId,
+      from_node_id: claimNodeAId,
+      to_node_id: sourceNodeBId,
+      explanation: 'evidence edge fixture',
+    });
   });
 
   // Case 4 — the service layer has no guard of its own: edgeService.createEdge
