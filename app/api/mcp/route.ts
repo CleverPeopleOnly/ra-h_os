@@ -833,6 +833,107 @@ function createServer(request: NextRequest): McpServer {
     }
   );
 
+  // ========== GRAPH-EVENT JOURNAL TOOLS (fork addition) ==========
+  // The database journals graph deaths and re-orientations into graph_events
+  // (trigger-written, with a single-row ack cursor in graph_events_ack).
+  // These two tools are the one door a remote consumer reads that journal
+  // through — validate-and-forward proxies onto the app's /api/graph-events
+  // endpoints, like every other tool on this route.
+
+  server.registerTool(
+    'rah_read_graph_events',
+    {
+      title: 'Read RA-H graph events',
+      description: 'Read the unacknowledged graph-event journal: every edge deletion, node deletion, and edge re-orientation with an id greater than the ack cursor, oldest first. Each event carries its full column payload — which edge or node died, or which ends a re-pointed edge had and has now — so a consumer mirroring the graph never needs a second call. Acknowledge handled events with rah_acknowledge_graph_events.',
+      inputSchema: {
+        // The page size, forwarded so the APP caps the read — the door must
+        // not page a journal it never loaded.
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      outputSchema: {
+        count: z.number(),
+        events: z.array(
+          z.object({
+            id: z.number(),
+            // Which kind of graph event the row journals.
+            event_type: z.enum(['edge_deleted', 'node_deleted', 'edge_reoriented']),
+            // The dead or re-pointed edge's id; null on a node_deleted row.
+            edge_id: z.number().nullable(),
+            // The dead node's id; null on the edge event types.
+            node_id: z.number().nullable(),
+            // A dead edge's ends, or a re-pointed edge's ends NOW; null on a
+            // node_deleted row.
+            from_node_id: z.number().nullable(),
+            to_node_id: z.number().nullable(),
+            // The ends a re-pointed edge HAD; null on the other event types.
+            old_from_node_id: z.number().nullable(),
+            old_to_node_id: z.number().nullable(),
+            // When the event happened.
+            occurred_at: z.string(),
+          })
+        ),
+      },
+    },
+    async ({ limit }) => {
+      // The limit rides the query string only when the caller named one, so
+      // the app's own default governs an unbounded read.
+      const params = new URLSearchParams();
+      if (limit !== undefined) params.set('limit', String(limit));
+      const graphEventsQueryString = params.toString();
+
+      const payload = await callRaHApi(
+        request,
+        `/api/graph-events${graphEventsQueryString ? `?${graphEventsQueryString}` : ''}`
+      );
+
+      // The app's id-ascending order and exact column names pass through
+      // untouched.
+      const graphEvents = Array.isArray(payload.data) ? payload.data : [];
+      return {
+        content: [{ type: 'text', text: `Found ${graphEvents.length} unacknowledged graph event(s).` }],
+        structuredContent: {
+          count: graphEvents.length,
+          events: graphEvents,
+        },
+      };
+    }
+  );
+
+  server.registerTool(
+    'rah_acknowledge_graph_events',
+    {
+      title: 'Acknowledge RA-H graph events',
+      description: 'Move the graph-event ack cursor forward: every journal event with an id at or below upToEventId stops being answered by rah_read_graph_events. FORWARD ONLY — the app refuses to move the cursor backward, so an upToEventId at or below the cursor leaves it unchanged. The answered acked_event_id is the cursor AFTER the call.',
+      inputSchema: {
+        // The highest event id the consumer has handled, forwarded untouched
+        // — the forward-only rule is the app's decision, never the door's
+        // silent edit.
+        upToEventId: z.number().int().min(0),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        // The cursor AFTER the call, as the app answered it — which the
+        // forward-only rule may have left unchanged.
+        acked_event_id: z.number(),
+      },
+    },
+    async ({ upToEventId }) => {
+      const payload = await callRaHApi(request, '/api/graph-events/acknowledge', {
+        method: 'POST',
+        body: JSON.stringify({ upToEventId }),
+      });
+
+      return {
+        content: [{ type: 'text', text: `Graph-event ack cursor now stands at ${payload.acked_event_id}.` }],
+        // The app's cursor relayed honestly — no client-side clamping.
+        structuredContent: {
+          success: true,
+          acked_event_id: payload.acked_event_id,
+        },
+      };
+    }
+  );
+
   server.registerTool(
     'rah_list_skills',
     {

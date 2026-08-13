@@ -124,6 +124,11 @@ class SQLiteClient {
 
         // Ensure logging schema (rename memory->logs if needed, create triggers/views)
         this.ensureLoggingAndMemorySchemaLocked();
+
+        // Ensure the graph-event journal LAST: its triggers must land on the
+        // FINAL nodes/edges tables, after every rename/copy rebuild and
+        // in-place ALTER the migrations above may have performed.
+        this.ensureGraphEventJournalSchemaLocked();
       });
       this.integrityReport = this.inspectIntegrity();
 
@@ -1327,6 +1332,79 @@ class SQLiteClient {
       console.log('Logging + memory schema ensured');
     } catch (error) {
       console.error('Failed to ensure logging/memory schema:', error);
+    }
+  }
+
+  // Graph-event journal: deletes and re-orientations of graph rows would
+  // otherwise vanish without trace, so the DATABASE FILE journals them for
+  // itself into graph_events, with a single-row ack cursor in
+  // graph_events_ack. Triggers (not app code) do the writing, so a write from
+  // ANY connection journals — including the standalone stdio server, which
+  // opens the file directly and never runs app code. Must run inside the
+  // startup write lock, and must run AFTER every migration that could rebuild
+  // nodes or edges (rename/copy destroys triggers), so the triggers always
+  // sit on the final tables.
+  private ensureGraphEventJournalSchemaLocked(): void {
+    try {
+      // The journal itself and its ack cursor. Nothing prunes graph_events —
+      // acknowledged rows stay (accepted for this slice).
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS graph_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_type TEXT NOT NULL,
+          edge_id INTEGER,
+          node_id INTEGER,
+          from_node_id INTEGER,
+          to_node_id INTEGER,
+          old_from_node_id INTEGER,
+          old_to_node_id INTEGER,
+          occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS graph_events_ack (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          acked_event_id INTEGER NOT NULL DEFAULT 0
+        );
+      `);
+
+      // Seed the one cursor row idempotently: INSERT OR IGNORE, never OR
+      // REPLACE — a re-ensure over an existing database must not reset a
+      // cursor a consumer has already moved, or everything it acknowledged
+      // would be re-delivered.
+      this.db.exec(
+        'INSERT OR IGNORE INTO graph_events_ack (id, acked_event_id) VALUES (1, 0);'
+      );
+
+      // The three journal triggers, drop-and-recreate like the logs triggers
+      // above so a shipped fix to a trigger body actually lands. The
+      // re-orient trigger needs its WHEN clause because SQLite fires
+      // AFTER UPDATE OF whenever the column is merely MENTIONED in SET,
+      // changed or not — IS NOT compares NULL-safely.
+      this.db.exec(`
+        DROP TRIGGER IF EXISTS trg_graph_events_edge_delete;
+        CREATE TRIGGER trg_graph_events_edge_delete AFTER DELETE ON edges BEGIN
+          INSERT INTO graph_events(event_type, edge_id, from_node_id, to_node_id)
+          VALUES('edge_deleted', OLD.id, OLD.from_node_id, OLD.to_node_id);
+        END;
+
+        DROP TRIGGER IF EXISTS trg_graph_events_node_delete;
+        CREATE TRIGGER trg_graph_events_node_delete AFTER DELETE ON nodes BEGIN
+          INSERT INTO graph_events(event_type, node_id)
+          VALUES('node_deleted', OLD.id);
+        END;
+
+        DROP TRIGGER IF EXISTS trg_graph_events_edge_reorient;
+        CREATE TRIGGER trg_graph_events_edge_reorient
+        AFTER UPDATE OF from_node_id, to_node_id ON edges
+        WHEN OLD.from_node_id IS NOT NEW.from_node_id
+          OR OLD.to_node_id IS NOT NEW.to_node_id
+        BEGIN
+          INSERT INTO graph_events(event_type, edge_id, old_from_node_id, old_to_node_id, from_node_id, to_node_id)
+          VALUES('edge_reoriented', OLD.id, OLD.from_node_id, OLD.to_node_id, NEW.from_node_id, NEW.to_node_id);
+        END;
+      `);
+    } catch (graphEventJournalErr) {
+      console.warn('Failed to ensure the graph-event journal schema:', graphEventJournalErr);
     }
   }
 
