@@ -1,46 +1,47 @@
 /**
- * CHARACTERIZATION PIN — the duplicate-guard / inference-swap collision
- * (docs/belief-model-subjective-logic.md §8, "the duplicate-guard collision").
+ * The duplicate-guard / inference-swap collision
+ * (docs/belief-model-subjective-logic.md §8, "the duplicate-guard collision")
+ * — part characterization pin, part FAILING-FIRST set for the
+ * no-same-direction-parallel-edges slice.
  *
- * WHY THIS PIN EXISTS. The samai-diagnostic adapter writes evidence edges
+ * WHY THIS FILE EXISTS. The samai-diagnostic adapter writes evidence edges
  * through the remote MCP door, which forwards to POST /api/edges. That
  * consumer needs to know what the store answers when a write collides with an
  * edge that already occupies a direction slot — and, crucially, what happens
- * when the prose classifier SWAPS a write into an occupied slot. The recorded
- * answer, pinned here (one deliberate exception aside — see case 3 — no
- * change is planned):
+ * when the prose classifier SWAPS a write into an occupied slot. This file
+ * began as a pure characterization pin of the old duplicate tolerance; the
+ * reckoning it deferred is now here, so its cases split two ways:
  *
- *  - the edges table has NO uniqueness constraint on (from_node_id,
- *    to_node_id), and edgeService.createEdge has no duplicate guard of its
- *    own — the only guards live in the callers,
- *  - the REST route's guard checks edgeExists on the AS-WRITTEN ends BEFORE
- *    inference runs, and it is per-direction: an occupied A→B slot does not
- *    block a B→A write,
- *  - therefore a B→A write whose explanation makes inference swap the stored
- *    ends lands a SECOND A→B row — a duplicate in the occupied slot, with no
- *    refusal and no merge,
- *  - and the belief consequence: both A→B rows sit in A's evidence basis (A's
- *    outgoing support-bearing edges, canon direction), so the duplicate
- *    DOUBLE-COUNTS in A's masses — consistent with the recorded
- *    repetition-reinforces decision (§2), but a consumer deduplicating
- *    evidence must do it before writing,
- *  - the same-direction guard short-circuit answers success:true with an
- *    "Edge already exists" message and writes no row — and a support carried
- *    on the refused write is silently dropped: no column write, no regrade,
- *    no movement. The ANSWER SHAPE of this branch is the one planned change
- *    (the door-answers-carry-stored-row slice): case 3 now pins the HONEST
- *    duplicate answer — an explicit already_existed indication and the
- *    EXISTING edge's full stored row, real id included — and is RED until
- *    that slice lands. Its belief half (the dropped support) is unchanged
- *    and stays pinned.
+ *  RED — the no-same-direction-parallel-edges slice (a UNIQUE index on
+ *  edges(from_node_id, to_node_id) in the database file; colliding creates
+ *  merge into the existing edge), failing until it lands:
+ *  - case 1: a B→A write whose explanation makes inference swap it into the
+ *    occupied A→B slot no longer lands a second row — it answers 200 with
+ *    already_existed: true and the EXISTING edge's full stored row, the same
+ *    answer shape the as-written duplicate branch already ships,
+ *  - case 2: the belief consequence of that merge — the colliding evidence
+ *    write's support goes nowhere: the stored edge keeps its support, the
+ *    derived node's masses and credence are unchanged, no movement is
+ *    appended. The old double-count is dead,
+ *  - case 4: edgeService.createEdge itself, handed an exact duplicate,
+ *    answers the EXISTING stored row (same id) and writes no second row — the
+ *    guard is no longer the callers' job alone.
+ *
+ *  GREEN — recorded behaviour that stands:
+ *  - case 1b: the guard is per-direction by design — an occupied A→B slot
+ *    does not block a genuine B→A write; bidirectional coexists, one row per
+ *    direction slot,
+ *  - case 3: the as-written duplicate short-circuit answers honestly (shipped
+ *    by the door-answers-carry-stored-row slice): 200 success:true with an
+ *    explicit already_existed indication and the EXISTING edge's full stored
+ *    row, real id included — and the support riding on the refused write is
+ *    silently dropped: no column write, no regrade, no movement.
  *
  * The tool-side guard (src/tools/database/createEdge.ts answers
  * success:false) is already pinned in tests/unit/tools/createEdge.test.ts and
  * is not repeated here; the route is the door the samai adapter meets.
  *
- * These tests are GREEN by design — they record what the store actually does
- * today — except case 3's answer-shape half, red on purpose as part of the
- * door-answers-carry-stored-row slice's failing set. Runs against a fresh temp-file database per test (see
+ * Runs against a fresh temp-file database per test (see
  * tempBeliefDatabase.ts for the safety seam); the route module is imported
  * dynamically AFTER the temp database opens so it binds to the same client
  * generation. The swap is induced deterministically with a "Contains…"
@@ -69,8 +70,9 @@ afterEach(() => {
 });
 
 // The reply shape POST /api/edges answers with; data carries a full edge row
-// on a create AND (once the door-answers-carry-stored-row slice lands) on a
-// guard short-circuit, where already_existed marks that nothing was written.
+// on a create AND on a duplicate short-circuit, where already_existed marks
+// that nothing was written — the shape the as-written branch already ships
+// and cases 1 and 2 extend to post-inference collisions.
 interface EdgesRouteReply {
   success: boolean;
   already_existed?: boolean;
@@ -135,38 +137,55 @@ const SWAP_INDUCING_EXPLANATION = 'Contains the finding the derived claim rests 
 // related_to with no swap) — for the writes that must NOT swap.
 const NON_SWAPPING_EXPLANATION = 'Related to the neighbouring claim by a measured result.';
 
-describe('duplicate-guard / inference-swap collision (characterization pin)', () => {
-  // Case 1 — the collision itself. An A→B row exists; a B→A write with
-  // swap-inducing prose passes the guard (it checks the EMPTY B→A slot,
-  // as-written, before inference), inference swaps the stored ends, and a
-  // SECOND A→B row lands in the occupied slot. No refusal, no merge.
-  it('a swapped write into an occupied slot stores a duplicate row: two A→B rows, no refusal', async () => {
+describe('duplicate-guard / inference-swap collision (pin + failing-first merge set)', () => {
+  // Case 1 — the collision, resolved by merge (RED until the
+  // no-same-direction-parallel-edges slice lands). An A→B row exists; a B→A
+  // write with swap-inducing prose is swapped by inference into the occupied
+  // A→B slot. The old pre-inference edgeExists guard could not see this
+  // coming (it checked the EMPTY B→A slot, as-written), which is why
+  // enforcement now sits AFTER inference: the colliding create merges into
+  // the existing edge — 200 with already_existed: true and the EXISTING
+  // edge's full stored row, no second row written.
+  it('a swapped write into an occupied slot merges: 200 already_existed with the existing stored row, one A→B row', async () => {
     db = await openTempBeliefDatabase();
     // A is the derived claim (from-end under canon), B the source it derives from.
     const claimNodeAId = db.insertNodeFixture({ title: 'claim node A, the derived end' });
     const sourceNodeBId = db.insertNodeFixture({ title: 'source node B the claim derives from' });
-    // The occupied slot: one stored A→B row (plain — the guard ignores
-    // evidence-ness; it matches any row on the exact ends).
-    db.insertNonEvidenceEdgeFixture({ fromNodeId: claimNodeAId, toNodeId: sourceNodeBId });
+    // The occupied slot: one stored A→B row (plain — occupancy is about the
+    // exact ends, not evidence-ness). Its id and fixture explanation are what
+    // the merge answer must carry back.
+    const occupyingEdgeId = db.insertNonEvidenceEdgeFixture({
+      fromNodeId: claimNodeAId,
+      toNodeId: sourceNodeBId,
+    });
 
     // The colliding write, phrased so the classifier re-orients it: written
-    // B→A, stored A→B.
+    // B→A, aimed by inference at the occupied A→B slot.
     const collidingWriteResponse = await postEdgeThroughRestRoute(
       buildConfirmedMcpEdgeBody(sourceNodeBId, claimNodeAId, {
         explanation: SWAP_INDUCING_EXPLANATION,
       })
     );
 
-    // Accepted as a fresh create, not short-circuited by the guard.
-    expect(collidingWriteResponse.status).toBe(201);
+    // Merged, not created: the same 200 answer shape the as-written duplicate
+    // branch ships, extended to the post-inference collision.
+    expect(collidingWriteResponse.status).toBe(200);
     const collidingWriteReply = (await collidingWriteResponse.json()) as EdgesRouteReply;
     expect(collidingWriteReply.success).toBe(true);
-    // PRECONDITION: inference really swapped — the stored row runs A→B,
-    // whatever the caller wrote. Without this the test says nothing.
-    expect(collidingWriteReply.data?.from_node_id).toBe(claimNodeAId);
-    expect(collidingWriteReply.data?.to_node_id).toBe(sourceNodeBId);
-    // The recorded outcome: TWO rows in the A→B slot, none in B→A.
-    expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(2);
+    expect(
+      collidingWriteReply.already_existed,
+      'the colliding write must say already_existed: true'
+    ).toBe(true);
+    // The EXISTING edge's stored row travels back: real id, stored A→B ends,
+    // the fixture's explanation — not an echo of the refused write's prose.
+    expect(collidingWriteReply.data).toMatchObject({
+      id: occupyingEdgeId,
+      from_node_id: claimNodeAId,
+      to_node_id: sourceNodeBId,
+      explanation: 'plain non-evidence edge fixture',
+    });
+    // Exactly ONE row in the A→B slot — no duplicate — and none in B→A.
+    expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
     expect(countStoredEdgeRowsInSlot(db, sourceNodeBId, claimNodeAId)).toBe(0);
   });
 
@@ -199,56 +218,81 @@ describe('duplicate-guard / inference-swap collision (characterization pin)', ()
     expect(countStoredEdgeRowsInSlot(db, sourceNodeBId, claimNodeAId)).toBe(1);
   });
 
-  // Case 2 — the belief consequence of the collision. Both A→B rows carry
-  // support, so BOTH sit in A's evidence basis (its outgoing support-bearing
-  // edges) and A's masses count the pair: contribution₁ + contribution₂,
-  // strictly more than either alone. Repetition-reinforces (§2) applied to a
-  // duplicate the caller never meant to write — the consumer's deduplication
-  // must happen before the write.
-  it('an occupied-slot duplicate double-counts: the derived node masses hold both contributions', async () => {
+  // Case 2 — the belief consequence of the merge (RED until the
+  // no-same-direction-parallel-edges slice lands). The old behaviour landed a
+  // second A→B evidence row and DOUBLE-COUNTED it in A's masses. Now the
+  // colliding evidence write merges into the existing edge and its riding
+  // support goes nowhere: the stored edge keeps support 0.5, A's masses and
+  // credence stay exactly the single-edge grade, and no belief movement is
+  // appended. The double-count is dead.
+  it('a colliding evidence write leaves belief untouched: stored support, masses, credence and movements unchanged', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeAId = db.insertNodeFixture({ title: 'claim node A, the derived end' });
-    // The source's fixed credence is the weight both edges' evidence carries.
+    // The source's fixed credence is the weight the stored edge's evidence carries.
     const sourceNodeBId = db.insertFixedBeliefCredenceNodeFixture({
       title: 'fixed source node B the claim derives from',
       beliefCredence: 0.8,
     });
-    // The occupied slot: one canon evidence edge A→B, support 0.5.
-    db.insertEvidenceEdgeFixture({
+    // The occupied slot: one canon evidence edge A→B, support 0.5, graded so
+    // there is a real baseline for "unchanged" to mean something.
+    const existingEvidenceEdgeId = db.insertEvidenceEdgeFixture({
       derivedNodeId: claimNodeAId,
       sourceNodeId: sourceNodeBId,
       support: 0.5,
     });
+    const { recomputeNodeBelief } = await db.importBeliefService();
+    await recomputeNodeBelief(claimNodeAId);
+    // The single-edge baseline: for-mass 0.8 × 0.5 = 0.4, nothing against.
+    const singleEdgeForMass = 0.8 * 0.5;
+    const claimCredenceBeforeCollision = Number(db.readNodeBelief(claimNodeAId).belief_credence);
+    const claimMovementCountBeforeCollision = db.readBeliefMovements(claimNodeAId).length;
+    // PRECONDITION: the baseline grade is real — a non-trivial mass and
+    // credence — so "unchanged" below cannot be an ungraded node staying
+    // ungraded.
+    expect(
+      Number(readBeliefEvidenceMasses(db, claimNodeAId).belief_evidence_for_mass)
+    ).toBeCloseTo(singleEdgeForMass, 10);
+    expect(claimCredenceBeforeCollision).toBeCloseTo(
+      expectedBeliefCredenceProjection(singleEdgeForMass, 0),
+      10
+    );
 
-    // The colliding evidence write: B→A as written, support 0.7, swapped by
-    // the classifier into the occupied A→B slot. Its create hook regrades the
-    // stored from-end (A) from A's whole basis — now two edges.
+    // The colliding evidence write: B→A as written, support 0.7 riding it,
+    // swapped by the classifier into the occupied A→B slot — merged, so the
+    // 0.7 must go nowhere.
     const collidingEvidenceResponse = await postEdgeThroughRestRoute(
       buildConfirmedMcpEdgeBody(sourceNodeBId, claimNodeAId, {
         explanation: SWAP_INDUCING_EXPLANATION,
         belief_evidence_support: 0.7,
       })
     );
-    expect(collidingEvidenceResponse.status).toBe(201);
+    expect(collidingEvidenceResponse.status).toBe(200);
     const collidingEvidenceReply = (await collidingEvidenceResponse.json()) as EdgesRouteReply;
-    // PRECONDITION: the duplicate landed in the occupied slot.
-    expect(collidingEvidenceReply.data?.from_node_id).toBe(claimNodeAId);
-    expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(2);
+    expect(collidingEvidenceReply.already_existed).toBe(true);
 
-    // Both contributions counted: 0.8 × 0.5 + 0.8 × 0.7 = 0.96 of for-mass.
-    const doubleCountedForMass = 0.8 * 0.5 + 0.8 * 0.7;
-    const claimMasses = readBeliefEvidenceMasses(db, claimNodeAId);
-    expect(Number(claimMasses.belief_evidence_for_mass)).toBeCloseTo(doubleCountedForMass, 10);
-    expect(Number(claimMasses.belief_evidence_against_mass)).toBeCloseTo(0, 10);
-    const claimCredence = Number(db.readNodeBelief(claimNodeAId).belief_credence);
-    expect(claimCredence).toBeCloseTo(
-      expectedBeliefCredenceProjection(doubleCountedForMass, 0),
+    // No second row landed; the stored edge keeps its OLD support.
+    expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
+    const storedSupportRow = db.sqlite
+      .prepare('SELECT belief_evidence_support FROM edges WHERE id = ?')
+      .get(existingEvidenceEdgeId) as { belief_evidence_support: number | null };
+    expect(Number(storedSupportRow.belief_evidence_support)).toBeCloseTo(0.5, 10);
+
+    // A's masses and credence are byte-for-byte the single-edge grade: no
+    // regrade ran, so the 0.7 contribution never entered the basis.
+    const claimMassesAfterCollision = readBeliefEvidenceMasses(db, claimNodeAId);
+    expect(Number(claimMassesAfterCollision.belief_evidence_for_mass)).toBeCloseTo(
+      singleEdgeForMass,
       10
     );
-    // Strictly more than either edge alone would grade to — the double-count
-    // is real, not either single-edge value surviving.
-    expect(claimCredence).toBeGreaterThan(expectedBeliefCredenceProjection(0.8 * 0.5, 0));
-    expect(claimCredence).toBeGreaterThan(expectedBeliefCredenceProjection(0.8 * 0.7, 0));
+    expect(Number(claimMassesAfterCollision.belief_evidence_against_mass)).toBeCloseTo(0, 10);
+    expect(Number(db.readNodeBelief(claimNodeAId).belief_credence)).toBeCloseTo(
+      claimCredenceBeforeCollision,
+      10
+    );
+    // And no belief movement was appended by the refused-and-merged write.
+    expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(
+      claimMovementCountBeforeCollision
+    );
   });
 
   // Case 3 — the same-direction guard short-circuit: its honest answer, and
@@ -330,11 +374,13 @@ describe('duplicate-guard / inference-swap collision (characterization pin)', ()
     });
   });
 
-  // Case 4 — the service layer has no guard of its own: edgeService.createEdge
-  // called directly with an exact duplicate writes a second row. This is what
-  // makes the callers' guards the ONLY protection — any new write path that
-  // skips them inherits duplicates by default.
-  it('edgeService.createEdge itself accepts an exact duplicate and stores a second row', async () => {
+  // Case 4 — the service layer itself now merges (RED until the
+  // no-same-direction-parallel-edges slice lands): edgeService.createEdge
+  // called directly with an exact duplicate answers the EXISTING stored row —
+  // same id as the first create — and writes no second row. The guard is no
+  // longer the callers' job alone, so a new write path that skips the route
+  // guard no longer inherits duplicates by default.
+  it('edgeService.createEdge itself merges an exact duplicate: same stored row back, one row in the slot', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeAId = db.insertNodeFixture({ title: 'claim node A' });
     const sourceNodeBId = db.insertNodeFixture({ title: 'source node B' });
@@ -351,10 +397,12 @@ describe('duplicate-guard / inference-swap collision (characterization pin)', ()
       skip_inference: true,
     };
     const firstStoredEdge = await edgeService.createEdge(identicalEdgeInput);
-    const secondStoredEdge = await edgeService.createEdge(identicalEdgeInput);
+    const secondCreateAnswer = await edgeService.createEdge(identicalEdgeInput);
 
-    // Two distinct rows in the one slot — no refusal, no merge, no constraint.
-    expect(secondStoredEdge.id).not.toBe(firstStoredEdge.id);
-    expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(2);
+    // The service's answer shape is the stored row itself, so the merge is
+    // pinned as same-id + single-row: the second create answers the FIRST
+    // create's row, and the slot still holds exactly one row.
+    expect(secondCreateAnswer.id).toBe(firstStoredEdge.id);
+    expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
   });
 });

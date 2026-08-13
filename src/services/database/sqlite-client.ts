@@ -125,10 +125,17 @@ class SQLiteClient {
         // Ensure logging schema (rename memory->logs if needed, create triggers/views)
         this.ensureLoggingAndMemorySchemaLocked();
 
-        // Ensure the graph-event journal LAST: its triggers must land on the
-        // FINAL nodes/edges tables, after every rename/copy rebuild and
-        // in-place ALTER the migrations above may have performed.
+        // Ensure the graph-event journal AFTER every table migration: its
+        // triggers must land on the FINAL nodes/edges tables, after every
+        // rename/copy rebuild and in-place ALTER the migrations above may
+        // have performed.
         this.ensureGraphEventJournalSchemaLocked();
+
+        // Ensure the one-row-per-direction-slot rule LAST: its legacy dedup
+        // DELETEs must fire the trg_graph_events_edge_delete trigger the
+        // journal ensure above just created, so every collapsed duplicate
+        // leaves an edge_deleted row in graph_events.
+        this.ensureEdgeDirectionSlotUniqueIndexLocked();
       });
       this.integrityReport = this.inspectIntegrity();
 
@@ -1405,6 +1412,51 @@ class SQLiteClient {
       `);
     } catch (graphEventJournalErr) {
       console.warn('Failed to ensure the graph-event journal schema:', graphEventJournalErr);
+    }
+  }
+
+  // No same-direction parallel edges: the edges table must never hold two
+  // rows with the same (from_node_id, to_node_id). The rule lives in a UNIQUE
+  // index in the database FILE — not in app-code guards — so it runs after
+  // the classifier's direction inference by construction (the INSERT is the
+  // final step) and covers EVERY connection, including the standalone stdio
+  // server, which opens the file directly and runs no app code.
+  // Bidirectional stays legal: the index is on the ordered pair, so A→B and
+  // B→A are two different direction slots.
+  //
+  // A legacy database can already hold same-slot duplicates, and CREATE
+  // UNIQUE INDEX fails on such data — so each occupied slot is first
+  // collapsed to its LOWEST-id row, the rest deleted. ORDERING CONSTRAINT:
+  // this must run AFTER ensureGraphEventJournalSchemaLocked(), because those
+  // dedup DELETEs must fire the trg_graph_events_edge_delete trigger so each
+  // collapsed duplicate leaves an edge_deleted row in graph_events, the same
+  // way any other edge death is journalled.
+  private ensureEdgeDirectionSlotUniqueIndexLocked(): void {
+    try {
+      // When the index already stands, no duplicate can exist and the dedup
+      // scan is skipped entirely.
+      const directionSlotIndexRow = this.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_edges_direction_slot'"
+        )
+        .get();
+      if (directionSlotIndexRow) {
+        return;
+      }
+
+      // Collapse each occupied slot to its lowest-id row. Plain DELETEs (no
+      // rebuild), so the journal triggers see every removed duplicate.
+      this.db.exec(`
+        DELETE FROM edges WHERE id NOT IN (
+          SELECT MIN(id) FROM edges GROUP BY from_node_id, to_node_id
+        );
+      `);
+
+      this.db.exec(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_direction_slot ON edges(from_node_id, to_node_id);'
+      );
+    } catch (edgeDirectionSlotErr) {
+      console.warn('Failed to ensure the edge direction-slot unique index:', edgeDirectionSlotErr);
     }
   }
 

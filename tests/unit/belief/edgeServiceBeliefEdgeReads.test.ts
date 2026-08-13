@@ -310,10 +310,15 @@ describe('EdgeService.getEdges belief-evidence edge reads', () => {
   it('applies the direction filter in SQL rather than trimming a limited page afterwards', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'Busy claim node' });
-    const neighbourNodeId = db.insertNodeFixture({ title: 'Busy neighbour node' });
-    // Interleaved so any client-side trim of a 50-row page would keep only
-    // about half of the into-edges.
+    // One neighbour node per iteration: the direction-slot UNIQUE index
+    // outlaws same-slot parallels, so the filler fans out — each neighbour
+    // contributes one into-edge and one out-of-edge (a legal bidirectional
+    // pair). Interleaved so any client-side trim of a 50-row page would keep
+    // only about half of the into-edges.
     for (let edgeIndex = 0; edgeIndex < 60; edgeIndex += 1) {
+      const neighbourNodeId = db.insertNodeFixture({
+        title: `Busy neighbour node ${edgeIndex}`,
+      });
       insertBeliefEdgeReadFixture(db, {
         fromNodeId: neighbourNodeId,
         toNodeId: claimNodeId,
@@ -346,10 +351,14 @@ describe('EdgeService.getEdges belief-evidence edge reads', () => {
   it('pages through a seeded set with limit and offset, returning every edge exactly once', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'Paged claim node' });
-    const neighbourNodeId = db.insertNodeFixture({ title: 'Paged neighbour node' });
-    const seededEdgeIds = Array.from({ length: 10 }, () =>
+    // One neighbour node per seeded edge — the direction-slot UNIQUE index
+    // outlaws stacking ten rows into one slot, so the ten into-edges fan out
+    // from ten distinct neighbours.
+    const seededEdgeIds = Array.from({ length: 10 }, (_, neighbourIndex) =>
       insertBeliefEdgeReadFixture(db as TempBeliefDatabase, {
-        fromNodeId: neighbourNodeId,
+        fromNodeId: (db as TempBeliefDatabase).insertNodeFixture({
+          title: `Paged neighbour node ${neighbourIndex}`,
+        }),
         toNodeId: claimNodeId,
         createdAt: TIED_EDGE_CREATED_AT,
         support: 0.5,
@@ -397,35 +406,38 @@ describe('EdgeService.getEdges belief-evidence edge reads', () => {
   it('orders edge reads by created_at DESC then id DESC so tied timestamps still page deterministically', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeId = db.insertNodeFixture({ title: 'Ordered claim node' });
-    const neighbourNodeId = db.insertNodeFixture({ title: 'Ordered neighbour node' });
+    // One neighbour node per edge (the direction-slot UNIQUE index outlaws
+    // same-slot parallels); the tie the ordering must break is on created_at,
+    // which the distinct slots leave untouched.
+    const insertIntoEdgeFromOwnNeighbour = (neighbourTitle: string, createdAt: string): number =>
+      insertBeliefEdgeReadFixture(db as TempBeliefDatabase, {
+        fromNodeId: (db as TempBeliefDatabase).insertNodeFixture({ title: neighbourTitle }),
+        toNodeId: claimNodeId,
+        createdAt,
+      });
 
     // Inserted oldest-timestamp-first so insert order and expected read order
     // are not accidentally the same sequence.
-    const oldestEdgeId = insertBeliefEdgeReadFixture(db, {
-      fromNodeId: neighbourNodeId,
-      toNodeId: claimNodeId,
-      createdAt: OLDER_EDGE_CREATED_AT,
-    });
-    const firstTiedEdgeId = insertBeliefEdgeReadFixture(db, {
-      fromNodeId: neighbourNodeId,
-      toNodeId: claimNodeId,
-      createdAt: TIED_EDGE_CREATED_AT,
-    });
-    const secondTiedEdgeId = insertBeliefEdgeReadFixture(db, {
-      fromNodeId: neighbourNodeId,
-      toNodeId: claimNodeId,
-      createdAt: TIED_EDGE_CREATED_AT,
-    });
-    const thirdTiedEdgeId = insertBeliefEdgeReadFixture(db, {
-      fromNodeId: neighbourNodeId,
-      toNodeId: claimNodeId,
-      createdAt: TIED_EDGE_CREATED_AT,
-    });
-    const newestEdgeId = insertBeliefEdgeReadFixture(db, {
-      fromNodeId: neighbourNodeId,
-      toNodeId: claimNodeId,
-      createdAt: NEWER_EDGE_CREATED_AT,
-    });
+    const oldestEdgeId = insertIntoEdgeFromOwnNeighbour(
+      'Ordered neighbour node (oldest edge)',
+      OLDER_EDGE_CREATED_AT
+    );
+    const firstTiedEdgeId = insertIntoEdgeFromOwnNeighbour(
+      'Ordered neighbour node (first tied edge)',
+      TIED_EDGE_CREATED_AT
+    );
+    const secondTiedEdgeId = insertIntoEdgeFromOwnNeighbour(
+      'Ordered neighbour node (second tied edge)',
+      TIED_EDGE_CREATED_AT
+    );
+    const thirdTiedEdgeId = insertIntoEdgeFromOwnNeighbour(
+      'Ordered neighbour node (third tied edge)',
+      TIED_EDGE_CREATED_AT
+    );
+    const newestEdgeId = insertIntoEdgeFromOwnNeighbour(
+      'Ordered neighbour node (newest edge)',
+      NEWER_EDGE_CREATED_AT
+    );
     const edgeServiceModule = await db.importEdgeService();
 
     // Newest timestamp first; within the tie, the highest id first.
