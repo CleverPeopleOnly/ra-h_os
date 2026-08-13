@@ -265,6 +265,14 @@ function parseStoredEdgeRow(row: StoredEdgeRow): Edge {
   }
 }
 
+// The answer a create hands back: the stored row itself, with already_existed
+// set when the create MERGED into the row already occupying its
+// (from_node_id, to_node_id) direction slot — the UNIQUE
+// idx_edges_direction_slot index allows only one row per slot — instead of
+// writing a new one. Absent on a fresh create, so existing callers that only
+// want the row are untouched.
+export type EdgeCreateAnswer = Edge & { already_existed?: true };
+
 export class EdgeService {
   // Read edges, optionally narrowed to one node, one side of that node, one
   // edge source, and one page. Every part of the filter is applied IN SQL, so a
@@ -309,13 +317,31 @@ export class EdgeService {
     return parseStoredEdgeRow(row);
   }
 
-  async createEdge(edgeData: EdgeData): Promise<Edge> {
+  // Read the full stored row of the edge occupying one exact
+  // (from_node_id, to_node_id) direction slot, or null when the slot is free.
+  // Under the UNIQUE idx_edges_direction_slot index at most one row can
+  // occupy a slot, so the first row IS the occupant.
+  private async getEdgeOccupyingDirectionSlot(
+    fromNodeId: number,
+    toNodeId: number
+  ): Promise<Edge | null> {
+    const sqlite = getSQLiteClient();
+    const result = sqlite.query<StoredEdgeRow>(
+      'SELECT * FROM edges WHERE from_node_id = ? AND to_node_id = ?',
+      [fromNodeId, toNodeId]
+    );
+    const occupyingRow = result.rows[0];
+    if (!occupyingRow) return null;
+    return parseStoredEdgeRow(occupyingRow);
+  }
+
+  async createEdge(edgeData: EdgeData): Promise<EdgeCreateAnswer> {
     return this.createEdgeSQLite(edgeData);
   }
 
   // PostgreSQL path removed in SQLite-only consolidation
 
-  private async createEdgeSQLite(edgeData: EdgeData): Promise<Edge> {
+  private async createEdgeSQLite(edgeData: EdgeData): Promise<EdgeCreateAnswer> {
     const now = new Date().toISOString();
     const sqlite = getSQLiteClient();
 
@@ -390,19 +416,53 @@ export class EdgeService {
     // app-owned.
     const edgeIsGradeableBeliefEvidence = edgeData.belief_evidence_support != null;
 
-    const result = sqlite.prepare(`
-      INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
-                         belief_evidence_support)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    // The direction-slot rule, checked AFTER inference resolved the stored
+    // orientation — inference can swap a write into a slot no as-written
+    // pre-check could see coming. A create landing on an occupied slot MERGES
+    // into the occupying edge: the existing stored row is the answer, marked
+    // already_existed, and nothing is written — no second row, no evidence
+    // column touched, no regrade, no movement, no broadcast. The riding
+    // support of a colliding evidence write is deliberately dropped.
+    const edgeAlreadyOccupyingSlot = await this.getEdgeOccupyingDirectionSlot(
       finalFromId,
-      finalToId,
-      JSON.stringify(context),
-      edgeData.source,
-      now,
-      explanation,
-      edgeData.belief_evidence_support ?? null
+      finalToId
     );
+    if (edgeAlreadyOccupyingSlot) {
+      return { ...edgeAlreadyOccupyingSlot, already_existed: true };
+    }
+
+    // The INSERT, with the UNIQUE idx_edges_direction_slot index as the race
+    // backstop: check-then-insert races, so a constraint failure here means
+    // another connection filled the slot in between — merge into that row
+    // exactly as the pre-check would have.
+    let result: { lastInsertRowid: number | bigint };
+    try {
+      result = sqlite.prepare(`
+        INSERT INTO edges (from_node_id, to_node_id, context, source, created_at, explanation,
+                           belief_evidence_support)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        finalFromId,
+        finalToId,
+        JSON.stringify(context),
+        edgeData.source,
+        now,
+        explanation,
+        edgeData.belief_evidence_support ?? null
+      );
+    } catch (insertError) {
+      const insertErrorCode = String((insertError as { code?: unknown })?.code ?? '');
+      if (insertErrorCode.includes('SQLITE_CONSTRAINT')) {
+        const edgeThatWonTheSlotRace = await this.getEdgeOccupyingDirectionSlot(
+          finalFromId,
+          finalToId
+        );
+        if (edgeThatWonTheSlotRace) {
+          return { ...edgeThatWonTheSlotRace, already_existed: true };
+        }
+      }
+      throw insertError;
+    }
 
     const edgeId = Number(result.lastInsertRowid);
     const newEdge = await this.getEdgeById(edgeId);
@@ -544,6 +604,39 @@ export class EdgeService {
           explanation,
           created_via,
         } satisfies EdgeContext;
+      }
+    }
+
+    // The direction-slot rule (UNIQUE idx_edges_direction_slot) binds updates
+    // too: when this update writes either end column — explicitly, or via the
+    // swap the explanation re-inference above just applied — the FINAL stored
+    // ends must not land on a slot a DIFFERENT edge already occupies. Refused
+    // HERE, before anything is written, so the refusal is atomic: the edited
+    // edge keeps its old ends AND its old explanation (the dynamic UPDATE
+    // below is one statement carrying both, and it never runs), and the
+    // refused attempt writes no graph_events row. The UNIQUE index stays as
+    // the race backstop — a collision this check missed fails that single
+    // UPDATE statement whole.
+    if (updates.from_node_id !== undefined || updates.to_node_id !== undefined) {
+      const edgeRowBeforeEndsWrite = await this.getEdgeById(id);
+      if (!edgeRowBeforeEndsWrite) {
+        throw new Error(`Edge with ID ${id} not found`);
+      }
+      // The ends the row will hold once the UPDATE runs: a written end wins
+      // over the stored one.
+      const finalFromNodeId = updates.from_node_id ?? edgeRowBeforeEndsWrite.from_node_id;
+      const finalToNodeId = updates.to_node_id ?? edgeRowBeforeEndsWrite.to_node_id;
+      // The DIFFERENT edge already holding the target slot, if any — the
+      // edited edge itself may keep or restate its own ends.
+      const occupyingEdgeRow = sqlite.query<{ id: number }>(
+        'SELECT id FROM edges WHERE from_node_id = ? AND to_node_id = ? AND id != ?',
+        [finalFromNodeId, finalToNodeId, id]
+      ).rows[0];
+      if (occupyingEdgeRow) {
+        throw new Error(
+          `Cannot update edge ${id}: edge ${occupyingEdgeRow.id} already occupies the direction slot ` +
+            `from node ${finalFromNodeId} to node ${finalToNodeId}, and two same-direction parallel edges are not allowed`
+        );
       }
     }
 

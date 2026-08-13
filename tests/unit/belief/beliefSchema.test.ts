@@ -131,7 +131,10 @@ function createLegacyDatabaseWithoutBeliefColumns(dbPath: string): void {
 // exist as evidence_relation (supports/contradicts values) and
 // evidence_independence_key, and source_trust is keyed by origin_key — so
 // client init must RENAME evidence_relation (MAPPING its stored values),
-// RENAME the trust key, and DROP evidence_independence_key outright.
+// RENAME the trust key, and DROP evidence_independence_key outright. The two
+// edges come from DISTINCT source nodes: the direction-slot UNIQUE index
+// outlaws same-slot parallels, and the dedup migration would otherwise eat
+// the second fixture row before these tests could see it.
 function createDatabaseWithMrAVocabulary(dbPath: string): void {
   createLegacyDatabaseWithoutBeliefColumns(dbPath);
   const oldVocabularyDb = new Database(dbPath);
@@ -145,10 +148,10 @@ function createDatabaseWithMrAVocabulary(dbPath: string): void {
       score REAL NOT NULL,
       updated_at TEXT NOT NULL
     );
-    INSERT INTO nodes (id, title) VALUES (1, 'claim'), (2, 'source');
+    INSERT INTO nodes (id, title) VALUES (1, 'claim'), (2, 'source'), (3, 'second source');
     INSERT INTO edges (from_node_id, to_node_id, source, explanation, evidence_relation, evidence_strength, evidence_independence_key)
     VALUES (2, 1, 'user', 'old-vocabulary supporting edge', 'supports', 0.7, 'origin-a'),
-           (2, 1, 'user', 'old-vocabulary contradicting edge', 'contradicts', 0.4, 'origin-b');
+           (3, 1, 'user', 'old-vocabulary contradicting edge', 'contradicts', 0.4, 'origin-b');
     INSERT INTO source_trust (origin_key, score, updated_at)
     VALUES ('marelie', 0.9, '2026-07-22T00:00:00.000Z');
   `);
@@ -185,7 +188,9 @@ function createDatabaseWithUnprefixedVocabulary(dbPath: string): void {
 // Lay down a database from TODAY's shipped shape: the full belief schema
 // including belief_evidence_origin_key, with edge rows that hold real origin
 // keys, a NULL origin key, and populated direction/strength/contribution
-// values — so the drop migration has real data to preserve.
+// values — so the drop migration has real data to preserve. Each edge comes
+// from its OWN source node (the direction-slot UNIQUE index outlaws same-slot
+// parallels; the dedup migration would eat stacked fixture rows).
 //
 // It also creates idx_edges_from / idx_edges_to explicitly. The base helper
 // (createLegacyDatabaseWithoutBeliefColumns) declares the two edges->nodes
@@ -208,13 +213,15 @@ function createDatabaseCarryingBeliefEvidenceOriginKey(dbPath: string): void {
     );
     INSERT INTO nodes (id, title, belief_value, belief_computed_at)
     VALUES (1, 'claim', 0.31, '2026-07-27T00:00:00.000Z'),
-           (2, 'source', NULL, NULL);
+           (2, 'source', NULL, NULL),
+           (3, 'second source', NULL, NULL),
+           (4, 'third source', NULL, NULL);
     INSERT INTO edges (id, from_node_id, to_node_id, source, explanation,
                        belief_evidence_direction, belief_evidence_strength,
                        belief_evidence_origin_key, belief_evidence_contribution)
     VALUES (1, 2, 1, 'user', 'keyed supporting edge', 'for', 0.7, 'origin-a', 0.63),
-           (2, 2, 1, 'user', 'keyed contradicting edge', 'against', 0.4, 'origin-b', -0.36),
-           (3, 2, 1, 'user', 'edge whose origin key was never set', 'for', 0.5, NULL, NULL);
+           (2, 3, 1, 'user', 'keyed contradicting edge', 'against', 0.4, 'origin-b', -0.36),
+           (3, 4, 1, 'user', 'edge whose origin key was never set', 'for', 0.5, NULL, NULL);
     INSERT INTO belief_source_trust (trust_origin_key, score, updated_at)
     VALUES ('marelie', 0.9, '2026-07-27T00:00:00.000Z');
     CREATE INDEX idx_edges_from ON edges(from_node_id);
@@ -342,15 +349,19 @@ function createDatabaseSplittingSupportIntoDirectionAndStrength(dbPath: string):
     INSERT INTO nodes (id, title, belief_credence, belief_computed_at)
     VALUES (1, 'graded claim', 0.31, '2026-07-27T00:00:00.000Z'),
            (2, 'ungraded claim', NULL, NULL),
-           (3, 'evidence source', 0.75, '2026-07-27T01:00:00.000Z');
+           (3, 'evidence source', 0.75, '2026-07-27T01:00:00.000Z'),
+           (4, 'second evidence source', NULL, NULL),
+           (5, 'third evidence source', NULL, NULL),
+           (6, 'fourth evidence source', NULL, NULL),
+           (7, 'fifth evidence source', NULL, NULL);
     INSERT INTO edges (id, from_node_id, to_node_id, source, explanation,
                        belief_evidence_direction, belief_evidence_strength,
                        belief_evidence_contribution)
     VALUES (1, 3, 1, 'user', 'supporting evidence edge', 'for', 0.7, 0.63),
-           (2, 3, 1, 'user', 'contradicting evidence edge', 'against', 0.4, -0.36),
-           (3, 3, 1, 'user', 'supporting evidence edge never graded', 'for', 0.5, NULL),
-           (4, 3, 1, 'user', 'plain non-evidence edge', NULL, NULL, NULL),
-           (5, 3, 1, 'user', 'orphan strength with no direction', NULL, 0.9, NULL);
+           (2, 4, 1, 'user', 'contradicting evidence edge', 'against', 0.4, -0.36),
+           (3, 5, 1, 'user', 'supporting evidence edge never graded', 'for', 0.5, NULL),
+           (4, 6, 1, 'user', 'plain non-evidence edge', NULL, NULL, NULL),
+           (5, 7, 1, 'user', 'orphan strength with no direction', NULL, 0.9, NULL);
     INSERT INTO belief_movements (id, node_id, from_credence, to_credence, "trigger", occurred_at)
     VALUES (1, 1, NULL, 0.31, 'belief-recompute', '2026-07-27T00:00:00.000Z');
     CREATE INDEX idx_edges_from ON edges(from_node_id);
@@ -1276,9 +1287,11 @@ describe('belief engine schema', () => {
       explanation: string;
     }>;
     expect(preservedEdgeRows.map(row => row.id)).toEqual([1, 2, 3, 4, 5]);
-    expect(preservedEdgeRows.every(row => row.from_node_id === 3 && row.to_node_id === 1)).toBe(
-      true
-    );
+    // One source node per edge — the direction-slot UNIQUE index outlaws
+    // same-slot parallels, so the fixture fans the five edges out from five
+    // distinct sources, all pointing at the claim.
+    expect(preservedEdgeRows.map(row => row.from_node_id)).toEqual([3, 4, 5, 6, 7]);
+    expect(preservedEdgeRows.every(row => row.to_node_id === 1)).toBe(true);
     expect(preservedEdgeRows[0].explanation).toBe('supporting evidence edge');
     expect(preservedEdgeRows[4].explanation).toBe('orphan strength with no direction');
 
@@ -1292,11 +1305,17 @@ describe('belief engine schema', () => {
       belief_credence: number | null;
       belief_computed_at: string | null;
     }>;
-    expect(preservedNodeRows).toHaveLength(3);
+    // Seven nodes: the three characterized ones plus the four filler sources
+    // that give each fixture edge its own direction slot.
+    expect(preservedNodeRows).toHaveLength(7);
     expect(Number(preservedNodeRows[0].belief_credence)).toBeCloseTo(0.31, 10);
     expect(preservedNodeRows[0].belief_computed_at).toBe('2026-07-27T00:00:00.000Z');
     expect(preservedNodeRows[1].belief_credence).toBeNull();
     expect(Number(preservedNodeRows[2].belief_credence)).toBeCloseTo(0.75, 10);
+    // The filler sources were laid down ungraded and must come out ungraded.
+    for (const fillerSourceNodeRow of preservedNodeRows.slice(3)) {
+      expect(fillerSourceNodeRow.belief_credence).toBeNull();
+    }
 
     // The movement log is untouched too.
     const preservedMovements = db.readBeliefMovements(1);

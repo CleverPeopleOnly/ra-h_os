@@ -273,58 +273,13 @@ describe('recomputeNodeBelief grading behavior', () => {
     expect(beliefCredence).toBeGreaterThan(-1);
   });
 
-  // 6a. Repetition reinforces: an equal-strength repeat from the SAME source
-  //     node STACKS instead of being ignored, so the repeat must raise belief
-  //     — S = 0.7 + 0.7 = 1.4, landing on the summed-mass anchor, strictly
-  //     above the single-edge credence.
-  it('reinforcement: an equal-strength repeat from the same source node raises belief (stacks)', async () => {
-    db = await openTempBeliefDatabase();
-    const { claimNodeId, sourceNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      support: 0.7,
-      sourceBeliefCredence: 1.0,
-    });
-    const { recomputeNodeBelief } = await db.importBeliefService();
-    await recomputeNodeBelief(claimNodeId);
-    const credenceBeforeRepeat = Number(db.readNodeBelief(claimNodeId).belief_credence);
-
-    // Second edge to the SAME source node — this is what "repetition" means
-    // now that a source is just a node.
-    db.insertEvidenceEdgeFixture({
-      derivedNodeId: claimNodeId,
-      sourceNodeId,
-      support: 0.7,
-    });
-    await recomputeNodeBelief(claimNodeId);
-    const credenceAfterRepeat = Number(db.readNodeBelief(claimNodeId).belief_credence);
-
-    expect(credenceAfterRepeat).toBeGreaterThan(credenceBeforeRepeat);
-    expect(credenceAfterRepeat).toBeCloseTo(expectedBeliefCredence(0.7 + 0.7, 0), 10);
-  });
-
-  // 6b. A stronger repeat from the same source node does not replace the
-  //     weaker one — both count, so S = 0.7 + 0.9 = 1.6, not just the
-  //     stronger edge's 0.9 alone.
-  it('reinforcement: a stronger contribution from the same source node adds to the weaker (stacks)', async () => {
-    db = await openTempBeliefDatabase();
-    const { claimNodeId, sourceNodeId } = seedClaimWithOneEvidenceEdge(db, {
-      support: 0.7,
-      sourceBeliefCredence: 1.0,
-    });
-    const { recomputeNodeBelief } = await db.importBeliefService();
-    await recomputeNodeBelief(claimNodeId);
-
-    db.insertEvidenceEdgeFixture({
-      derivedNodeId: claimNodeId,
-      sourceNodeId,
-      support: 0.9,
-    });
-    await recomputeNodeBelief(claimNodeId);
-
-    expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
-      expectedBeliefCredence(0.7 + 0.9, 0),
-      10
-    );
-  });
+  // Cases 6a and 6b (repetition reinforces: same-slot repeats stack) were
+  // DELETED in the no-same-direction-parallel-edges slice. They pinned the
+  // retired repetition-reinforces decision by inserting a second evidence
+  // edge into an occupied direction slot — an insert the UNIQUE index on
+  // edges(from_node_id, to_node_id) now refuses at the file. One row per
+  // slot; the refusal itself is pinned in
+  // tests/unit/database/no-same-direction-parallel-edges.test.ts.
 
   // 7a. Weighting vs. non-counting: a same-support edge from a source at
   //     credence 0.9 grades to a real positive number, while an edge from a

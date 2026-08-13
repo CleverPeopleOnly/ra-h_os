@@ -101,6 +101,24 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// The one 200 answer every duplicate outcome shares: the as-written
+// pre-check and the post-inference merge both report that the direction slot
+// was already occupied, nothing was written, and here is the edge that
+// actually exists — its full stored row when it could be read, so a caller
+// (and the MCP doors built on this reply) can follow up on the real edge.
+function edgeAlreadyExistedResponse(
+  existingEdgeInSlot: Record<string, unknown>,
+  fromNodeId: number,
+  toNodeId: number
+) {
+  return NextResponse.json({
+    success: true,
+    already_existed: true,
+    data: existingEdgeInSlot,
+    message: `Edge already exists between nodes ${fromNodeId} and ${toNodeId}`
+  }, { status: 200 });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -184,12 +202,12 @@ export async function POST(request: NextRequest) {
         const existingEdgeInSlot = edgesOutOfFromNode.find(
           (storedEdge) => storedEdge.to_node_id === toId
         );
-        return NextResponse.json({
-          success: true,
-          already_existed: true,
-          data: existingEdgeInSlot ?? { from_node_id: fromId, to_node_id: toId },
-          message: `Edge already exists between nodes ${fromId} and ${toId}`
-        }, { status: 200 });
+        return edgeAlreadyExistedResponse(
+          (existingEdgeInSlot as unknown as Record<string, unknown>) ??
+            { from_node_id: fromId, to_node_id: toId },
+          fromId,
+          toId
+        );
       }
     } catch (e) {
       // Non-fatal: continue with creation if existence check fails
@@ -212,6 +230,22 @@ export async function POST(request: NextRequest) {
       // are ignored rather than rejected.
       belief_evidence_support: body.belief_evidence_support
     });
+
+    // Post-inference collision, merged by the service: inference swapped the
+    // write into a slot the as-written pre-check above could not see was
+    // occupied, and createEdge answered the EXISTING stored row instead of
+    // writing one. Answer the same duplicate shape, with the STORED ends
+    // (which inference may have swapped from the request's). The marker is
+    // stripped so data carries the stored row alone.
+    if (edge.already_existed === true) {
+      const mergedExistingEdgeRow: Record<string, unknown> = { ...edge };
+      delete mergedExistingEdgeRow.already_existed;
+      return edgeAlreadyExistedResponse(
+        mergedExistingEdgeRow,
+        edge.from_node_id,
+        edge.to_node_id
+      );
+    }
 
     return NextResponse.json({
       success: true,
