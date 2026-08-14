@@ -1,20 +1,18 @@
 /**
- * The LOCAL MCP door's belief surface after the display-belief slice
- * (apps/mcp-server/stdio-server.js):
+ * FAILING-FIRST red set for slice 9 — THE ENGINE AND BELIEF SERVICES LEAVE
+ * THE FORK: the LOCAL MCP door's belief tool surface shrinks to nothing but
+ * node reads (apps/mcp-server/stdio-server.js).
  *
- *  - rah_recompute_node_belief is GONE — the recompute surface died with
- *    that slice, on BOTH app-backed doors, because a recompute that writes
- *    never-assessed would erase the display beliefs samai writes,
- *  - rah_write_display_belief is NOT here — the display write is a
- *    REMOTE-door-only tool (matching the journal tools' precedent: samai
- *    writes through the remote door).
+ * samai owns the belief engine, so the stdio door's three belief tools die
+ * with it:
+ *  - rah_set_belief_fixed_credence,
+ *  - rah_clear_belief_fixed_credence,
+ *  - rah_get_belief_movements (its table is dropped in the same slice).
+ * What the local door keeps of belief is the read-only presentation carried
+ * on its node-read tools' answers — no belief tool remains registered.
  *
- * deleted in the engine-leaves-the-fork slice: the pins that the
- * fixed-credence tools and the movement read survive — those tools left both
- * app doors with the engine (their absence is pinned in
- * stdio-server-belief-surface-reduced-to-node-reads.test.ts).
- *
- * Seam: the spawned proxy is pointed at a local in-process HTTP stub via
+ * Seam (same as tests/unit/mcp/stdio-server-display-belief-surface.test.ts):
+ * the spawned proxy is pointed at a local in-process HTTP stub via
  * RAH_MCP_TARGET_URL; no tool is called, so the stub serves nothing. The
  * spawned process is always terminated in the finally block.
  */
@@ -25,6 +23,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+// The three belief tools deleted from the local door with the engine.
+const deletedStdioBeliefToolNames = [
+  'rah_set_belief_fixed_credence',
+  'rah_clear_belief_fixed_credence',
+  'rah_get_belief_movements',
+];
 
 // The in-process HTTP stub standing in for the running RA-H app. It serves
 // nothing: this file only asks the door to describe itself.
@@ -46,7 +51,10 @@ async function withMcpClient<T>(fn: (client: Client) => Promise<T>): Promise<T> 
     stderr: 'pipe',
   });
 
-  const client = new Client({ name: 'ra-h-stdio-display-belief-surface-test', version: '1.0.0' });
+  const client = new Client({
+    name: 'ra-h-stdio-belief-surface-reduction-test',
+    version: '1.0.0',
+  });
   await client.connect(transport);
 
   try {
@@ -73,19 +81,23 @@ afterAll(async () => {
   });
 });
 
-describe('local MCP door belief surface after the display-belief slice', () => {
-  // The whole registry statement in one read: recompute gone and the display
-  // write never arrived (remote-only) — with an ordinary graph tool present
-  // so the listing is demonstrably live rather than empty.
-  it('drops rah_recompute_node_belief and gains no display write', async () => {
+describe('local MCP door belief surface after the engine leaves the fork', () => {
+  // The whole registry statement in one read: none of the three engine-era
+  // belief tools is advertised any more, while an ordinary graph tool still
+  // is — so the door is demonstrably alive and the absences are real.
+  it('registers none of the fixed-credence tools nor the movements read', async () => {
     await withMcpClient(async (client) => {
       const advertisedToolNames = (await client.listTools()).tools.map((tool) => tool.name);
 
-      // The recompute surface died on this door too.
-      expect(advertisedToolNames).not.toContain('rah_recompute_node_belief');
-      // The display write is the remote door's alone.
-      expect(advertisedToolNames).not.toContain('rah_write_display_belief');
-      // Sanity survivor: the plain node read keeps the absences honest.
+      for (const deletedStdioBeliefToolName of deletedStdioBeliefToolNames) {
+        expect(
+          advertisedToolNames,
+          `${deletedStdioBeliefToolName} must leave the local door with the engine`
+        ).not.toContain(deletedStdioBeliefToolName);
+      }
+
+      // Sanity survivor: the plain node read is untouched by this slice, so
+      // an empty or broken listing cannot fake the absences above.
       expect(advertisedToolNames).toContain('rah_get_nodes');
     });
   });

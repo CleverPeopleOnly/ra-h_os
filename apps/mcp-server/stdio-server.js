@@ -20,13 +20,7 @@ const packageJson = require('../../package.json');
 // the remote door (app/api/mcp/route.ts) so the two cannot drift apart again.
 const {
   beliefFieldsForNodeRead,
-  beliefNodeReadOutputSchemaFields,
-  beliefSetFixedCredenceInputSchemaFields,
-  beliefSetFixedCredenceOutputSchemaFields,
-  beliefClearFixedCredenceInputSchemaFields,
-  beliefClearFixedCredenceOutputSchemaFields,
-  beliefMovementsReadInputSchemaFields,
-  beliefMovementsReadOutputSchemaFields
+  beliefNodeReadOutputSchemaFields
 } = require('../../src/services/belief/beliefMcpToolContract.js');
 
 const instructions = [
@@ -787,108 +781,6 @@ server.registerTool(
         edgeId: updatedEdgeRow?.id ?? id,
         message: result.message || `Updated edge #${id}`,
         ...(updatedEdgeRow ? { edge: edgeWriteStoredRowAnswerFields(updatedEdgeRow) } : {})
-      }
-    };
-  }
-);
-
-// ========== BELIEF TOOLS (fork addition) ==========
-// All three are validate-and-forward proxies onto the app's belief endpoints;
-// the app is never reimplemented door-side, and every schema comes from the
-// shared contract so the remote door advertises exactly the same surface.
-
-server.registerTool(
-  'rah_set_belief_fixed_credence',
-  {
-    title: 'Set RA-H fixed belief credence',
-    description: 'Assert one node\'s belief_credence by hand and mark it as fixed. Belief evidence lives outside this store, so a node\'s credence is either hand-asserted through this tool or null (ungraded). Calling it again replaces the asserted credence in place.',
-    inputSchema: beliefSetFixedCredenceInputSchemaFields,
-    outputSchema: beliefSetFixedCredenceOutputSchemaFields
-  },
-  async ({ node_id, belief_credence }) => {
-    // Forward the assertion under the exact column names; the app enforces
-    // node existence and the open interval again on its own surface.
-    const result = await callRaHApi('/api/belief/fixed-credence', {
-      method: 'POST',
-      body: JSON.stringify({ node_id, belief_credence })
-    });
-
-    const summary = result.message || `Asserted belief_credence ${belief_credence} on node #${node_id}.`;
-    return {
-      content: [{ type: 'text', text: summary }],
-      // The app's standalone-shaped reply, passed through field for field.
-      structuredContent: {
-        success: true,
-        node_id: result.node_id,
-        belief_credence: result.belief_credence,
-        belief_credence_is_fixed: result.belief_credence_is_fixed,
-        belief_computed_at: result.belief_computed_at,
-        message: summary
-      }
-    };
-  }
-);
-
-server.registerTool(
-  'rah_clear_belief_fixed_credence',
-  {
-    title: 'Clear RA-H fixed belief credence',
-    description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the node become ungraded. Belief evidence lives outside this store, so a null credence in the reply is a real answer, not an error — never reported as 0.',
-    inputSchema: beliefClearFixedCredenceInputSchemaFields,
-    outputSchema: beliefClearFixedCredenceOutputSchemaFields
-  },
-  async ({ node_id }) => {
-    // Forward the withdrawal under the exact column name; the app enforces
-    // node existence again on its own surface.
-    const result = await callRaHApi('/api/belief/fixed-credence/clear', {
-      method: 'POST',
-      body: JSON.stringify({ node_id })
-    });
-
-    const summary = result.message || `Withdrew the asserted credence of node #${node_id}.`;
-    return {
-      content: [{ type: 'text', text: summary }],
-      // The app's reply, passed through field for field — the regraded
-      // credence stays null when the node is now ungraded, never 0.
-      structuredContent: {
-        success: true,
-        node_id: result.node_id,
-        belief_credence: result.belief_credence ?? null,
-        belief_credence_is_fixed: 0,
-        message: summary
-      }
-    };
-  }
-);
-
-server.registerTool(
-  'rah_get_belief_movements',
-  {
-    title: 'Get RA-H belief movements',
-    description: 'Read the log of one node\'s belief_credence changing, newest movement first. Each movement records the credence before the change (null when the node was previously ungraded), the credence after, what caused it, and when it happened. An empty log is a success: the node\'s credence has simply never changed.',
-    inputSchema: beliefMovementsReadInputSchemaFields,
-    outputSchema: beliefMovementsReadOutputSchemaFields
-  },
-  async ({ node_id, limit }) => {
-    // node_id rides the query string; the limit forwards so the APP caps the
-    // page — the door must not page a log it never loaded.
-    const params = new URLSearchParams();
-    params.set('node_id', String(node_id));
-    if (limit !== undefined) params.set('limit', String(limit));
-
-    const result = await callRaHApi(`/api/belief/movements?${params.toString()}`, {
-      method: 'GET'
-    });
-
-    const movements = Array.isArray(result.movements) ? result.movements : [];
-    const movementCount = typeof result.count === 'number' ? result.count : movements.length;
-    return {
-      content: [{ type: 'text', text: `Found ${movementCount} movement(s) for node #${node_id}.` }],
-      // The app's newest-first order and exact column names pass through
-      // untouched.
-      structuredContent: {
-        count: movementCount,
-        movements
       }
     };
   }

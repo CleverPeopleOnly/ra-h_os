@@ -349,8 +349,8 @@ describe('remote MCP door rah_write_display_belief — refusals', () => {
     expect(findRecordedDisplayWriteRequests()).toHaveLength(0);
   });
 
-  // The app's fixed-node refusal passes through naming the flag: only the
-  // assert/clear tools change a hand-asserted credence.
+  // The app's fixed-node refusal passes through naming the flag: a
+  // hand-asserted credence is never overwritten by a display write.
   it('surfaces the fixed-node refusal naming belief_credence_is_fixed', async () => {
     await remoteMcpDoorHarness.withRemoteMcpClient(async (client) => {
       const toolResult = await client.callTool({

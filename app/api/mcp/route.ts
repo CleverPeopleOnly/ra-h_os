@@ -11,12 +11,6 @@ import { z } from 'zod';
 import {
   beliefFieldsForNodeRead,
   beliefNodeReadOutputSchemaFields,
-  beliefSetFixedCredenceInputSchemaFields,
-  beliefSetFixedCredenceOutputSchemaFields,
-  beliefClearFixedCredenceInputSchemaFields,
-  beliefClearFixedCredenceOutputSchemaFields,
-  beliefMovementsReadInputSchemaFields,
-  beliefMovementsReadOutputSchemaFields,
 } from '@/services/belief/beliefMcpToolContract';
 
 export const runtime = 'nodejs';
@@ -666,106 +660,6 @@ function createServer(request: NextRequest): McpServer {
   );
 
   // ========== BELIEF TOOLS (fork addition) ==========
-  // All three are validate-and-forward proxies onto the app's belief
-  // endpoints; the app is never reimplemented door-side, and every schema
-  // comes from the shared contract so the local door advertises exactly the
-  // same surface.
-
-  server.registerTool(
-    'rah_set_belief_fixed_credence',
-    {
-      title: 'Set RA-H fixed belief credence',
-      description: 'Assert one node\'s belief_credence by hand and mark it as fixed. Belief evidence lives outside this store, so a node\'s credence is either hand-asserted through this tool or null (ungraded). Calling it again replaces the asserted credence in place.',
-      inputSchema: beliefSetFixedCredenceInputSchemaFields,
-      outputSchema: beliefSetFixedCredenceOutputSchemaFields,
-    },
-    async ({ node_id, belief_credence }) => {
-      // Forward the assertion under the exact column names; the app enforces
-      // node existence and the open interval again on its own surface.
-      const payload = await callRaHApi(request, '/api/belief/fixed-credence', {
-        method: 'POST',
-        body: JSON.stringify({ node_id, belief_credence }),
-      });
-
-      const summary = payload.message || `Asserted belief_credence ${belief_credence} on node #${node_id}.`;
-      return {
-        content: [{ type: 'text', text: summary }],
-        // The app's standalone-shaped reply, passed through field for field.
-        structuredContent: {
-          success: true,
-          node_id: payload.node_id,
-          belief_credence: payload.belief_credence,
-          belief_credence_is_fixed: payload.belief_credence_is_fixed,
-          belief_computed_at: payload.belief_computed_at,
-          message: summary,
-        },
-      };
-    }
-  );
-
-  server.registerTool(
-    'rah_clear_belief_fixed_credence',
-    {
-      title: 'Clear RA-H fixed belief credence',
-      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the node become ungraded. Belief evidence lives outside this store, so a null credence in the reply is a real answer, not an error — never reported as 0.',
-      inputSchema: beliefClearFixedCredenceInputSchemaFields,
-      outputSchema: beliefClearFixedCredenceOutputSchemaFields,
-    },
-    async ({ node_id }) => {
-      // Forward the withdrawal under the exact column name; the app enforces
-      // node existence again on its own surface.
-      const payload = await callRaHApi(request, '/api/belief/fixed-credence/clear', {
-        method: 'POST',
-        body: JSON.stringify({ node_id }),
-      });
-
-      const summary = payload.message || `Withdrew the asserted credence of node #${node_id}.`;
-      return {
-        content: [{ type: 'text', text: summary }],
-        // The app's reply, passed through field for field — the regraded
-        // credence stays null when the node is now ungraded, never 0.
-        structuredContent: {
-          success: true,
-          node_id: payload.node_id,
-          belief_credence: payload.belief_credence ?? null,
-          belief_credence_is_fixed: 0,
-          message: summary,
-        },
-      };
-    }
-  );
-
-  server.registerTool(
-    'rah_get_belief_movements',
-    {
-      title: 'Get RA-H belief movements',
-      description: 'Read the log of one node\'s belief_credence changing, newest movement first. Each movement records the credence before the change (null when the node was previously ungraded), the credence after, what caused it, and when it happened. An empty log is a success: the node\'s credence has simply never changed.',
-      inputSchema: beliefMovementsReadInputSchemaFields,
-      outputSchema: beliefMovementsReadOutputSchemaFields,
-    },
-    async ({ node_id, limit }) => {
-      // node_id rides the query string; the limit forwards so the APP caps
-      // the page — the door must not page a log it never loaded.
-      const params = new URLSearchParams();
-      params.set('node_id', String(node_id));
-      if (limit !== undefined) params.set('limit', String(limit));
-
-      const payload = await callRaHApi(request, `/api/belief/movements?${params.toString()}`);
-
-      const movements = Array.isArray(payload.movements) ? payload.movements : [];
-      const movementCount = typeof payload.count === 'number' ? payload.count : movements.length;
-      return {
-        content: [{ type: 'text', text: `Found ${movementCount} movement(s) for node #${node_id}.` }],
-        // The app's newest-first order and exact column names pass through
-        // untouched.
-        structuredContent: {
-          count: movementCount,
-          movements,
-        },
-      };
-    }
-  );
-
   // The display-belief write is REMOTE-DOOR-ONLY, matching the journal
   // tools' precedent: samai writes through the remote door, so its schema is
   // declared here rather than in the shared contract and the local stdio
@@ -774,7 +668,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_write_display_belief',
     {
       title: 'Write RA-H display belief',
-      description: 'Write one node\'s display belief: samai owns the belief engine since the belief-storage split, and this store never grades — the three columns are a display surface samai lands verbatim. Exactly two legal shapes: a GRADE (belief_credence, belief_uncertainty and belief_computed_at all non-null) or an UNGRADE (all three null). A fixed node is refused — a hand-asserted credence is only changed through the assert/clear tools.',
+      description: 'Write one node\'s display belief: samai owns the belief engine since the belief-storage split, and this store never grades — the three columns are a display surface samai lands verbatim. Exactly two legal shapes: a GRADE (belief_credence, belief_uncertainty and belief_computed_at all non-null) or an UNGRADE (all three null). A fixed node is refused — a hand-asserted credence is never overwritten by a display write.',
       inputSchema: {
         node_id: z
           .number()
@@ -1292,8 +1186,6 @@ export async function GET(request: NextRequest) {
     'rah_extract_youtube',
     'rah_extract_pdf',
     'rah_get_context',
-    'rah_set_belief_fixed_credence',
-    'rah_get_belief_movements',
     'rah_write_display_belief',
   ];
 

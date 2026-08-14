@@ -1,8 +1,8 @@
 /**
- * The duplicate-guard / inference-swap collision
- * (docs/belief-model-subjective-logic.md §8, "the duplicate-guard collision")
- * — part characterization pin, part FAILING-FIRST set for the
- * no-same-direction-parallel-edges slice.
+ * The duplicate-guard / inference-swap collision ("the duplicate-guard
+ * collision" — recorded in samai's belief-model docs since the model prose
+ * left this fork) — part characterization pin, part FAILING-FIRST set for
+ * the no-same-direction-parallel-edges slice.
  *
  * WHY THIS FILE EXISTS. The samai-diagnostic adapter writes edges through
  * the remote MCP door, which forwards to POST /api/edges. That
@@ -21,7 +21,7 @@
  *    answer shape the as-written duplicate branch already ships,
  *  - case 2: the belief consequence of that merge — a colliding create
  *    still merges and touches no belief state: the derived node's credence
- *    is unchanged and no movement is appended,
+ *    is unchanged,
  *  - case 4: edgeService.createEdge itself, handed an exact duplicate,
  *    answers the EXISTING stored row (same id) and writes no second row — the
  *    guard is no longer the callers' job alone.
@@ -220,8 +220,8 @@ describe('duplicate-guard / inference-swap collision (pin + failing-first merge 
   // Case 2 — the belief consequence of the merge: a colliding create still
   // merges and touches no belief state. The derived node keeps exactly the
   // belief it had (here: never-assessed, the only state a graph without edge
-  // evidence produces for a non-fixed node) and no movement is appended.
-  it('a colliding create merges and touches no belief state: credence and movements unchanged', async () => {
+  // evidence produces for a non-fixed node).
+  it('a colliding create merges and touches no belief state: credence unchanged', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeAId = db.insertNodeFixture({ title: 'claim node A, the derived end' });
     const sourceNodeBId = db.insertFixedBeliefCredenceNodeFixture({
@@ -248,13 +248,10 @@ describe('duplicate-guard / inference-swap collision (pin + failing-first merge 
     // No second row landed.
     expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
 
-    // No belief state moved anywhere: the claim is still never-assessed, the
-    // fixed source keeps its asserted credence, and neither node gained a
-    // movement row.
+    // No belief state moved anywhere: the claim is still never-assessed and
+    // the fixed source keeps its asserted credence.
     expect(db.readNodeBelief(claimNodeAId).belief_credence).toBeNull();
     expect(Number(db.readNodeBelief(sourceNodeBId).belief_credence)).toBeCloseTo(0.8, 10);
-    expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(0);
-    expect(db.readBeliefMovements(sourceNodeBId)).toHaveLength(0);
   });
 
   // Case 3 — the same-direction guard short-circuit answers honestly: a
@@ -289,11 +286,9 @@ describe('duplicate-guard / inference-swap collision (pin + failing-first merge 
     expect(duplicateWriteReply.message).toMatch(/already exists/i);
 
     // Nothing was written and no belief state moved: one row, the claim
-    // still never-assessed, no movement on either node.
+    // still never-assessed.
     expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
     expect(db.readNodeBelief(claimNodeAId).belief_credence).toBeNull();
-    expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(0);
-    expect(db.readBeliefMovements(sourceNodeBId)).toHaveLength(0);
 
     // The guard's honest answer shape: the explicit already_existed
     // indication and the EXISTING edge's stored row, so the caller (and the

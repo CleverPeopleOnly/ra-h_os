@@ -18,11 +18,11 @@ export const runtime = 'nodejs';
  *
  * Any mixture is refused with 400 naming the two shapes. An unknown node is
  * 404 naming the node; a FIXED node is 409 naming belief_credence_is_fixed —
- * a hand-asserted credence is only changed through the assert/clear tools.
- * The door's schema already refuses out-of-interval numbers, but the app is
- * a public surface of its own, so every range is enforced here too — refused,
- * never reinterpreted. NEITHER legal write logs a belief_movements row:
- * movement history is samai's now.
+ * a hand-asserted credence is never overwritten by a display write. The
+ * door's schema already refuses out-of-interval numbers, but the app is a
+ * public surface of its own, so every range is enforced here too — refused,
+ * never reinterpreted. NEITHER legal write logs any history row: movement
+ * history is samai's now.
  */
 export async function POST(request: NextRequest) {
   try {

@@ -37,7 +37,7 @@
  * the dynamic import as `any` (cast to the pinned surface below), and vitest
  * resolves the alias at runtime — today every test reds with a readable
  * "Cannot find module" rejection, the missing-feature analogue of the
- * namespace-cast pattern in beliefGradingPolicyV2SubjectiveLogic.test.ts.
+ * house's namespace-cast red pattern for not-yet-shipped exports.
  *
  * The shared mapper IS imported statically: beliefMcpToolContract exists,
  * has no side effects and never touches the SQLite client.
