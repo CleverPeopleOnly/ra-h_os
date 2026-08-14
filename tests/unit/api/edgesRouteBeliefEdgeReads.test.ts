@@ -1,5 +1,5 @@
 /**
- * Belief-evidence EDGE READS through GET /api/edges (app/api/edges/route.ts).
+ * Filtered EDGE READS through GET /api/edges (app/api/edges/route.ts).
  *
  * The shipped handler is declared `export async function GET()` — it takes no
  * request object at all, so every query parameter a caller sends is silently
@@ -14,19 +14,18 @@
  *  - invalid values are REJECTED with 400 rather than silently ignored: a
  *    non-numeric nodeId, a negative limit, a negative offset, an unknown
  *    direction. A silently ignored filter is the defect being fixed, so
- *    "ignored" is never an acceptable answer,
- *  - both belief columns reach the response verbatim, including NULL:
- *    belief_evidence_support NULL means the edge is not evidence at all, and a
- *    support with belief_evidence_contribution NULL means evidence nobody has
- *    graded yet — the state the recovery sweep looks for, which must never be
- *    coerced to 0.
+ *    "ignored" is never an acceptable answer.
  *
- * Seam (same as tests/unit/api/edgesRouteEvidence.test.ts): the route imports
- * { edgeService } from '@/services/database', so that module is vi.mocked
- * wholesale and the handler is invoked directly with a plain Request. No
- * database is ever opened; the tempBeliefDatabase helper is imported first
- * purely for its module-load sentinel (it pins SQLITE_DB_PATH to a throwaway
- * temp file so no accidental transitive import can touch the real database).
+ * deleted in the evidence-leaves-the-edges-table slice: the
+ * returns-belief-columns-verbatim test — edges carry no belief evidence any
+ * more, so there are no belief columns for the route to return.
+ *
+ * Seam: the route imports { edgeService } from '@/services/database', so that
+ * module is vi.mocked wholesale and the handler is invoked directly with a
+ * plain Request. No database is ever opened; the tempBeliefDatabase helper is
+ * imported first purely for its module-load sentinel (it pins SQLITE_DB_PATH
+ * to a throwaway temp file so no accidental transitive import can touch the
+ * real database).
  */
 
 // FIRST import: arms the temp-file SQLITE_DB_PATH sentinel at module load.
@@ -48,8 +47,8 @@ vi.mock('@/services/database', () => ({
 import { edgeService } from '@/services/database';
 import { GET } from '../../../app/api/edges/route';
 
-// Which side of a node an edge read is asking for. 'into' is the evidence
-// side: those edges point AT the node and feed its credence.
+// Which side of a node an edge read is asking for: 'into' matches
+// to_node_id, 'out_of' matches from_node_id.
 type BeliefEdgeReadDirection = 'into' | 'out_of' | 'both';
 
 // The filter GET /api/edges must build from its query string and pass to
@@ -82,42 +81,20 @@ function getForwardedEdgeReadFilter(): BeliefEdgeReadFilter | undefined {
   return firstCallArguments?.[0];
 }
 
-// One edge row as the route must return it: identity columns plus BOTH belief
-// columns, each nullable because NULL is a meaningful state on both.
+// One edge row as the route must return it: the plain relationship columns —
+// no edge carries belief evidence any more.
 interface BeliefEdgeReadRow {
   id: number;
   from_node_id: number;
   to_node_id: number;
-  belief_evidence_support: number | null;
-  belief_evidence_contribution: number | null;
 }
 
-// The three edge states the read path must keep distinct, as the mocked
-// service would return them: a plain relationship edge (support NULL), an
-// ungraded evidence edge (support set, contribution NULL), and a graded
-// evidence edge (both numbers).
-const threeStateEdgeReadRows: BeliefEdgeReadRow[] = [
-  {
-    id: 11,
-    from_node_id: 2,
-    to_node_id: 1,
-    belief_evidence_support: null,
-    belief_evidence_contribution: null,
-  },
-  {
-    id: 12,
-    from_node_id: 3,
-    to_node_id: 1,
-    belief_evidence_support: 0.5,
-    belief_evidence_contribution: null,
-  },
-  {
-    id: 13,
-    from_node_id: 4,
-    to_node_id: 1,
-    belief_evidence_support: 0.75,
-    belief_evidence_contribution: 0.6,
-  },
+// Stub rows the mocked service returns for the tests that need a non-empty
+// answer: three plain relationship edges into node 1.
+const stubEdgeReadRows: BeliefEdgeReadRow[] = [
+  { id: 11, from_node_id: 2, to_node_id: 1 },
+  { id: 12, from_node_id: 3, to_node_id: 1 },
+  { id: 13, from_node_id: 4, to_node_id: 1 },
 ];
 
 beforeEach(() => {
@@ -125,7 +102,7 @@ beforeEach(() => {
   vi.mocked(edgeService.getEdges).mockResolvedValue([]);
 });
 
-describe('GET /api/edges belief-evidence edge reads', () => {
+describe('GET /api/edges filtered edge reads', () => {
   // The whole point of the defect: the route must actually read its query
   // string and forward every part of the filter to the service.
   it('forwards nodeId, direction, limit and offset from the query string to edgeService.getEdges', async () => {
@@ -149,8 +126,7 @@ describe('GET /api/edges belief-evidence edge reads', () => {
     expect(typeof forwardedFilter?.offset).toBe('number');
   });
 
-  // The out_of side must be reachable too — under canon (spec §8) it is the
-  // side carrying a node's own evidence basis.
+  // The out_of side must be reachable too.
   it('forwards a direction of out_of to edgeService.getEdges', async () => {
     await readEdgesRoute(buildEdgesGetRequest('?nodeId=1&direction=out_of'));
 
@@ -163,41 +139,6 @@ describe('GET /api/edges belief-evidence edge reads', () => {
     await readEdgesRoute(buildEdgesGetRequest('?nodeId=1'));
 
     expect(getForwardedEdgeReadFilter()).toMatchObject({ nodeId: 1, direction: 'both' });
-  });
-
-  // Both belief columns must reach the caller untouched for all three edge
-  // states. The NULL contribution on an ungraded evidence edge is the
-  // load-bearing one: coercing it to 0 would make an ungraded edge look
-  // graded-and-worthless and hide it from the recovery sweep.
-  it('returns belief_evidence_support and belief_evidence_contribution verbatim, keeping NULL as NULL', async () => {
-    vi.mocked(edgeService.getEdges).mockResolvedValue(
-      threeStateEdgeReadRows as unknown as Awaited<ReturnType<typeof edgeService.getEdges>>
-    );
-
-    const response = await readEdgesRoute(buildEdgesGetRequest('?nodeId=1&direction=into'));
-    const responseBody = (await response.json()) as {
-      success: boolean;
-      data: BeliefEdgeReadRow[];
-    };
-
-    expect(response.status).toBe(200);
-    expect(responseBody.success).toBe(true);
-    expect(responseBody.data).toHaveLength(3);
-
-    const plainEdge = responseBody.data.find(edge => edge.id === 11);
-    // NULL support is the one thing that makes an edge not evidence at all.
-    expect(Object.keys(plainEdge ?? {})).toContain('belief_evidence_support');
-    expect(plainEdge?.belief_evidence_support).toBeNull();
-    expect(plainEdge?.belief_evidence_contribution).toBeNull();
-
-    const ungradedEvidenceEdge = responseBody.data.find(edge => edge.id === 12);
-    expect(ungradedEvidenceEdge?.belief_evidence_support).toBeCloseTo(0.5, 10);
-    // NULL, never 0: this edge is evidence that has not been graded yet.
-    expect(ungradedEvidenceEdge?.belief_evidence_contribution).toBeNull();
-
-    const gradedEvidenceEdge = responseBody.data.find(edge => edge.id === 13);
-    expect(gradedEvidenceEdge?.belief_evidence_support).toBeCloseTo(0.75, 10);
-    expect(gradedEvidenceEdge?.belief_evidence_contribution).toBeCloseTo(0.6, 10);
   });
 
   // A nodeId that is not a number cannot be turned into a filter, so it must
@@ -229,8 +170,8 @@ describe('GET /api/edges belief-evidence edge reads', () => {
   });
 
   // A direction the read path does not implement must be an error, not a
-  // silent fall back to 'both': a caller asking for one side and
-  // getting both sides would read edges that do not feed the node's credence.
+  // silent fall back to 'both': a caller asking for one side would silently
+  // read edges from the other side too.
   it('rejects an unknown direction with 400 and never reads edges', async () => {
     const response = await readEdgesRoute(buildEdgesGetRequest('?nodeId=1&direction=sideways'));
 
@@ -254,7 +195,7 @@ describe('GET /api/edges belief-evidence edge reads', () => {
   // an error.
   it('GUARD: an empty query string still answers 200 with the edges the service returned', async () => {
     vi.mocked(edgeService.getEdges).mockResolvedValue(
-      threeStateEdgeReadRows as unknown as Awaited<ReturnType<typeof edgeService.getEdges>>
+      stubEdgeReadRows as unknown as Awaited<ReturnType<typeof edgeService.getEdges>>
     );
 
     const response = await readEdgesRoute(buildEdgesGetRequest(''));

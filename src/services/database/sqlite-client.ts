@@ -431,8 +431,6 @@ class SQLiteClient {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         context TEXT,
         explanation TEXT,
-        belief_evidence_support REAL,
-        belief_evidence_contribution REAL,
         FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
         FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
       );
@@ -554,9 +552,7 @@ class SQLiteClient {
       ensureNodeBeliefCol('belief_credence', 'ALTER TABLE nodes ADD COLUMN belief_credence REAL;');
       ensureNodeBeliefCol('belief_computed_at', 'ALTER TABLE nodes ADD COLUMN belief_computed_at TEXT;');
       // A node with this flag set has its credence ASSERTED by a human rather
-      // than derived from its evidence (its outgoing support-bearing edges) —
-      // the bootstrap a derived-only graph needs before anything in it can be
-      // graded. NOT NULL DEFAULT 0
+      // than derived by the engine. NOT NULL DEFAULT 0
       // makes "derived" the state every node is in without any write, and
       // backfills every existing row of a legacy database with it.
       ensureNodeBeliefCol(
@@ -566,9 +562,7 @@ class SQLiteClient {
       // The two v2 evidence masses (spec §2): the primary belief state, both
       // REAL and NULLABLE because both-NULL is the "never assessed" state —
       // which is exactly what ADD COLUMN backfills every existing row with.
-      // Schema only: no data is rewritten here — v1-graded rows keep their
-      // credence and are regraded (masses filled in) by the startup recovery
-      // sweep, movement trigger 'model-migration'.
+      // Schema only: no data is rewritten here.
       ensureNodeBeliefCol(
         'belief_evidence_for_mass',
         'ALTER TABLE nodes ADD COLUMN belief_evidence_for_mass REAL;'
@@ -608,166 +602,44 @@ class SQLiteClient {
       console.warn('Failed to ensure belief_movements credence columns:', movementErr);
     }
 
-    // edges: the two evidence columns the belief engine reads and stamps —
-    // the unsigned support and the grading stamp.
+    // edges: belief evidence no longer lives on edges AT ALL — it moved out
+    // of this fork into samai's own store, so an edge is a plain
+    // knowledge-graph relationship. A legacy database still carrying an
+    // evidence-shaped edge column, under ANY name a past schema shipped it
+    // under, has it DROPPED here: the values are deliberately carried
+    // nowhere. ALTER TABLE DROP COLUMN edits the existing edges table in
+    // place, so its indexes and its ON DELETE CASCADE foreign keys survive
+    // untouched (none of these columns is in any index — the UNIQUE
+    // idx_edges_direction_slot index is on the two node-id columns). Guarded
+    // by a PRAGMA table_info scan, so a reopen finds nothing left to drop.
     try {
-      // Vocabulary migration: databases created while the field was named
-      // evidence_relation (with values supports/contradicts) get the column
-      // renamed to belief_evidence_direction and the values mapped to
-      // for/against. That intermediate direction column is itself merged into
-      // the unsigned belief_evidence_support column further down (magnitude
-      // only — the direction reading is discarded there), so mapping the
-      // legacy values here is what carries supports/contradicts through to a
-      // sign.
-      const preMigrationEdgeCols = this.db.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
-      if (preMigrationEdgeCols.some(col => col.name === 'evidence_relation')) {
-        try {
-          this.db.exec('ALTER TABLE edges RENAME COLUMN evidence_relation TO belief_evidence_direction;');
-          this.db.exec(
-            "UPDATE edges SET belief_evidence_direction = CASE belief_evidence_direction WHEN 'supports' THEN 'for' WHEN 'contradicts' THEN 'against' ELSE belief_evidence_direction END WHERE belief_evidence_direction IS NOT NULL;"
-          );
-        } catch (renameErr) {
-          console.warn('Failed to migrate edges.evidence_relation to belief_evidence_direction:', renameErr);
-        }
-      }
-
-      // Vocabulary migration: the evidence columns shipped briefly without the
-      // belief_ prefix; every belief-system column now carries it so belief
-      // code is recognisable on sight anywhere in the codebase. Data carries
-      // over unchanged. The origin key is deliberately absent — it is dropped
-      // below rather than renamed forward.
-      const unprefixedEvidenceRenames: Array<[string, string]> = [
-        ['evidence_direction', 'belief_evidence_direction'],
-        ['evidence_strength', 'belief_evidence_strength'],
-        ['evidence_effective_contribution', 'belief_evidence_contribution'],
-      ];
-      for (const [oldName, newName] of unprefixedEvidenceRenames) {
-        if (preMigrationEdgeCols.some(col => col.name === oldName)) {
-          try {
-            this.db.exec(`ALTER TABLE edges RENAME COLUMN ${oldName} TO ${newName};`);
-          } catch (renameErr) {
-            console.warn(`Failed to migrate edges.${oldName} to ${newName}:`, renameErr);
-          }
-        }
-      }
-
-      // Column list as it stands after the vocabulary renames above — the
-      // basis for both the removal loop and the ensure-column loop below.
-      const edgeColsAfterVocabularyRenames = this.db
+      const edgeColumnNamesBeforeEvidenceDrop = this.db
         .prepare('PRAGMA table_info(edges)')
         .all() as Array<{ name: string }>;
-
-      // Removal migration: the evidence origin key existed only to feed the
-      // grading step that collapsed evidence sharing an origin. That step is
-      // deleted — repetition now reinforces belief, weighted by source
-      // standing — so nothing reads the key and it is dropped under every
-      // name it ever shipped under, never renamed forward. ALTER TABLE DROP
-      // COLUMN edits the existing edges table in place, so its indexes and
-      // its ON DELETE CASCADE foreign keys survive untouched (a copy-into-a-
-      // new-table rebuild would lose both).
-      const removedBeliefEvidenceOriginKeyColumnNames = [
+      const removedEdgeEvidenceColumnNames = [
+        'belief_evidence_support',
+        'belief_evidence_contribution',
+        'belief_evidence_direction',
+        'belief_evidence_strength',
         'belief_evidence_origin_key',
+        'evidence_relation',
+        'evidence_direction',
+        'evidence_strength',
+        'evidence_effective_contribution',
         'evidence_origin_key',
         'evidence_independence_key',
       ];
-      for (const removedBeliefEvidenceColumnName of removedBeliefEvidenceOriginKeyColumnNames) {
-        if (edgeColsAfterVocabularyRenames.some(col => col.name === removedBeliefEvidenceColumnName)) {
+      for (const removedEdgeEvidenceColumnName of removedEdgeEvidenceColumnNames) {
+        if (edgeColumnNamesBeforeEvidenceDrop.some(col => col.name === removedEdgeEvidenceColumnName)) {
           try {
-            this.db.exec(`ALTER TABLE edges DROP COLUMN ${removedBeliefEvidenceColumnName};`);
+            this.db.exec(`ALTER TABLE edges DROP COLUMN ${removedEdgeEvidenceColumnName};`);
           } catch (dropErr) {
-            console.warn(`Failed to drop removed edges.${removedBeliefEvidenceColumnName}`, dropErr);
+            console.warn(`Failed to drop removed edges.${removedEdgeEvidenceColumnName}`, dropErr);
           }
         }
       }
-
-      // Merge migration: how loudly an edge's to-end source speaks about the
-      // from-end derived node is ONE UNSIGNED number,
-      // belief_evidence_support (0..1, NULL meaning the edge is not
-      // evidence). Which way the evidence cuts lives on the
-      // source NODE's signed credence, never on the edge — so the legacy
-      // direction reading ('for'/'against') is deliberately DISCARDED and
-      // every gradeable row keeps only its strength's MAGNITUDE: the
-      // relatedness survives, the direction does not, and the edge stays
-      // evidence. While support was stored as a direction beside a magnitude
-      // the two could disagree — an edge could carry a strength with no
-      // direction, storable but impossible to grade — so the pair is folded
-      // into one column and both halves are dropped. This runs AFTER the
-      // vocabulary renames above because older databases only reach the
-      // direction/strength shape (and the for/against values) through those
-      // renames. Column list read fresh so the origin-key drops above are
-      // already reflected.
-      const edgeColsBeforeSupportMerge = this.db
-        .prepare('PRAGMA table_info(edges)')
-        .all() as Array<{ name: string }>;
-      // True while the direction half of the old pair is still on the table.
-      const hasMergedAwayEvidenceDirectionColumn = edgeColsBeforeSupportMerge.some(
-        col => col.name === 'belief_evidence_direction'
-      );
-      // True while the magnitude half of the old pair is still on the table.
-      const hasMergedAwayEvidenceStrengthColumn = edgeColsBeforeSupportMerge.some(
-        col => col.name === 'belief_evidence_strength'
-      );
-      if (hasMergedAwayEvidenceDirectionColumn || hasMergedAwayEvidenceStrengthColumn) {
-        try {
-          if (!edgeColsBeforeSupportMerge.some(col => col.name === 'belief_evidence_support')) {
-            this.db.exec('ALTER TABLE edges ADD COLUMN belief_evidence_support REAL;');
-          }
-          // Only a row with BOTH halves was ever gradeable, so only such a
-          // row gets a support value — and BOTH directions get the strength's
-          // MAGNITUDE, because support is unsigned: the direction reading is
-          // discarded (it now lives on the source node's credence) while the
-          // relatedness survives and the edge stays evidence. Existing
-          // belief_evidence_contribution stamps are left untouched —
-          // historical data, not remapped. The WHERE leaves every
-          // NULL-direction row's support NULL, which is exactly what "not
-          // evidence" means — an orphan magnitude with no direction never
-          // became evidence and must not become evidence now.
-          if (hasMergedAwayEvidenceDirectionColumn && hasMergedAwayEvidenceStrengthColumn) {
-            this.db.exec(
-              `UPDATE edges
-                 SET belief_evidence_support = ABS(belief_evidence_strength)
-               WHERE belief_evidence_direction IS NOT NULL;`
-            );
-          }
-          // ALTER TABLE DROP COLUMN edits the existing edges table in place,
-          // so its indexes and its ON DELETE CASCADE foreign keys survive (a
-          // copy-into-a-new-table rebuild would lose both, and nothing after
-          // this migration would recreate them).
-          if (hasMergedAwayEvidenceDirectionColumn) {
-            this.db.exec('ALTER TABLE edges DROP COLUMN belief_evidence_direction;');
-          }
-          if (hasMergedAwayEvidenceStrengthColumn) {
-            this.db.exec('ALTER TABLE edges DROP COLUMN belief_evidence_strength;');
-          }
-        } catch (mergeErr) {
-          console.warn(
-            'Failed to merge edges.belief_evidence_direction and belief_evidence_strength into belief_evidence_support:',
-            mergeErr
-          );
-        }
-      }
-
-      // Column list as it stands after the merge above — the basis for the
-      // ensure-column loop below, which must not re-add what was just merged.
-      const edgeColsAfterSupportMerge = this.db
-        .prepare('PRAGMA table_info(edges)')
-        .all() as Array<{ name: string }>;
-
-      // Adds one missing evidence column to edges; no-op when it already
-      // exists. Catches the database that had no evidence fields at all.
-      const ensureEdgeEvidenceCol = (name: string, ddl: string) => {
-        if (!edgeColsAfterSupportMerge.some(col => col.name === name)) {
-          try {
-            this.db.exec(ddl);
-          } catch (colErr) {
-            console.warn(`Failed to add edges.${name}`, colErr);
-          }
-        }
-      };
-      ensureEdgeEvidenceCol('belief_evidence_support', 'ALTER TABLE edges ADD COLUMN belief_evidence_support REAL;');
-      ensureEdgeEvidenceCol('belief_evidence_contribution', 'ALTER TABLE edges ADD COLUMN belief_evidence_contribution REAL;');
     } catch (edgeErr) {
-      console.warn('Failed to ensure edges evidence columns:', edgeErr);
+      console.warn('Failed to drop the removed edges evidence columns:', edgeErr);
     }
 
     // Sources-as-nodes migration: a source is just a node and its influence

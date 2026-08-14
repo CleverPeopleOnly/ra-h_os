@@ -5,29 +5,38 @@
  *
  * V1 writes the constant 'belief-recompute' on every engine movement, so the
  * log can never answer WHY a credence moved. V2 makes `trigger` the actual
- * cause, one value per entry point:
+ * cause, one value per entry point — and the constant 'belief-recompute'
+ * disappears.
  *
- *   evidence-edge-write            EdgeService create/update of an evidence edge
+ * INTERIM WORLD (the evidence-leaves-the-edges-table slice): belief evidence
+ * moved out of this fork into samai's own store, so no edge carries evidence
+ * and every non-fixed recompute lands never-assessed — credence NULL with no
+ * movement row, because an ungraded outcome has no to_credence to record.
+ * The only entry point that still logs a movement is a human asserting a
+ * credence ('belief-fixed-credence-set'). This file pins that each surviving
+ * entry point behaves that way:
+ *
  *   embed-grade                    the auto-embed queue's post-embed regrade
- *   recovery-sweep                 the startup recovery sweep
- *   propagation                    downstream regrades inside a sweep
- *   mcp-recompute                  POST /api/belief/recompute (the doors' engine door)
- *   belief-fixed-credence-set      a human asserting a credence
- *   belief-fixed-credence-cleared  the un-fix door
+ *                                  lands never-assessed, logging nothing
+ *   mcp-recompute                  POST /api/belief/recompute (the doors'
+ *                                  engine door) lands never-assessed,
+ *                                  logging nothing
+ *   belief-fixed-credence-set      a human asserting a credence — still a
+ *                                  real movement
+ *   belief-fixed-credence-cleared  the un-fix door — the clear regrades to
+ *                                  never-assessed, so no movement is logged
  *
- * and the constant 'belief-recompute' disappears. The 'propagation' trigger
- * is pinned beside the sweep mechanics in beliefPropagationSweepV2.test.ts,
- * and 'belief-fixed-credence-cleared' beside the un-fix semantics in
- * beliefFixedCredenceClearV2.test.ts; every other entry point is pinned here.
- * (The 'belief-fixed-credence-set' case already holds under v1 and is
- * restated so the vocabulary is pinned in one place.)
+ * deleted in the evidence-leaves-the-edges-table slice: the
+ * 'evidence-edge-write' tests (EdgeService createEdge/updateEdge no longer
+ * touch belief state at all — pinned in edgeWritesTouchNoBeliefState.test.ts)
+ * and the 'recovery-sweep' test (the recovery service is deleted — pinned in
+ * beliefRecoveryServiceRemoved.test.ts).
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
-import type { EdgeData } from '@/types/database';
 import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
@@ -36,7 +45,7 @@ import {
 // Replace the real embedding pipeline with an instantly-successful stub so
 // the auto-embed queue reaches its completion path (and its belief hook)
 // without network or vector work — same seam as autoEmbedBeliefHook.test.ts,
-// but WITHOUT mocking the belief service: the movement row must be real.
+// but WITHOUT mocking the belief service: the stored outcome must be real.
 vi.mock('@/services/embedding/ingestion', () => ({
   embedNodeContent: vi.fn(async () => ({ success: true })),
 }));
@@ -49,25 +58,6 @@ afterEach(() => {
   db = undefined;
 });
 
-// Seed a claim deriving from one fixed source over one canon evidence edge
-// (claim→source), so any entry point that regrades the claim produces a real
-// movement row to inspect.
-function seedGradeableClaim(
-  context: TempBeliefDatabase
-): { claimNodeId: number; sourceNodeId: number; edgeId: number } {
-  const claimNodeId = context.insertNodeFixture({ title: 'claim awaiting a trigger' });
-  const sourceNodeId = context.insertFixedBeliefCredenceNodeFixture({
-    title: 'fixed source the claim derives from',
-    beliefCredence: 0.9,
-  });
-  const edgeId = context.insertEvidenceEdgeFixture({
-    derivedNodeId: claimNodeId,
-    sourceNodeId,
-    support: 0.5,
-  });
-  return { claimNodeId, sourceNodeId, edgeId };
-}
-
 // The trigger of a node's most recent movement row, or undefined when the
 // node has no movements yet.
 function latestMovementTrigger(context: TempBeliefDatabase, nodeId: number): string | undefined {
@@ -76,52 +66,18 @@ function latestMovementTrigger(context: TempBeliefDatabase, nodeId: number): str
 }
 
 describe('movement triggers name their entry point (v2)', () => {
-  // Creating an evidence edge through EdgeService is the evidence-edge-write
-  // entry point, and the movement it causes must say so.
-  it("EdgeService.createEdge logs the regrade with trigger 'evidence-edge-write'", async () => {
+  // The auto-embed queue's post-embed regrade is the embed-grade entry
+  // point. In the interim world its recompute of a non-fixed node lands
+  // never-assessed: the node's stale credence is cleared to NULL and NO
+  // movement is logged (an ungraded outcome has no to_credence to record).
+  it("the auto-embed queue's post-embed regrade lands never-assessed and logs no movement", async () => {
     db = await openTempBeliefDatabase();
-    const claimNodeId = db.insertNodeFixture({ title: 'claim graded by an edge write' });
-    const sourceNodeId = db.insertFixedBeliefCredenceNodeFixture({
-      title: 'fixed source writing evidence',
-      beliefCredence: 0.9,
+    // A stale seeded credence makes the regrade observable: the recompute
+    // clears it to NULL, which is how the test knows the hook actually ran.
+    const claimNodeId = db.insertNodeFixture({
+      title: 'claim regraded after embedding',
+      beliefCredence: 0.4,
     });
-    const { edgeService } = await db.importEdgeService();
-
-    // skip_inference + explicit explanation: no LLM path is ever exercised.
-    // Canon direction: the claim (derived end) is the from-node — "my
-    // credence derives from you" — and the regrade must land on it.
-    const evidenceEdgeInput: EdgeData = {
-      from_node_id: claimNodeId,
-      to_node_id: sourceNodeId,
-      explanation: 'Evidence edge written to pin its movement trigger.',
-      created_via: 'workflow',
-      source: 'user',
-      skip_inference: true,
-      belief_evidence_support: 0.5,
-    };
-    await edgeService.createEdge(evidenceEdgeInput);
-
-    expect(latestMovementTrigger(db, claimNodeId)).toBe('evidence-edge-write');
-  });
-
-  // Correcting a stored support through EdgeService is the same entry point:
-  // the write door is the edge write, whichever verb carried it.
-  it("EdgeService.updateEdge support correction logs trigger 'evidence-edge-write'", async () => {
-    db = await openTempBeliefDatabase();
-    const { claimNodeId, edgeId } = seedGradeableClaim(db);
-    const { recomputeNodeBelief } = await db.importBeliefService();
-    await recomputeNodeBelief(claimNodeId);
-    const { edgeService } = await db.importEdgeService();
-
-    await edgeService.updateEdge(edgeId, { belief_evidence_support: 0.9 });
-
-    expect(latestMovementTrigger(db, claimNodeId)).toBe('evidence-edge-write');
-  });
-
-  // The auto-embed queue's post-embed regrade is the embed-grade entry point.
-  it("the auto-embed queue's post-embed regrade logs trigger 'embed-grade'", async () => {
-    db = await openTempBeliefDatabase();
-    const { claimNodeId } = seedGradeableClaim(db);
     // Bind the (mocked) ingestion module and the real queue to this database
     // generation before enqueueing.
     await db.importIngestionModule();
@@ -130,35 +86,33 @@ describe('movement triggers name their entry point (v2)', () => {
     const autoEmbedQueue = new AutoEmbedQueue();
     autoEmbedQueue.enqueue(claimNodeId, { force: true, reason: 'trigger-vocabulary-test' });
 
-    // The queue completes asynchronously; wait for its regrade to land.
+    // The queue completes asynchronously; wait for its regrade to land as
+    // never-assessed.
     await vi.waitFor(
       () => {
-        expect(latestMovementTrigger(db as TempBeliefDatabase, claimNodeId)).toBe('embed-grade');
+        expect(
+          (db as TempBeliefDatabase).readNodeBelief(claimNodeId).belief_credence
+        ).toBeNull();
       },
       { timeout: 2000, interval: 25 }
     );
-  });
 
-  // The startup recovery sweep is its own entry point. The v2 sweep export is
-  // reached through a cast — see beliefRecoverySweepStaleStampsV2.test.ts for
-  // the sweep's behaviour tests.
-  it("the recovery sweep logs its regrades with trigger 'recovery-sweep'", async () => {
-    db = await openTempBeliefDatabase();
-    const { claimNodeId } = seedGradeableClaim(db);
-    const beliefRecoveryModule = (await import(
-      '@/services/belief/beliefRecoveryService'
-    )) as unknown as { runBeliefRecoverySweep: () => Promise<{ regradedNodeIds: number[] }> };
-
-    await beliefRecoveryModule.runBeliefRecoverySweep();
-
-    expect(latestMovementTrigger(db, claimNodeId)).toBe('recovery-sweep');
+    // Never-assessed is not a movement: nothing was logged for the node.
+    expect(db.readBeliefMovements(claimNodeId)).toEqual([]);
   });
 
   // The app's recompute endpoint — what both app-backed MCP doors forward
-  // rah_recompute_node_belief to — is the mcp-recompute entry point.
-  it("POST /api/belief/recompute logs the regrade with trigger 'mcp-recompute'", async () => {
+  // rah_recompute_node_belief to — is the mcp-recompute entry point. In the
+  // interim world a recompute of a non-fixed node lands never-assessed and
+  // logs NO movement.
+  it('POST /api/belief/recompute lands never-assessed and logs no movement', async () => {
     db = await openTempBeliefDatabase();
-    const { claimNodeId } = seedGradeableClaim(db);
+    // A stale seeded credence makes the recompute observable: it is cleared
+    // to NULL rather than regraded to a new value.
+    const claimNodeId = db.insertNodeFixture({
+      title: 'claim recomputed through the engine door',
+      beliefCredence: 0.4,
+    });
     // Import the route bound to this database generation, then drive its POST
     // handler exactly as a door would.
     const { POST } = await import('../../../app/api/belief/recompute/route');
@@ -171,7 +125,8 @@ describe('movement triggers name their entry point (v2)', () => {
     const recomputeResponse = await POST(recomputeRequest);
 
     expect(recomputeResponse.status).toBe(200);
-    expect(latestMovementTrigger(db, claimNodeId)).toBe('mcp-recompute');
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
+    expect(db.readBeliefMovements(claimNodeId)).toEqual([]);
   });
 
   // Restated v1 behaviour: a human assertion logs belief-fixed-credence-set.
@@ -186,22 +141,27 @@ describe('movement triggers name their entry point (v2)', () => {
     expect(latestMovementTrigger(db, assertedNodeId)).toBe('belief-fixed-credence-set');
   });
 
-  // The un-fix door logs belief-fixed-credence-cleared; its full semantics
-  // live in beliefFixedCredenceClearV2.test.ts — here only the vocabulary.
-  it("clearBeliefFixedCredence logs trigger 'belief-fixed-credence-cleared'", async () => {
+  // The un-fix door's full semantics live in beliefFixedCredenceClearV2 and
+  // beliefEngineWithoutEdgeEvidence — here only the vocabulary outcome: the
+  // clear's regrade lands never-assessed, so NO 'belief-fixed-credence-cleared'
+  // movement is logged (an ungraded outcome has no to_credence to record).
+  it('clearBeliefFixedCredence lands never-assessed and logs no cleared movement', async () => {
     db = await openTempBeliefDatabase();
-    // A fixed node WITH evidence behind it, so the clear's regrade lands on a
-    // real credence and must therefore log a movement.
-    const { claimNodeId } = seedGradeableClaim(db);
-    const { setBeliefFixedCredence } = await import('@/services/belief/beliefFixedCredence');
-    setBeliefFixedCredence(claimNodeId, -0.9);
-    const beliefFixedCredenceModule = (await import(
+    const assertedNodeId = db.insertNodeFixture({ title: 'node asserted then un-fixed' });
+    const { setBeliefFixedCredence, clearBeliefFixedCredence } = await import(
       '@/services/belief/beliefFixedCredence'
-    )) as unknown as { clearBeliefFixedCredence: (nodeId: number) => unknown };
+    );
+    setBeliefFixedCredence(assertedNodeId, -0.9);
 
-    beliefFixedCredenceModule.clearBeliefFixedCredence(claimNodeId);
+    await clearBeliefFixedCredence(assertedNodeId);
 
-    expect(latestMovementTrigger(db, claimNodeId)).toBe('belief-fixed-credence-cleared');
+    // The regrade after the clear has no evidence to read: never-assessed.
+    expect(db.readNodeBelief(assertedNodeId).belief_credence).toBeNull();
+    // Only the assertion itself is in the log; the clear logged nothing.
+    const movementTriggersLoggedForClearedNode = db
+      .readBeliefMovements(assertedNodeId)
+      .map(movement => movement.trigger);
+    expect(movementTriggersLoggedForClearedNode).toEqual(['belief-fixed-credence-set']);
   });
 
   // GUARD (spec §5): the constant 'belief-recompute' disappears from the
@@ -209,10 +169,9 @@ describe('movement triggers name their entry point (v2)', () => {
   // it. Source scan rather than behaviour because absence over every possible
   // call path is not observable from any one call.
   it("GUARD: the string 'belief-recompute' no longer appears in the belief services", () => {
-    // Every belief service module that writes movements today.
+    // Every belief service module that can write movements today.
     const beliefServiceSourcePaths = [
       path.join(process.cwd(), 'src', 'services', 'belief', 'beliefService.ts'),
-      path.join(process.cwd(), 'src', 'services', 'belief', 'beliefRecoveryService.ts'),
       path.join(process.cwd(), 'src', 'services', 'belief', 'beliefFixedCredence.ts'),
     ];
     for (const beliefServiceSourcePath of beliefServiceSourcePaths) {

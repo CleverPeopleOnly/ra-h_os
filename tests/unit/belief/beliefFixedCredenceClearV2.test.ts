@@ -6,10 +6,14 @@
  * A single operation — clearBeliefFixedCredence in
  * src/services/belief/beliefFixedCredence.ts, the twin of the existing
  * setBeliefFixedCredence — clears belief_credence_is_fixed to 0 and
- * IMMEDIATELY regrades the node from its actual evidence, logging the
- * movement with trigger 'belief-fixed-credence-cleared'. Because set/clear-
- * fixed are the only writes that move a fixed node's projection, the clear
- * also propagates through the node's outgoing evidence (spec §4 point 5).
+ * immediately regrades the node. In the interim world of the
+ * evidence-leaves-the-edges-table slice no edge carries evidence, so that
+ * regrade always lands never-assessed (see
+ * beliefEngineWithoutEdgeEvidence.test.ts for the engine-side pins).
+ *
+ * deleted in the evidence-leaves-the-edges-table slice: the
+ * regrades-from-its-evidence test and the propagates-through-the-cleared-node
+ * test — both had edge evidence itself as their subject.
  *
  * Also pinned: the shared MCP tool contract
  * (src/services/belief/beliefMcpToolContract.js) grows the input and output
@@ -33,10 +37,7 @@ import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
 } from './helpers/tempBeliefDatabase';
-import {
-  expectedBeliefCredenceProjection,
-  readBeliefEvidenceMasses,
-} from './helpers/beliefEvidenceMassExpectations';
+import { readBeliefEvidenceMasses } from './helpers/beliefEvidenceMassExpectations';
 import * as beliefMcpToolContract from '@/services/belief/beliefMcpToolContract';
 
 // The database context under test; opened per test, closed after each.
@@ -70,52 +71,6 @@ async function importClearBeliefFixedCredence(): Promise<
 }
 
 describe('clearBeliefFixedCredence (v2 un-fix door, service semantics)', () => {
-  // The headline: un-fixing a node with real evidence behind it drops the
-  // assertion and grades the node from that evidence in the same operation.
-  it('clears the fixed flag and immediately regrades the node from its evidence', async () => {
-    db = await openTempBeliefDatabase();
-    // Evidence behind the soon-to-be-cleared node: a fixed expert at 0.9
-    // supporting it with 0.5 → contribution +0.45 → credence 0.45/2.45.
-    const evidenceExpertNodeId = db.insertFixedBeliefCredenceNodeFixture({
-      title: 'expert supplying the evidence the clear regrades from',
-      beliefCredence: 0.9,
-    });
-    const clearedNodeId = db.insertNodeFixture({ title: 'node whose assertion is withdrawn' });
-    // Canon: the cleared node derives from the expert (cleared→expert).
-    db.insertEvidenceEdgeFixture({
-      derivedNodeId: clearedNodeId,
-      sourceNodeId: evidenceExpertNodeId,
-      support: 0.5,
-    });
-    const { setBeliefFixedCredence } = await import('@/services/belief/beliefFixedCredence');
-    // The assertion being withdrawn — deliberately far from the evidence's
-    // own answer, so the regrade is unmistakable.
-    setBeliefFixedCredence(clearedNodeId, -0.9);
-    const clearBeliefFixedCredence = await importClearBeliefFixedCredence();
-
-    await clearBeliefFixedCredence(clearedNodeId);
-
-    expect(db.readNodeBeliefCredenceIsFixed(clearedNodeId)).toBe(0);
-    expect(Number(db.readNodeBelief(clearedNodeId).belief_credence)).toBeCloseTo(
-      expectedBeliefCredenceProjection(0.45, 0),
-      10
-    );
-    // The regrade is a real v2 grading: the evidence masses are persisted.
-    const masses = readBeliefEvidenceMasses(db, clearedNodeId);
-    expect(Number(masses.belief_evidence_for_mass)).toBeCloseTo(0.45, 10);
-    expect(Number(masses.belief_evidence_against_mass)).toBeCloseTo(0, 10);
-    // The movement names the un-fix door: from the withdrawn assertion to the
-    // evidence-derived credence.
-    const clearanceMovements = db.readBeliefMovements(clearedNodeId);
-    const latestMovement = clearanceMovements[clearanceMovements.length - 1];
-    expect(latestMovement.trigger).toBe('belief-fixed-credence-cleared');
-    expect(Number(latestMovement.from_credence)).toBeCloseTo(-0.9, 10);
-    expect(Number(latestMovement.to_credence)).toBeCloseTo(
-      expectedBeliefCredenceProjection(0.45, 0),
-      10
-    );
-  });
-
   // Withdrawing the assertion of a node with NO evidence leaves it ungraded —
   // credence, timestamp and masses all NULL. No movement row: an ungraded
   // outcome has no to_credence to record (see the header's spec-gap note).
@@ -148,40 +103,6 @@ describe('clearBeliefFixedCredence (v2 un-fix door, service semantics)', () => {
 
     // No node was ever inserted, so any id is unknown.
     expect(await clearBeliefFixedCredence(4242)).toBeNull();
-  });
-
-  // Spec §4 point 5: set/clear-fixed are the only writes that move a fixed
-  // node's projection, so the clear must sweep THROUGH the node — the nodes
-  // DERIVING from it (the from-ends of its incoming support-bearing edges)
-  // regrade from the node's post-clear state. Here the cleared node ends
-  // ungraded, so the claim deriving from it loses its only counted vote.
-  it('propagates through the cleared node: the node deriving from it regrades in the same sweep', async () => {
-    db = await openTempBeliefDatabase();
-    // The expert is fixed WITHOUT evidence behind it; the claim derives
-    // solely from the expert's asserted credence (canon edge claim→expert).
-    const expertNodeId = db.insertNodeFixture({ title: 'expert asserted then withdrawn' });
-    const claimNodeId = db.insertNodeFixture({ title: 'claim deriving only from the expert' });
-    const expertEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      derivedNodeId: claimNodeId,
-      sourceNodeId: expertNodeId,
-      support: 0.8,
-    });
-    const { setBeliefFixedCredence } = await import('@/services/belief/beliefFixedCredence');
-    setBeliefFixedCredence(expertNodeId, 0.9);
-    const { recomputeNodeBelief } = await db.importBeliefService();
-    await recomputeNodeBelief(claimNodeId);
-    // Precondition: the claim is graded from the expert's 0.72 contribution.
-    expect(db.readNodeBelief(claimNodeId).belief_credence).not.toBeNull();
-    const clearBeliefFixedCredence = await importClearBeliefFixedCredence();
-
-    await clearBeliefFixedCredence(expertNodeId);
-
-    // The expert had no evidence, so it is ungraded — and the claim, whose
-    // only source now casts no vote, must be regraded to ungraded in the same
-    // sweep, its stamp cleared.
-    expect(db.readNodeBelief(expertNodeId).belief_credence).toBeNull();
-    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
-    expect(db.readEvidenceStamp(expertEvidenceEdgeId)).toBeNull();
   });
 });
 

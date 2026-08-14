@@ -10,12 +10,13 @@
  * pins is the route's contract around it:
  *
  *  - a recompute answers { success, node_id, belief_credence, message } and
- *    the answered credence is the one actually persisted on the node,
- *  - the engine's movement row (trigger 'mcp-recompute', v2 §5) reaches the
- *    belief_movements table when the credence moved, and a repeat over an
- *    unchanged graph appends nothing,
- *  - belief_credence NULL is a REAL answer, not an error: a node with no
- *    counted evidence is ungraded, and null must never be coerced to 0,
+ *    the answered credence is the one actually persisted on the node. In the
+ *    interim world of the evidence-leaves-the-edges-table slice no edge
+ *    carries evidence, so a recompute of a non-fixed node lands
+ *    never-assessed — credence NULL, computed_at NULL, no movement row —
+ *    whatever edges the node has,
+ *  - belief_credence NULL is a REAL answer, not an error: an ungraded node
+ *    answers null, and null must never be coerced to 0,
  *  - an unknown node is refused with 404 naming the node — the engine itself
  *    would quietly answer "ungraded" for any id, and a caller with a typo'd
  *    node id must not be told its node is merely ungraded,
@@ -63,26 +64,25 @@ async function postBeliefRecompute(body: Record<string, unknown>): Promise<Respo
   return POST(recomputeRequest);
 }
 
-// Seed the smallest gradeable graph — a derived node deriving from a
-// fixed-credence source over one canon evidence edge (derived→source) — and
-// return the derived node's id.
-function seedGradeableTargetNode(): number {
-  // The bootstrap source: its human-asserted credence is the credence its
-  // evidence carries.
+// Seed a target node with an edge to a graded fixed source — the shape that
+// USED to be gradeable. Since the evidence-leaves-the-edges-table slice the
+// edge is a plain relationship, so a recompute of the target lands
+// never-assessed; the fixture proves that outcome holds even with edges to
+// graded nodes present.
+function seedTargetNodeWithEdgeToFixedSource(): number {
   const fixedCredenceSourceNodeId = tempBeliefDb.insertFixedBeliefCredenceNodeFixture({
     title: 'Fixed-credence source node',
     beliefCredence: 0.8,
   });
-  // The node the recompute will grade.
-  const gradeableTargetNodeId = tempBeliefDb.insertNodeFixture({
-    title: 'Derived node awaiting a grade',
+  // The node the recompute will land never-assessed.
+  const recomputeTargetNodeId = tempBeliefDb.insertNodeFixture({
+    title: 'Node awaiting a recompute',
   });
-  tempBeliefDb.insertEvidenceEdgeFixture({
-    derivedNodeId: gradeableTargetNodeId,
-    sourceNodeId: fixedCredenceSourceNodeId,
-    support: 0.5,
+  tempBeliefDb.insertNonEvidenceEdgeFixture({
+    fromNodeId: recomputeTargetNodeId,
+    toNodeId: fixedCredenceSourceNodeId,
   });
-  return gradeableTargetNodeId;
+  return recomputeTargetNodeId;
 }
 
 beforeEach(async () => {
@@ -94,41 +94,32 @@ afterEach(() => {
 });
 
 describe('POST /api/belief/recompute', () => {
-  // The whole path in one pass: engine invoked, node stamped, movement
-  // logged, and the reply carries the credence that was actually persisted.
-  it('grades a node from its evidence and answers the persisted credence', async () => {
-    const gradedNodeId = seedGradeableTargetNode();
+  // The whole path in one pass, reshaped to the interim world: engine
+  // invoked, and the reply carries what was actually persisted — which for a
+  // non-fixed node is never-assessed, even with an edge to a graded node.
+  it('recomputes a non-fixed node to never-assessed and answers the persisted null credence', async () => {
+    const recomputedNodeId = seedTargetNodeWithEdgeToFixedSource();
 
-    const recomputeResponse = await postBeliefRecompute({ node_id: gradedNodeId });
+    const recomputeResponse = await postBeliefRecompute({ node_id: recomputedNodeId });
     expect(recomputeResponse.status).toBe(200);
     const recomputeReply = (await recomputeResponse.json()) as BeliefRecomputeReply;
 
     expect(recomputeReply.success).toBe(true);
-    expect(recomputeReply.node_id).toBe(gradedNodeId);
-    // The exact number belongs to the grading policy's own tests; here the
-    // contract is that a graded credence exists and matches what was stored.
-    expect(typeof recomputeReply.belief_credence).toBe('number');
-    const persistedNodeBelief = tempBeliefDb.readNodeBelief(gradedNodeId);
-    expect(recomputeReply.belief_credence).toBe(persistedNodeBelief.belief_credence);
-    expect(persistedNodeBelief.belief_computed_at).not.toBeNull();
+    expect(recomputeReply.node_id).toBe(recomputedNodeId);
+    // Never-assessed is the real answer, and it matches what was stored.
+    expect(recomputeReply.belief_credence).toBeNull();
+    const persistedNodeBelief = tempBeliefDb.readNodeBelief(recomputedNodeId);
+    expect(persistedNodeBelief.belief_credence).toBeNull();
+    expect(persistedNodeBelief.belief_computed_at).toBeNull();
 
-    // The engine's movement row reached the table: ungraded -> the new grade.
-    const beliefMovements = tempBeliefDb.readBeliefMovements(gradedNodeId);
-    expect(beliefMovements).toHaveLength(1);
-    expect(beliefMovements[0]).toMatchObject({
-      from_credence: null,
-      to_credence: recomputeReply.belief_credence,
-      // EDITED per belief model v2 §5: the trigger names the actual entry
-      // point — this route is the doors' engine door, 'mcp-recompute'; the
-      // v1 constant 'belief-recompute' is retired.
-      trigger: 'mcp-recompute',
-    });
+    // An ungraded outcome is never a movement: nothing was logged.
+    expect(tempBeliefDb.readBeliefMovements(recomputedNodeId)).toHaveLength(0);
   });
 
-  // Recomputing an unchanged graph lands on the same credence, and a
-  // movement records the credence CHANGING — so the log must not grow.
-  it('appends no second movement when a repeat recompute lands on the same credence', async () => {
-    const stableNodeId = seedGradeableTargetNode();
+  // A repeat recompute lands on the same never-assessed outcome, and the
+  // movement log must not grow: there is still no to_credence to record.
+  it('appends no movement when a repeat recompute lands never-assessed again', async () => {
+    const stableNodeId = seedTargetNodeWithEdgeToFixedSource();
     await postBeliefRecompute({ node_id: stableNodeId });
 
     const repeatRecomputeResponse = await postBeliefRecompute({ node_id: stableNodeId });
@@ -136,7 +127,7 @@ describe('POST /api/belief/recompute', () => {
     expect(repeatRecomputeResponse.status).toBe(200);
     const repeatReply = (await repeatRecomputeResponse.json()) as BeliefRecomputeReply;
     expect(repeatReply.success).toBe(true);
-    expect(tempBeliefDb.readBeliefMovements(stableNodeId)).toHaveLength(1);
+    expect(tempBeliefDb.readBeliefMovements(stableNodeId)).toHaveLength(0);
   });
 
   // Ungraded is a real outcome: a node with no counted evidence answers a

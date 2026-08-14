@@ -1,26 +1,15 @@
 /**
- * Belief-evidence EDGE READS through the standalone MCP server
+ * Filtered EDGE READS through the standalone MCP server
  * (apps/mcp-server-standalone/index.js, tool queryEdge, backed by
  * apps/mcp-server-standalone/services/edgeService.js getEdges).
  *
- * The standalone server is the second door into the same SQLite database, and
- * its read path has the same defect as the app-backed one: queryEdge maps each
- * edge down to { id, from_node_id, to_node_id, type, explanation }, so both
- * belief columns are discarded before any external agent sees them. It also
- * filters by node on both sides only, with a hard cap of 50 and no page
- * position. This file pins the same contract as the app-backed door, so the
- * two doors answer the same questions the same way:
+ * The standalone server is the second door into the same SQLite database.
+ * This file pins the same filter contract as the app-backed door, so the two
+ * doors answer the same questions the same way:
  *
- *  - every returned edge carries belief_evidence_support and
- *    belief_evidence_contribution verbatim, INCLUDING NULL: support NULL means
- *    the edge is not evidence at all, and a support with contribution NULL
- *    means evidence nobody has graded yet — the state the app's recovery sweep
- *    looks for, which must never be coerced to 0 (the standalone server never
- *    grades, so every edge it writes is in exactly that state),
  *  - direction picks the side: 'into' means the node is the to_node_id,
  *    'out_of' means the node is the from_node_id, 'both' is either side and
- *    is the default (canon, spec §8: a node's own evidence basis is its
- *    OUTGOING support-bearing edges — the 'out_of' side),
+ *    is the default,
  *  - the direction filter runs in SQL, not after the page cap,
  *  - limit + offset page deterministically over the order
  *    created_at DESC, id DESC, so paging to exhaustion returns every edge
@@ -28,6 +17,12 @@
  *    timestamp,
  *  - a direction the read path does not implement is a tool error, and the
  *    advertised input schema names all four filter parts.
+ *
+ * deleted in the evidence-leaves-the-edges-table slice: the
+ * surfaces-support-and-contribution test — the standalone edge tools shed
+ * the evidence read fields, pinned in
+ * standalone-edge-tools-shed-evidence.test.ts — and every fixture writes a
+ * plain relationship edge, the only kind there is.
  *
  * SAFETY: every database in this file is a fresh temp file under os.tmpdir()
  * (HOME and RAH_DB_PATH are both pinned into the temp root before the server
@@ -72,15 +67,16 @@ const TIED_EDGE_CREATED_AT = '2026-07-02T00:00:00.000Z';
 const NEWER_EDGE_CREATED_AT = '2026-07-03T00:00:00.000Z';
 
 // Node ids seeded by createStandaloneDbWithBeliefSchema: the node whose edges
-// every read below is about, and three others to hang edges off.
+// every read below is about, and four others to hang edges off.
 const CLAIM_NODE_ID = 1;
-const GRADED_SOURCE_NODE_ID = 2;
-const UNGRADED_SOURCE_NODE_ID = 3;
+const FIRST_NEIGHBOUR_NODE_ID = 2;
+const SECOND_NEIGHBOUR_NODE_ID = 3;
 const BYSTANDER_NODE_ID = 4;
 const OTHER_BYSTANDER_NODE_ID = 5;
 
-// Seed a database carrying the full post-merge belief schema and five nodes.
-// Edges are seeded per test, because each read test needs a different shape.
+// Seed a database carrying the belief NODE schema, a plain edges table with
+// no evidence columns, and five nodes. Edges are seeded per test, because
+// each read test needs a different shape.
 function createStandaloneDbWithBeliefSchema(targetPath: string): void {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const db = new Database(targetPath);
@@ -112,9 +108,7 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
       source TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       context TEXT,
-      explanation TEXT,
-      belief_evidence_support REAL,
-      belief_evidence_contribution REAL
+      explanation TEXT
     );
 
     CREATE TABLE chunks (
@@ -145,8 +139,8 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
 
   const seededNodeTitles: Array<[number, string]> = [
     [CLAIM_NODE_ID, 'Claim node under read'],
-    [GRADED_SOURCE_NODE_ID, 'Graded evidence source node'],
-    [UNGRADED_SOURCE_NODE_ID, 'Ungraded evidence source node'],
+    [FIRST_NEIGHBOUR_NODE_ID, 'First neighbour node'],
+    [SECOND_NEIGHBOUR_NODE_ID, 'Second neighbour node'],
     [BYSTANDER_NODE_ID, 'Bystander node'],
     [OTHER_BYSTANDER_NODE_ID, 'Second bystander node'],
   ];
@@ -166,17 +160,13 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
   db.close();
 }
 
-// Seed one edge row straight into the temp database file, with full control
-// over its created_at and over which of the three evidence states it is in:
-//   support omitted                   -> plain relationship edge
-//   support set, contribution omitted -> ungraded evidence edge
-//   support and contribution set      -> graded evidence edge
-function insertBeliefEdgeReadFixture(options: {
+// Seed one plain relationship edge row straight into the temp database file,
+// with full control over its created_at (the paging and ordering key under
+// test).
+function insertEdgeReadFixture(options: {
   fromNodeId: number;
   toNodeId: number;
   createdAt: string;
-  support?: number;
-  contribution?: number;
 }): number {
   const directDb = new Database(dbPath, { fileMustExist: true });
   try {
@@ -184,17 +174,14 @@ function insertBeliefEdgeReadFixture(options: {
     const result = directDb
       .prepare(
         `INSERT INTO edges
-           (from_node_id, to_node_id, source, created_at, context, explanation,
-            belief_evidence_support, belief_evidence_contribution)
-         VALUES (?, ?, 'mcp', ?, ?, 'edge read fixture', ?, ?)`
+           (from_node_id, to_node_id, source, created_at, context, explanation)
+         VALUES (?, ?, 'mcp', ?, ?, 'edge read fixture')`
       )
       .run(
         options.fromNodeId,
         options.toNodeId,
         options.createdAt,
-        JSON.stringify({ type: 'related_to', explanation: 'edge read fixture' }),
-        options.support ?? null,
-        options.contribution ?? null
+        JSON.stringify({ type: 'related_to', explanation: 'edge read fixture' })
       );
     return Number(result.lastInsertRowid);
   } finally {
@@ -204,10 +191,10 @@ function insertBeliefEdgeReadFixture(options: {
 
 // The edge ids of the graph every direction test reads from.
 interface DirectionFixtureGraph {
-  gradedEvidenceEdgeId: number;
-  ungradedEvidenceEdgeId: number;
-  plainEdgeIntoClaimId: number;
-  plainEdgeOutOfClaimId: number;
+  newerEdgeIntoClaimId: number;
+  tiedEdgeIntoClaimId: number;
+  secondTiedEdgeIntoClaimId: number;
+  edgeOutOfClaimId: number;
   unrelatedEdgeId: number;
 }
 
@@ -215,30 +202,27 @@ interface DirectionFixtureGraph {
 // other nodes that must never appear in a node-scoped read.
 function seedDirectionFixtureGraph(): DirectionFixtureGraph {
   return {
-    gradedEvidenceEdgeId: insertBeliefEdgeReadFixture({
-      fromNodeId: GRADED_SOURCE_NODE_ID,
+    newerEdgeIntoClaimId: insertEdgeReadFixture({
+      fromNodeId: FIRST_NEIGHBOUR_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: NEWER_EDGE_CREATED_AT,
-      support: 0.75,
-      contribution: 0.6,
     }),
-    ungradedEvidenceEdgeId: insertBeliefEdgeReadFixture({
-      fromNodeId: UNGRADED_SOURCE_NODE_ID,
+    tiedEdgeIntoClaimId: insertEdgeReadFixture({
+      fromNodeId: SECOND_NEIGHBOUR_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: TIED_EDGE_CREATED_AT,
-      support: 0.5,
     }),
-    plainEdgeIntoClaimId: insertBeliefEdgeReadFixture({
+    secondTiedEdgeIntoClaimId: insertEdgeReadFixture({
       fromNodeId: BYSTANDER_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: TIED_EDGE_CREATED_AT,
     }),
-    plainEdgeOutOfClaimId: insertBeliefEdgeReadFixture({
+    edgeOutOfClaimId: insertEdgeReadFixture({
       fromNodeId: CLAIM_NODE_ID,
       toNodeId: BYSTANDER_NODE_ID,
       createdAt: OLDER_EDGE_CREATED_AT,
     }),
-    unrelatedEdgeId: insertBeliefEdgeReadFixture({
+    unrelatedEdgeId: insertEdgeReadFixture({
       fromNodeId: BYSTANDER_NODE_ID,
       toNodeId: OTHER_BYSTANDER_NODE_ID,
       createdAt: OLDER_EDGE_CREATED_AT,
@@ -277,14 +261,12 @@ function getStructured<T>(result: unknown): T {
   return (result as { structuredContent?: unknown }).structuredContent as T;
 }
 
-// One edge as the standalone read must report it: identity columns plus BOTH
-// belief columns, each nullable because NULL is a meaningful state on both.
+// One edge as the standalone read must report it: the plain relationship
+// columns — no edge carries belief evidence any more.
 interface BeliefEdgeReadRow {
   id: number;
   from_node_id: number;
   to_node_id: number;
-  belief_evidence_support: number | null;
-  belief_evidence_contribution: number | null;
 }
 
 // The structured payload queryEdge answers with.
@@ -308,46 +290,8 @@ afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
-  // The pass-through the defect breaks: both belief columns must survive
-  // queryEdge's own mapping step for all three edge states, with NULL left as
-  // NULL. The standalone server never grades, so "support set, contribution
-  // NULL" is the state EVERY edge it writes is in — reporting 0 there would
-  // make its own writes look graded-and-worthless.
-  it('surfaces belief_evidence_support and belief_evidence_contribution for plain, ungraded and graded edges', async () => {
-    const graph = seedDirectionFixtureGraph();
-
-    await withStandaloneClient(async (client) => {
-      const result = await client.callTool({
-        name: 'queryEdge',
-        arguments: { nodeId: CLAIM_NODE_ID },
-      });
-
-      expect((result as { isError?: boolean }).isError ?? false).toBe(false);
-      const structured = getStructured<QueryEdgeStructuredContent>(result);
-      const edgesById = new Map(structured.edges.map(edge => [edge.id, edge]));
-
-      const plainEdge = edgesById.get(graph.plainEdgeIntoClaimId);
-      // The keys must be PRESENT and null: dropping them would make an
-      // unassessed edge indistinguishable from one the tool forgot to report.
-      expect(Object.keys(plainEdge ?? {})).toContain('belief_evidence_support');
-      expect(Object.keys(plainEdge ?? {})).toContain('belief_evidence_contribution');
-      expect(plainEdge?.belief_evidence_support).toBeNull();
-      expect(plainEdge?.belief_evidence_contribution).toBeNull();
-
-      const ungradedEvidenceEdge = edgesById.get(graph.ungradedEvidenceEdgeId);
-      expect(ungradedEvidenceEdge?.belief_evidence_support).toBeCloseTo(0.5, 10);
-      // NULL, never 0: this edge is evidence that has not been graded yet.
-      expect(ungradedEvidenceEdge?.belief_evidence_contribution).toBeNull();
-
-      const gradedEvidenceEdge = edgesById.get(graph.gradedEvidenceEdgeId);
-      expect(gradedEvidenceEdge?.belief_evidence_support).toBeCloseTo(0.75, 10);
-      expect(gradedEvidenceEdge?.belief_evidence_contribution).toBeCloseTo(0.6, 10);
-    });
-  });
-
-  // Direction 'into': only edges whose to_node_id is the node. (Under canon
-  // these are the edges of nodes deriving FROM it, not its own basis.)
+describe('standalone MCP server queryEdge filtered edge reads', () => {
+  // Direction 'into': only edges whose to_node_id is the node.
   it('reads only edges whose to_node_id is the node when direction is into', async () => {
     const graph = seedDirectionFixtureGraph();
 
@@ -360,9 +304,9 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
       const structured = getStructured<QueryEdgeStructuredContent>(result);
       expect(structured.edges.map(edge => edge.id).sort((a, b) => a - b)).toEqual(
         [
-          graph.gradedEvidenceEdgeId,
-          graph.ungradedEvidenceEdgeId,
-          graph.plainEdgeIntoClaimId,
+          graph.newerEdgeIntoClaimId,
+          graph.tiedEdgeIntoClaimId,
+          graph.secondTiedEdgeIntoClaimId,
         ].sort((a, b) => a - b)
       );
       for (const edge of structured.edges) {
@@ -382,7 +326,7 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
       });
 
       const structured = getStructured<QueryEdgeStructuredContent>(result);
-      expect(structured.edges.map(edge => edge.id)).toEqual([graph.plainEdgeOutOfClaimId]);
+      expect(structured.edges.map(edge => edge.id)).toEqual([graph.edgeOutOfClaimId]);
       expect(structured.edges[0].from_node_id).toBe(CLAIM_NODE_ID);
     });
   });
@@ -402,10 +346,10 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
       const readEdgeIds = structured.edges.map(edge => edge.id);
       expect(readEdgeIds.sort((a, b) => a - b)).toEqual(
         [
-          graph.gradedEvidenceEdgeId,
-          graph.ungradedEvidenceEdgeId,
-          graph.plainEdgeIntoClaimId,
-          graph.plainEdgeOutOfClaimId,
+          graph.newerEdgeIntoClaimId,
+          graph.tiedEdgeIntoClaimId,
+          graph.secondTiedEdgeIntoClaimId,
+          graph.edgeOutOfClaimId,
         ].sort((a, b) => a - b)
       );
       expect(readEdgeIds).not.toContain(graph.unrelatedEdgeId);
@@ -418,13 +362,12 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
   // filtered afterwards would return roughly half that.
   it('applies the direction filter in SQL rather than trimming a limited page afterwards', async () => {
     for (let edgeIndex = 0; edgeIndex < 60; edgeIndex += 1) {
-      insertBeliefEdgeReadFixture({
+      insertEdgeReadFixture({
         fromNodeId: BYSTANDER_NODE_ID,
         toNodeId: CLAIM_NODE_ID,
         createdAt: TIED_EDGE_CREATED_AT,
-        support: 0.4,
       });
-      insertBeliefEdgeReadFixture({
+      insertEdgeReadFixture({
         fromNodeId: CLAIM_NODE_ID,
         toNodeId: BYSTANDER_NODE_ID,
         createdAt: TIED_EDGE_CREATED_AT,
@@ -450,11 +393,10 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
   // holds if the order carries a tiebreak beyond the timestamp.
   it('pages through a seeded set with limit and offset, returning every edge exactly once', async () => {
     const seededEdgeIds = Array.from({ length: 10 }, () =>
-      insertBeliefEdgeReadFixture({
+      insertEdgeReadFixture({
         fromNodeId: BYSTANDER_NODE_ID,
         toNodeId: CLAIM_NODE_ID,
         createdAt: TIED_EDGE_CREATED_AT,
-        support: 0.5,
       })
     );
 
@@ -499,27 +441,27 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
   it('orders edge reads by created_at DESC then id DESC so tied timestamps still page deterministically', async () => {
     // Inserted oldest-timestamp-first so insert order and expected read order
     // are not accidentally the same sequence.
-    const oldestEdgeId = insertBeliefEdgeReadFixture({
+    const oldestEdgeId = insertEdgeReadFixture({
       fromNodeId: BYSTANDER_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: OLDER_EDGE_CREATED_AT,
     });
-    const firstTiedEdgeId = insertBeliefEdgeReadFixture({
+    const firstTiedEdgeId = insertEdgeReadFixture({
       fromNodeId: BYSTANDER_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: TIED_EDGE_CREATED_AT,
     });
-    const secondTiedEdgeId = insertBeliefEdgeReadFixture({
+    const secondTiedEdgeId = insertEdgeReadFixture({
       fromNodeId: BYSTANDER_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: TIED_EDGE_CREATED_AT,
     });
-    const thirdTiedEdgeId = insertBeliefEdgeReadFixture({
+    const thirdTiedEdgeId = insertEdgeReadFixture({
       fromNodeId: BYSTANDER_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: TIED_EDGE_CREATED_AT,
     });
-    const newestEdgeId = insertBeliefEdgeReadFixture({
+    const newestEdgeId = insertEdgeReadFixture({
       fromNodeId: BYSTANDER_NODE_ID,
       toNodeId: CLAIM_NODE_ID,
       createdAt: NEWER_EDGE_CREATED_AT,
@@ -562,8 +504,7 @@ describe('standalone MCP server queryEdge belief-evidence edge reads', () => {
   // A direction the read path does not implement must be a tool error, not a
   // silent fall back to both sides: an agent asking for one side of a node
   // and getting both would draw a conclusion from the wrong half of the
-  // graph. (Canon note, spec §8: a node's evidence basis is its OUTGOING
-  // support-bearing edges — the 'out_of' side.)
+  // graph.
   it('rejects an unknown direction with a tool error', async () => {
     seedDirectionFixtureGraph();
 

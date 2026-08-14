@@ -129,27 +129,13 @@ const updateNodeInputSchema = {
   }).describe('Fields to update')
 };
 
+// An edge is a plain knowledge-graph relationship: it carries an
+// explanation, never belief data.
 const createEdgeInputSchema = {
   sourceId: z.number().int().positive().describe("The 'subject' node (reads: source [explanation] target)"),
   targetId: z.number().int().positive().describe('Target node ID'),
   explanation: z.string().min(1).describe("Human-readable explanation. Should read as a sentence: 'Alice invented this technique'"),
-  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.'),
-  // Belief evidence field (fork addition): optional, stored verbatim in the
-  // dedicated belief_ edge column. This server never grades — the RA-H app
-  // owns grading (belief_evidence_contribution stays NULL here).
-  // Support is UNSIGNED, 0..1: how loudly the source (the edge's to-end)
-  // speaks about the derived node (the from-end). Which way the evidence
-  // cuts comes from the source NODE's signed credence, never from this
-  // field. Omitting the field says "not evidence at all"; a support of 0
-  // says the edge WAS assessed and carries nothing — a recorded judgement,
-  // never rejected, because a classifier that finds no bearing must not
-  // have to invent one.
-  belief_evidence_support: z
-    .number()
-    .min(0)
-    .max(1)
-    .optional()
-    .describe('How loudly the source the edge points at (targetId) speaks about the derived node (sourceId) whose credence the evidence grades: one unsigned number in [0, 1]. Which way the evidence cuts comes from that source node\'s belief_credence, not from this field. Use 0 when the evidence was assessed and carries nothing. Omit the field entirely for a plain non-evidence edge.')
+  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.')
 };
 
 const updateEdgeInputSchema = {
@@ -166,7 +152,7 @@ const queryEdgesInputSchema = {
   direction: z
     .enum(['into', 'out_of', 'both'])
     .optional()
-    .describe('Which side of nodeId to read: "out_of" returns edges whose from_node_id is the node — its evidence basis, the support-bearing edges it derives its belief_credence from; "into" returns edges whose to_node_id is the node — the edges through which other nodes derive from it; "both" returns either side. Defaults to "both".'),
+    .describe('Which side of nodeId to read: "out_of" returns edges whose from_node_id is the node; "into" returns edges whose to_node_id is the node; "both" returns either side. Defaults to "both".'),
   limit: z.number().min(1).max(50).optional().describe('Max edges (default 25)'),
   // Page position. min(0) makes a negative offset a schema rejection, since
   // there is no page before the first one.
@@ -482,9 +468,8 @@ async function main() {
             event_date: node.event_date ?? null,
             belief_credence: nodeBeliefState.belief_credence ?? null,
             belief_computed_at: nodeBeliefState.belief_computed_at ?? null,
-            // Whether a human asserted that credence rather than the app's
-            // belief engine deriving it from the node's evidence (its
-            // outgoing support-bearing edges).
+            // Whether a human asserted that credence rather than the node
+            // being ungraded — belief evidence lives outside this store.
             belief_credence_is_fixed: nodeBeliefState.belief_credence_is_fixed ?? 0
           });
         }
@@ -549,24 +534,22 @@ async function main() {
     'createEdge',
     {
       title: 'Create RA-H edge',
-      description: 'Connect two nodes with an edge only after the user has explicitly confirmed the proposed relationship. Edges are the most valuable part of the graph — they represent understanding, not proximity. Direction matters: reads as sourceId → [explanation] → targetId. The explanation should read as a sentence (e.g. "invented this technique", "contradicts the claim in"). When the edge carries belief_evidence_support it is evidence, and it must run from the derived node (the node whose credence the evidence grades) to its source: sourceId names the derived node, targetId the source it derives from. Call queryEdge first to check if a connection already exists between the two nodes.',
+      description: 'Connect two nodes with an edge only after the user has explicitly confirmed the proposed relationship. Edges are the most valuable part of the graph — they represent understanding, not proximity. Direction matters: reads as sourceId → [explanation] → targetId. The explanation should read as a sentence (e.g. "invented this technique", "contradicts the claim in"). An edge is a plain knowledge-graph relationship: it carries an explanation, never belief data. Call queryEdge first to check if a connection already exists between the two nodes.',
       inputSchema: createEdgeInputSchema
     },
-    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_support }) => {
+    async ({ sourceId, targetId, explanation, confirmed_by_user }) => {
       if (!confirmed_by_user) {
         throw new Error('createEdge requires explicit user confirmation before writing the relationship.');
       }
 
-      // Out-of-range evidence never reaches the database: the input schema
-      // above rejects a support outside [0, 1] before this handler runs, so
-      // no row is written for it. A support of exactly 0 is VALID — assessed,
-      // carries nothing — and is stored like any other value.
+      // The write argument is rebuilt field by field, so a stray key a stale
+      // caller still sends (belief_evidence_support was one) is simply not
+      // part of the write — the input schema already stripped it.
       const edge = edgeService.createEdge({
         from_node_id: sourceId,
         to_node_id: targetId,
         explanation: explanation.trim(),
-        source: 'mcp',
-        belief_evidence_support
+        source: 'mcp'
       });
 
       return {
@@ -627,7 +610,7 @@ async function main() {
     'queryEdge',
     {
       title: 'Query RA-H edges',
-      description: 'Find edges/connections. Optionally filter by nodeId, and by direction to read one side of that node: "out_of" is the node\'s evidence basis — the support-bearing edges it derives its belief_credence from; "into" is the edges through which other nodes derive from it; "both" is either side. Returns up to 50 edges (default 25) from the page position given by offset, each with its edge ID, connected node IDs, explanation and both belief evidence columns. Use when exploring how nodes relate, checking for existing connections before creating edges, or traversing the graph from a hub node.',
+      description: 'Find edges/connections. Optionally filter by nodeId, and by direction to read one side of that node: "out_of" is the edges leaving the node; "into" is the edges pointing at it; "both" is either side. Returns up to 50 edges (default 25) from the page position given by offset, each with its edge ID, connected node IDs and explanation. Use when exploring how nodes relate, checking for existing connections before creating edges, or traversing the graph from a hub node.',
       inputSchema: queryEdgesInputSchema
     },
     // direction defaults to 'both' — either side of the node — matching the
@@ -644,19 +627,14 @@ async function main() {
         content: [{ type: 'text', text: `Found ${edges.length} edge(s).` }],
         structuredContent: {
           count: edges.length,
-          // Both belief columns pass through verbatim. `?? null` normalises
-          // only a MISSING key to null; a stored NULL is already null and a
-          // real 0 stays 0. This door stores evidence but never grades, so
-          // every edge it writes has a NULL contribution — reporting that as 0
-          // would make its own writes look graded and worthless.
+          // The mapping is field by field, so an evidence value a
+          // not-yet-migrated database might still carry is never relayed.
           edges: edges.map(e => ({
             id: e.id,
             from_node_id: e.from_node_id,
             to_node_id: e.to_node_id,
             type: e.context?.type ?? null,
-            explanation: e.explanation ?? e.context?.explanation ?? null,
-            belief_evidence_support: e.belief_evidence_support ?? null,
-            belief_evidence_contribution: e.belief_evidence_contribution ?? null
+            explanation: e.explanation ?? e.context?.explanation ?? null
           }))
         }
       };
@@ -669,7 +647,7 @@ async function main() {
     'setBeliefFixedCredence',
     {
       title: 'Set RA-H fixed belief credence',
-      description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from the node\'s evidence (its outgoing support-bearing edges). This is the bootstrap a graph needs before anything in it can be graded: a node\'s credence is also the credence carried by every piece of evidence that node supplies, so until at least one node has a credence there is nothing for the engine to grade from. Calling it again replaces the asserted credence in place.',
+      description: 'Assert one node\'s belief_credence by hand and mark it as fixed. Belief evidence lives outside this store, so a node\'s credence is either hand-asserted through this tool or null (ungraded). Calling it again replaces the asserted credence in place.',
       inputSchema: setBeliefFixedCredenceInputSchema
     },
     async ({ node_id, belief_credence }) => {
@@ -732,7 +710,7 @@ async function main() {
     'clearBeliefFixedCredence',
     {
       title: 'Clear RA-H fixed belief credence',
-      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its belief_credence_is_fixed flag so the app-owned belief engine derives the credence from the node\'s evidence (its outgoing support-bearing edges) again. This server never grades, so the stored credence is left as it stands until the RA-H app next runs its startup recovery sweep and regrades the node — an assertion made through this door while the app was closed must be withdrawable through it the same way.',
+      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its belief_credence_is_fixed flag. This server never grades, and belief evidence lives outside this store; the stored credence is left as it stands until the RA-H app next restates the node — an assertion made through this door while the app was closed must be withdrawable through it the same way.',
       inputSchema: clearBeliefFixedCredenceInputSchema
     },
     async ({ node_id }) => {

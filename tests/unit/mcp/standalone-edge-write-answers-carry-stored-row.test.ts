@@ -89,9 +89,7 @@ function createStandaloneDbWithTwoNodes(targetPath: string): void {
       source TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       context TEXT,
-      explanation TEXT,
-      belief_evidence_support REAL,
-      belief_evidence_contribution REAL
+      explanation TEXT
     );
 
     CREATE TABLE chunks (

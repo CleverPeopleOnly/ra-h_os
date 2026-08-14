@@ -4,8 +4,8 @@
  * — part characterization pin, part FAILING-FIRST set for the
  * no-same-direction-parallel-edges slice.
  *
- * WHY THIS FILE EXISTS. The samai-diagnostic adapter writes evidence edges
- * through the remote MCP door, which forwards to POST /api/edges. That
+ * WHY THIS FILE EXISTS. The samai-diagnostic adapter writes edges through
+ * the remote MCP door, which forwards to POST /api/edges. That
  * consumer needs to know what the store answers when a write collides with an
  * edge that already occupies a direction slot — and, crucially, what happens
  * when the prose classifier SWAPS a write into an occupied slot. This file
@@ -19,10 +19,9 @@
  *    occupied A→B slot no longer lands a second row — it answers 200 with
  *    already_existed: true and the EXISTING edge's full stored row, the same
  *    answer shape the as-written duplicate branch already ships,
- *  - case 2: the belief consequence of that merge — the colliding evidence
- *    write's support goes nowhere: the stored edge keeps its support, the
- *    derived node's masses and credence are unchanged, no movement is
- *    appended. The old double-count is dead,
+ *  - case 2: the belief consequence of that merge — a colliding create
+ *    still merges and touches no belief state: the derived node's credence
+ *    is unchanged and no movement is appended,
  *  - case 4: edgeService.createEdge itself, handed an exact duplicate,
  *    answers the EXISTING stored row (same id) and writes no second row — the
  *    guard is no longer the callers' job alone.
@@ -34,8 +33,12 @@
  *  - case 3: the as-written duplicate short-circuit answers honestly (shipped
  *    by the door-answers-carry-stored-row slice): 200 success:true with an
  *    explicit already_existed indication and the EXISTING edge's full stored
- *    row, real id included — and the support riding on the refused write is
- *    silently dropped: no column write, no regrade, no movement.
+ *    row, real id included — and the refused write touches no belief state.
+ *
+ * reshaped in the evidence-leaves-the-edges-table slice: the two cases that
+ * exercised a support riding on the colliding write — the door has shed the
+ * support parameter and edges carry no evidence, so the surviving idea is
+ * that a colliding create merges and touches no belief state at all.
  *
  * The tool-side guard (src/tools/database/createEdge.ts answers
  * success:false) is already pinned in tests/unit/tools/createEdge.test.ts and
@@ -56,10 +59,6 @@ import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
 } from './helpers/tempBeliefDatabase';
-import {
-  expectedBeliefCredenceProjection,
-  readBeliefEvidenceMasses,
-} from './helpers/beliefEvidenceMassExpectations';
 
 // The database context under test; opened per test, closed after each.
 let db: TempBeliefDatabase | undefined;
@@ -218,145 +217,85 @@ describe('duplicate-guard / inference-swap collision (pin + failing-first merge 
     expect(countStoredEdgeRowsInSlot(db, sourceNodeBId, claimNodeAId)).toBe(1);
   });
 
-  // Case 2 — the belief consequence of the merge (RED until the
-  // no-same-direction-parallel-edges slice lands). The old behaviour landed a
-  // second A→B evidence row and DOUBLE-COUNTED it in A's masses. Now the
-  // colliding evidence write merges into the existing edge and its riding
-  // support goes nowhere: the stored edge keeps support 0.5, A's masses and
-  // credence stay exactly the single-edge grade, and no belief movement is
-  // appended. The double-count is dead.
-  it('a colliding evidence write leaves belief untouched: stored support, masses, credence and movements unchanged', async () => {
+  // Case 2 — the belief consequence of the merge: a colliding create still
+  // merges and touches no belief state. The derived node keeps exactly the
+  // belief it had (here: never-assessed, the only state a graph without edge
+  // evidence produces for a non-fixed node) and no movement is appended.
+  it('a colliding create merges and touches no belief state: credence and movements unchanged', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeAId = db.insertNodeFixture({ title: 'claim node A, the derived end' });
-    // The source's fixed credence is the weight the stored edge's evidence carries.
     const sourceNodeBId = db.insertFixedBeliefCredenceNodeFixture({
       title: 'fixed source node B the claim derives from',
       beliefCredence: 0.8,
     });
-    // The occupied slot: one canon evidence edge A→B, support 0.5, graded so
-    // there is a real baseline for "unchanged" to mean something.
-    const existingEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      derivedNodeId: claimNodeAId,
-      sourceNodeId: sourceNodeBId,
-      support: 0.5,
+    // The occupied slot: one stored A→B row.
+    db.insertNonEvidenceEdgeFixture({
+      fromNodeId: claimNodeAId,
+      toNodeId: sourceNodeBId,
     });
-    const { recomputeNodeBelief } = await db.importBeliefService();
-    await recomputeNodeBelief(claimNodeAId);
-    // The single-edge baseline: for-mass 0.8 × 0.5 = 0.4, nothing against.
-    const singleEdgeForMass = 0.8 * 0.5;
-    const claimCredenceBeforeCollision = Number(db.readNodeBelief(claimNodeAId).belief_credence);
-    const claimMovementCountBeforeCollision = db.readBeliefMovements(claimNodeAId).length;
-    // PRECONDITION: the baseline grade is real — a non-trivial mass and
-    // credence — so "unchanged" below cannot be an ungraded node staying
-    // ungraded.
-    expect(
-      Number(readBeliefEvidenceMasses(db, claimNodeAId).belief_evidence_for_mass)
-    ).toBeCloseTo(singleEdgeForMass, 10);
-    expect(claimCredenceBeforeCollision).toBeCloseTo(
-      expectedBeliefCredenceProjection(singleEdgeForMass, 0),
-      10
-    );
 
-    // The colliding evidence write: B→A as written, support 0.7 riding it,
-    // swapped by the classifier into the occupied A→B slot — merged, so the
-    // 0.7 must go nowhere.
-    const collidingEvidenceResponse = await postEdgeThroughRestRoute(
+    // The colliding write: B→A as written, swapped by the classifier into
+    // the occupied A→B slot — merged.
+    const collidingWriteResponse = await postEdgeThroughRestRoute(
       buildConfirmedMcpEdgeBody(sourceNodeBId, claimNodeAId, {
         explanation: SWAP_INDUCING_EXPLANATION,
-        belief_evidence_support: 0.7,
       })
     );
-    expect(collidingEvidenceResponse.status).toBe(200);
-    const collidingEvidenceReply = (await collidingEvidenceResponse.json()) as EdgesRouteReply;
-    expect(collidingEvidenceReply.already_existed).toBe(true);
+    expect(collidingWriteResponse.status).toBe(200);
+    const collidingWriteReply = (await collidingWriteResponse.json()) as EdgesRouteReply;
+    expect(collidingWriteReply.already_existed).toBe(true);
 
-    // No second row landed; the stored edge keeps its OLD support.
+    // No second row landed.
     expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
-    const storedSupportRow = db.sqlite
-      .prepare('SELECT belief_evidence_support FROM edges WHERE id = ?')
-      .get(existingEvidenceEdgeId) as { belief_evidence_support: number | null };
-    expect(Number(storedSupportRow.belief_evidence_support)).toBeCloseTo(0.5, 10);
 
-    // A's masses and credence are byte-for-byte the single-edge grade: no
-    // regrade ran, so the 0.7 contribution never entered the basis.
-    const claimMassesAfterCollision = readBeliefEvidenceMasses(db, claimNodeAId);
-    expect(Number(claimMassesAfterCollision.belief_evidence_for_mass)).toBeCloseTo(
-      singleEdgeForMass,
-      10
-    );
-    expect(Number(claimMassesAfterCollision.belief_evidence_against_mass)).toBeCloseTo(0, 10);
-    expect(Number(db.readNodeBelief(claimNodeAId).belief_credence)).toBeCloseTo(
-      claimCredenceBeforeCollision,
-      10
-    );
-    // And no belief movement was appended by the refused-and-merged write.
-    expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(
-      claimMovementCountBeforeCollision
-    );
+    // No belief state moved anywhere: the claim is still never-assessed, the
+    // fixed source keeps its asserted credence, and neither node gained a
+    // movement row.
+    expect(db.readNodeBelief(claimNodeAId).belief_credence).toBeNull();
+    expect(Number(db.readNodeBelief(sourceNodeBId).belief_credence)).toBeCloseTo(0.8, 10);
+    expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(0);
+    expect(db.readBeliefMovements(sourceNodeBId)).toHaveLength(0);
   });
 
-  // Case 3 — the same-direction guard short-circuit: its honest answer, and
-  // what it silently drops. The ANSWER half pins the shape the
-  // door-answers-carry-stored-row slice introduces (RED until it lands): a
-  // second A→B write still answers 200 success:true with an "already exists"
-  // message and writes no row, but now says already_existed explicitly and
-  // carries the EXISTING edge's full stored row — real id included — instead
-  // of just the two node ids. The BELIEF half is unchanged, recorded
-  // behaviour: the support riding on the refused write goes nowhere — the
-  // stored support keeps its old value, no regrade runs, no movement is
-  // appended. A caller "correcting" a support through a repeated create is
-  // silently ignored (true until a later slice removes that parameter).
-  it('a same-direction duplicate answers the existing edge row with already_existed, and its support is silently dropped', async () => {
+  // Case 3 — the same-direction guard short-circuit answers honestly: a
+  // second A→B write answers 200 success:true with an "already exists"
+  // message, writes no row, says already_existed explicitly and carries the
+  // EXISTING edge's full stored row — real id included. And the refused
+  // write touches no belief state.
+  it('a same-direction duplicate answers the existing edge row with already_existed and touches no belief state', async () => {
     db = await openTempBeliefDatabase();
     const claimNodeAId = db.insertNodeFixture({ title: 'claim node A, the derived end' });
     const sourceNodeBId = db.insertFixedBeliefCredenceNodeFixture({
       title: 'fixed source node B the claim derives from',
       beliefCredence: 0.8,
     });
-    // The occupied slot: one canon evidence edge, support 0.5, graded so
-    // there is a baseline credence and movement count to hold still.
-    const existingEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      derivedNodeId: claimNodeAId,
-      sourceNodeId: sourceNodeBId,
-      support: 0.5,
+    // The occupied slot: one stored A→B row.
+    const existingEdgeId = db.insertNonEvidenceEdgeFixture({
+      fromNodeId: claimNodeAId,
+      toNodeId: sourceNodeBId,
     });
-    const { recomputeNodeBelief } = await db.importBeliefService();
-    await recomputeNodeBelief(claimNodeAId);
-    const claimCredenceBeforeDuplicate = Number(db.readNodeBelief(claimNodeAId).belief_credence);
-    const claimMovementCountBeforeDuplicate = db.readBeliefMovements(claimNodeAId).length;
 
-    // The refused write: same direction as stored, carrying a DIFFERENT
-    // support (0.9) that must go nowhere.
+    // The refused write: same direction as stored.
     const duplicateWriteResponse = await postEdgeThroughRestRoute(
       buildConfirmedMcpEdgeBody(claimNodeAId, sourceNodeBId, {
         explanation: NON_SWAPPING_EXPLANATION,
-        belief_evidence_support: 0.9,
       })
     );
 
-    // The unchanged half of the answer: 200 success:true with the message.
+    // 200 success:true with the message.
     expect(duplicateWriteResponse.status).toBe(200);
     const duplicateWriteReply = (await duplicateWriteResponse.json()) as EdgesRouteReply;
     expect(duplicateWriteReply.success).toBe(true);
     expect(duplicateWriteReply.message).toMatch(/already exists/i);
 
-    // The BELIEF half — recorded behaviour, asserted BEFORE the red block
-    // below so it stays verified while the answer-shape half is failing:
-    // nothing was written and nothing regraded — one row, old support, same
-    // credence, same movement log.
+    // Nothing was written and no belief state moved: one row, the claim
+    // still never-assessed, no movement on either node.
     expect(countStoredEdgeRowsInSlot(db, claimNodeAId, sourceNodeBId)).toBe(1);
-    const storedSupportRow = db.sqlite
-      .prepare('SELECT belief_evidence_support FROM edges WHERE id = ?')
-      .get(existingEvidenceEdgeId) as { belief_evidence_support: number | null };
-    expect(Number(storedSupportRow.belief_evidence_support)).toBeCloseTo(0.5, 10);
-    expect(Number(db.readNodeBelief(claimNodeAId).belief_credence)).toBeCloseTo(
-      claimCredenceBeforeDuplicate,
-      10
-    );
-    expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(claimMovementCountBeforeDuplicate);
+    expect(db.readNodeBelief(claimNodeAId).belief_credence).toBeNull();
+    expect(db.readBeliefMovements(claimNodeAId)).toHaveLength(0);
+    expect(db.readBeliefMovements(sourceNodeBId)).toHaveLength(0);
 
-    // The guard's HONEST answer shape (RED until the
-    // door-answers-carry-stored-row slice lands): the explicit already_existed
+    // The guard's honest answer shape: the explicit already_existed
     // indication and the EXISTING edge's stored row, so the caller (and the
     // MCP doors built on this reply) can follow up on the edge that actually
     // exists.
@@ -364,13 +303,13 @@ describe('duplicate-guard / inference-swap collision (pin + failing-first merge 
       duplicateWriteReply.already_existed,
       'the duplicate answer must say already_existed: true'
     ).toBe(true);
-    // The existing edge's row: real id, stored orientation, stored prose (the
-    // evidence-edge fixture's explanation — not the refused write's).
+    // The existing edge's row: real id, stored orientation, stored prose
+    // (the fixture's explanation — not the refused write's).
     expect(duplicateWriteReply.data).toMatchObject({
-      id: existingEvidenceEdgeId,
+      id: existingEdgeId,
       from_node_id: claimNodeAId,
       to_node_id: sourceNodeBId,
-      explanation: 'evidence edge fixture',
+      explanation: 'plain non-evidence edge fixture',
     });
   });
 

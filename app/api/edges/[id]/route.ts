@@ -67,32 +67,6 @@ export async function PUT(
       }, { status: 400 });
     }
 
-    // Belief-evidence door check (fork addition): a support in the body is
-    // spread into the update payload below and written to the REAL
-    // edges.belief_evidence_support column, so it is range-checked here before
-    // the service ever sees it. Support is UNSIGNED, 0..1 — contradiction is
-    // expressed by the source NODE's negative belief_credence, never by the
-    // edge. An absent field passes (the update writes no support at all), NULL
-    // passes (it un-assesses the edge, a legitimate write) and 0 passes
-    // (assessed, carries nothing). The number test comes first and
-    // separately: a value that is not a number cannot be in range, and no range
-    // comparison catches NaN.
-    const writtenBeliefEvidenceSupport = body.belief_evidence_support;
-    if (
-      writtenBeliefEvidenceSupport != null &&
-      (typeof writtenBeliefEvidenceSupport !== 'number' ||
-        !Number.isFinite(writtenBeliefEvidenceSupport) ||
-        writtenBeliefEvidenceSupport < 0 ||
-        writtenBeliefEvidenceSupport > 1)
-    ) {
-      return NextResponse.json({
-        success: false,
-        error:
-          `belief_evidence_support must be a number between 0 and 1 (got ${String(writtenBeliefEvidenceSupport)}). ` +
-          'Support is unsigned; a contradicting source is expressed by that source node\'s negative belief_credence.'
-      }, { status: 400 });
-    }
-
     const explanation =
       typeof body.explanation === 'string'
         ? body.explanation.trim()
@@ -111,25 +85,10 @@ export async function PUT(
       return 'ui' as const;
     })();
 
-    // Belief-evidence door check (fork addition): whether this write carries a
-    // support at all. KEY PRESENCE, not truthiness — a support of 0 is an
-    // assessed "carries nothing" and an explicit null un-assesses the edge, and
-    // both are deliberate writes despite both being falsy.
-    const edgeUpdateCarriesBeliefEvidenceSupport = Object.prototype.hasOwnProperty.call(
-      body,
-      'belief_evidence_support'
-    );
-
-    // Confirmation gate. Agent-driven writes have always needed explicit user
-    // confirmation, and so does ANY write carrying a support, however it names
-    // itself: createdVia falls back to 'ui' when the body names none, so a
-    // support write that simply omitted created_via would otherwise regrade the
-    // graph with nobody having confirmed it.
+    // Confirmation gate: agent-driven writes need explicit user confirmation
+    // before anything lands in the graph.
     if (
-      (createdVia === 'agent' ||
-        createdVia === 'mcp' ||
-        createdVia === 'workflow' ||
-        edgeUpdateCarriesBeliefEvidenceSupport) &&
+      (createdVia === 'agent' || createdVia === 'mcp' || createdVia === 'workflow') &&
       body.confirmed_by_user !== true
     ) {
       return NextResponse.json({
@@ -138,25 +97,7 @@ export async function PUT(
       }, { status: 400 });
     }
 
-    // A support-only correction (fork addition): the caller is correcting how
-    // loudly the source speaks about the node deriving from it and touching
-    // neither the explanation nor the context JSON that holds one. It is exempt from
-    // the explanation requirement below because there is no read-one-edge-by-id
-    // tool for an agent to fetch the stored reasoning and hand it back, so
-    // demanding one would force it to invent prose over recorded human words.
-    // An update that DOES write either field is changing the relationship's
-    // prose and still owes an explanation for the change.
-    const edgeUpdateCorrectsBeliefSupportOnly =
-      edgeUpdateCarriesBeliefEvidenceSupport &&
-      body.explanation === undefined &&
-      body.context === undefined;
-
-    if (
-      !explanation &&
-      createdVia !== 'ui' &&
-      createdVia !== 'quicklink' &&
-      !edgeUpdateCorrectsBeliefSupportOnly
-    ) {
+    if (!explanation && createdVia !== 'ui' && createdVia !== 'quicklink') {
       return NextResponse.json({
         success: false,
         error: 'Agent-driven edge updates require an explicit explanation.'
@@ -176,6 +117,13 @@ export async function PUT(
     const updatePayload = { ...body };
     delete updatePayload.confirmed_by_user;
 
+    // Belief evidence left the edges table: a stale client still sending
+    // either evidence key gets it silently dropped here — the key is simply
+    // not part of the contract any more, never an error. Without this drop the
+    // service's dynamic UPDATE would name a column that no longer exists.
+    delete updatePayload.belief_evidence_support;
+    delete updatePayload.belief_evidence_contribution;
+
     // Stamp the provenance into the context ONLY when this update already
     // writes one. edgeService.updateEdge assigns `context` WHOLESALE, so
     // manufacturing a context here for a support-only correction would replace
@@ -193,8 +141,7 @@ export async function PUT(
 
     // created_via is request provenance, never an edges column. The service
     // builds `SET <key> = ?` from every key in the payload, so it has to leave
-    // on EVERY path — including the support-only one that just skipped the
-    // stamp — or the UPDATE names a column that does not exist.
+    // on EVERY path — or the UPDATE names a column that does not exist.
     delete updatePayload.created_via;
 
     const edge = await edgeService.updateEdge(edgeId, updatePayload);
