@@ -32,10 +32,28 @@
 import { describe, expect, it } from 'vitest';
 import * as beliefGradingPolicyModule from '@/services/belief/beliefGradingPolicy';
 import type { BeliefEvidenceContribution } from '@/services/belief/beliefGradingPolicy';
-import {
-  expectedBeliefCredenceProjection,
-  expectedBeliefUncertainty,
-} from './helpers/beliefEvidenceMassExpectations';
+
+// The prior mass W of spec §2, restated by hand: these expectations are the
+// INDEPENDENT hand calculation the spec's §3 table says must reproduce every
+// number, so they must not import the constant they are checking. (Inlined
+// from the deleted helpers/beliefEvidenceMassExpectations.ts in the
+// display-belief-door-writable slice — the helper's database reader died
+// with the mass columns, and this file was its last importer.)
+const HAND_CALCULATED_BELIEF_PRIOR_MASS = 2;
+
+// Expected cached credence for evidence masses r (for) and s (against) under
+// the v2 projection formula of spec §2.
+function expectedBeliefCredenceProjection(forMass: number, againstMass: number): number {
+  return (forMass - againstMass) / (forMass + againstMass + HAND_CALCULATED_BELIEF_PRIOR_MASS);
+}
+
+// Expected derived uncertainty for evidence masses r and s under spec §2.
+function expectedBeliefUncertainty(forMass: number, againstMass: number): number {
+  return (
+    HAND_CALCULATED_BELIEF_PRIOR_MASS /
+    (forMass + againstMass + HAND_CALCULATED_BELIEF_PRIOR_MASS)
+  );
+}
 
 // The two unsigned evidence masses one accumulation pass produces: r (for)
 // and s (against), named with the belief namespace like every belief export.

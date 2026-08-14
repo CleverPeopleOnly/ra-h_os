@@ -419,8 +419,7 @@ class SQLiteClient {
         belief_credence REAL,
         belief_computed_at TEXT,
         belief_credence_is_fixed INTEGER NOT NULL DEFAULT 0,
-        belief_evidence_for_mass REAL,
-        belief_evidence_against_mass REAL
+        belief_uncertainty REAL
       );
 
       CREATE TABLE IF NOT EXISTS edges (
@@ -559,18 +558,66 @@ class SQLiteClient {
         'belief_credence_is_fixed',
         'ALTER TABLE nodes ADD COLUMN belief_credence_is_fixed INTEGER NOT NULL DEFAULT 0;'
       );
-      // The two v2 evidence masses (spec §2): the primary belief state, both
-      // REAL and NULLABLE because both-NULL is the "never assessed" state —
-      // which is exactly what ADD COLUMN backfills every existing row with.
-      // Schema only: no data is rewritten here.
-      ensureNodeBeliefCol(
+      // The stored display uncertainty: samai owns the belief engine and its
+      // evidence masses since the belief-storage split, so it writes
+      // belief_uncertainty beside belief_credence through the remote door.
+      // REAL and NULLABLE because NULL is the "never assessed" state — which
+      // is exactly what ADD COLUMN backfills every existing row with.
+      ensureNodeBeliefCol('belief_uncertainty', 'ALTER TABLE nodes ADD COLUMN belief_uncertainty REAL;');
+
+      // Display-belief migration: a legacy database still carrying the two v2
+      // evidence mass columns has them DROPPED — the evidence ledger lives in
+      // samai now — after a ONE-TIME backfill so already-graded rows keep an
+      // honest stored uncertainty: W/(r+s+W) with W=2 (belief model v2's
+      // non-informative prior mass) where both masses are non-NULL;
+      // never-assessed rows (masses NULL) stay NULL. Guarded by the PRAGMA
+      // scan above, so a reopen finds no masses and changes nothing. In-place
+      // ALTER TABLE DROP COLUMN, so indexes and foreign keys survive (neither
+      // mass column is in any index or trigger).
+      const removedNodeMassColumnNames = [
         'belief_evidence_for_mass',
-        'ALTER TABLE nodes ADD COLUMN belief_evidence_for_mass REAL;'
-      );
-      ensureNodeBeliefCol(
         'belief_evidence_against_mass',
-        'ALTER TABLE nodes ADD COLUMN belief_evidence_against_mass REAL;'
+      ];
+      const anyLegacyMassColumnPresent = removedNodeMassColumnNames.some(massColumnName =>
+        nodeColsAfterCredenceMigration.some(col => col.name === massColumnName)
       );
+      const bothLegacyMassColumnsPresent = removedNodeMassColumnNames.every(massColumnName =>
+        nodeColsAfterCredenceMigration.some(col => col.name === massColumnName)
+      );
+      if (anyLegacyMassColumnPresent) {
+        // ALTER TABLE DROP COLUMN re-parses EVERY view in the schema, so a
+        // stale logs_v left by an earlier startup blocks the drops below (it
+        // names a logs column that may not exist). The view is recreated
+        // unconditionally by ensureLoggingAndMemorySchemaLocked later in
+        // this same startup pass, so dropping it here costs nothing.
+        try {
+          this.db.exec('DROP VIEW IF EXISTS logs_v;');
+        } catch (viewDropErr) {
+          console.warn('Failed to drop logs_v ahead of the mass-column drop:', viewDropErr);
+        }
+      }
+      if (bothLegacyMassColumnsPresent) {
+        try {
+          this.db.exec(`
+            UPDATE nodes
+               SET belief_uncertainty =
+                     2.0 / (belief_evidence_for_mass + belief_evidence_against_mass + 2.0)
+             WHERE belief_evidence_for_mass IS NOT NULL
+               AND belief_evidence_against_mass IS NOT NULL;
+          `);
+        } catch (backfillErr) {
+          console.warn('Failed to backfill nodes.belief_uncertainty from the legacy masses:', backfillErr);
+        }
+      }
+      for (const removedNodeMassColumnName of removedNodeMassColumnNames) {
+        if (nodeColsAfterCredenceMigration.some(col => col.name === removedNodeMassColumnName)) {
+          try {
+            this.db.exec(`ALTER TABLE nodes DROP COLUMN ${removedNodeMassColumnName};`);
+          } catch (massDropErr) {
+            console.warn(`Failed to drop removed nodes.${removedNodeMassColumnName}`, massDropErr);
+          }
+        }
+      }
     } catch (nodeErr) {
       console.warn('Failed to ensure nodes belief columns:', nodeErr);
     }
@@ -629,6 +676,22 @@ class SQLiteClient {
         'evidence_origin_key',
         'evidence_independence_key',
       ];
+      const anyLegacyEdgeEvidenceColumnPresent = removedEdgeEvidenceColumnNames.some(
+        removedEdgeEvidenceColumnName =>
+          edgeColumnNamesBeforeEvidenceDrop.some(col => col.name === removedEdgeEvidenceColumnName)
+      );
+      if (anyLegacyEdgeEvidenceColumnPresent) {
+        // Same stale-view blocker as the mass drop above: ALTER TABLE DROP
+        // COLUMN re-parses every view, and a stale logs_v aborts the drop.
+        // Guarded here too so a file whose masses are already gone (or never
+        // existed) still gets its stale edge columns dropped. The view is
+        // recreated unconditionally later in this same startup pass.
+        try {
+          this.db.exec('DROP VIEW IF EXISTS logs_v;');
+        } catch (viewDropErr) {
+          console.warn('Failed to drop logs_v ahead of the edge-evidence drop:', viewDropErr);
+        }
+      }
       for (const removedEdgeEvidenceColumnName of removedEdgeEvidenceColumnNames) {
         if (edgeColumnNamesBeforeEvidenceDrop.some(col => col.name === removedEdgeEvidenceColumnName)) {
           try {

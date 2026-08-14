@@ -13,7 +13,7 @@
  *    the reviewable design decision), with a VISIBILITY FLOOR high enough
  *    that every assessed node — a credence-0 contested one above all — carries
  *    a ring a human can actually see (slice 10, see the step table comment),
- *  - RING STYLE: dashed when the derived uncertainty is >= 0.5, solid below;
+ *  - RING STYLE: dashed when the stored uncertainty is >= 0.5, solid below;
  *    the uncertainty must agree EXACTLY with the shared node-read mapper
  *    beliefFieldsForNodeRead (src/services/belief/beliefMcpToolContract.js),
  *  - FIXED BADGE: shown iff belief_credence_is_fixed is 1,
@@ -21,6 +21,15 @@
  *    vocabulary — never the banned credence synonyms, and a never-assessed
  *    node says it has not been assessed rather than showing 0,
  *  - NO `?? 0` SEMANTICS: a null credence never renders as 0 anywhere.
+ *
+ * reshaped in the display-belief-door-writable slice: the evidence masses are
+ * gone from nodes, so the fixture builders below store the credence and
+ * uncertainty directly (still hand-calculated from the same r/s pairs, so
+ * every numeric expectation is unchanged). deleted in the same slice: the
+ * "ignores a belief_uncertainty key riding on the row" test — uncertainty is
+ * now STORED, so the stored value is exactly what the presentation reads
+ * (pinned in beliefPresentationStoredUncertainty.test.ts); the old rule is
+ * inverted, not reshaped.
  *
  * Import style: the module does not exist yet, so a static import (even a
  * namespace one) would fail `tsc --noEmit` with TS2307 and take the file down
@@ -37,7 +46,7 @@
 import { describe, expect, it } from 'vitest';
 import * as beliefMcpToolContract from '@/services/belief/beliefMcpToolContract';
 
-// The four belief fields of one node as the presentation module takes them —
+// The belief fields of one node as the presentation module takes them —
 // the exact column names of the nodes row, so the same row object that feeds
 // the shared node-read mapper feeds this module too. A type alias rather than
 // an interface so a value of it is assignable to the mapper's
@@ -45,8 +54,7 @@ import * as beliefMcpToolContract from '@/services/belief/beliefMcpToolContract'
 type BeliefPresentationNodeFields = {
   belief_credence: number | null;
   belief_credence_is_fixed: number;
-  belief_evidence_for_mass: number | null;
-  belief_evidence_against_mass: number | null;
+  belief_uncertainty: number | null;
 };
 
 // Which way the ring reads: toward the node ('for'), against it, or graded
@@ -142,11 +150,12 @@ const MINIMUM_VISIBLE_BELIEF_RING_INTENSITY_PERCENT = 35;
  */
 const UNREACHABLE_BELIEF_RING_INTENSITY_PERCENT = 100;
 
-// W of belief model v2, restated by hand so the expected uncertainties below
-// are an independent calculation, not an import of the constant under test.
+// W of the retired belief model v2, restated by hand: the fixtures below
+// still speak in (r, s) evidence pairs so every numeric expectation of the
+// original file survives, but what they BUILD is a stored-column row.
 const HAND_CALCULATED_BELIEF_PRIOR_MASS = 2;
 
-// Expected derived uncertainty W/(r+s+W) for a graded node's masses.
+// Hand-calculated uncertainty W/(r+s+W) for an (r, s) fixture pair.
 function handCalculatedBeliefUncertainty(forMass: number, againstMass: number): number {
   return (
     HAND_CALCULATED_BELIEF_PRIOR_MASS /
@@ -154,8 +163,8 @@ function handCalculatedBeliefUncertainty(forMass: number, againstMass: number): 
   );
 }
 
-// Expected credence projection (r-s)/(r+s+W): fixtures below store the cached
-// belief_credence CONSISTENT with their masses, the way the engine writes it.
+// Hand-calculated credence projection (r-s)/(r+s+W) for an (r, s) fixture
+// pair.
 function handCalculatedBeliefCredenceProjection(forMass: number, againstMass: number): number {
   return (
     (forMass - againstMass) /
@@ -163,35 +172,32 @@ function handCalculatedBeliefCredenceProjection(forMass: number, againstMass: nu
   );
 }
 
-// Build a graded (engine-derived) node's belief fields from its two masses,
-// with the cached credence being the projection — exactly what the v2 engine
-// persists.
+// Build a graded node's STORED belief fields from an (r, s) fixture pair:
+// credence and uncertainty are stored directly, exactly as samai's engine
+// writes them through the display write.
 function gradedNodeBeliefFields(forMass: number, againstMass: number): BeliefPresentationNodeFields {
   return {
     belief_credence: handCalculatedBeliefCredenceProjection(forMass, againstMass),
     belief_credence_is_fixed: 0,
-    belief_evidence_for_mass: forMass,
-    belief_evidence_against_mass: againstMass,
+    belief_uncertainty: handCalculatedBeliefUncertainty(forMass, againstMass),
   };
 }
 
-// A node whose credence a human asserted by hand: flag 1, masses NULL —
-// there is no evidence ledger behind an assertion.
+// A node whose credence a human asserted by hand: flag 1, stored uncertainty
+// NULL — an assertion carries no stored uncertainty (the mapper answers 0).
 function fixedCredenceNodeBeliefFields(assertedCredence: number): BeliefPresentationNodeFields {
   return {
     belief_credence: assertedCredence,
     belief_credence_is_fixed: 1,
-    belief_evidence_for_mass: null,
-    belief_evidence_against_mass: null,
+    belief_uncertainty: null,
   };
 }
 
-// A node nobody has ever assessed: credence NULL, masses NULL, flag 0.
+// A node nobody has ever assessed: credence NULL, uncertainty NULL, flag 0.
 const NEVER_ASSESSED_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
   belief_credence: null,
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: null,
-  belief_evidence_against_mass: null,
+  belief_uncertainty: null,
 };
 
 describe('BELIEF_RING_INTENSITY_STEPS', () => {
@@ -332,13 +338,12 @@ describe('deriveBeliefPresentation ring intensity', () => {
       [0.99, 80],
     ];
     for (const [absoluteCredence, expectedIntensityPercent] of intensityExpectations) {
-      // Masses consistent enough for a graded row; hue/intensity read the
-      // cached credence field, so it is set directly here.
+      // Any non-null stored uncertainty marks the row assessed; hue and
+      // intensity read the stored credence field, so it is set directly here.
       const gradedFields: BeliefPresentationNodeFields = {
         belief_credence: absoluteCredence,
         belief_credence_is_fixed: 0,
-        belief_evidence_for_mass: 1,
-        belief_evidence_against_mass: 0,
+        belief_uncertainty: 0.4,
       };
       expect(
         deriveBeliefPresentation(gradedFields).beliefRingIntensityPercent,
@@ -369,8 +374,7 @@ describe('deriveBeliefPresentation ring intensity', () => {
       const sweptFields: BeliefPresentationNodeFields = {
         belief_credence: absoluteCredence,
         belief_credence_is_fixed: 0,
-        belief_evidence_for_mass: 1,
-        belief_evidence_against_mass: 0,
+        belief_uncertainty: 0.4,
       };
       const sweptIntensityPercent =
         deriveBeliefPresentation(sweptFields).beliefRingIntensityPercent;
@@ -436,28 +440,29 @@ describe('deriveBeliefPresentation always draws an assessed credence-0 node', ()
 });
 
 describe('deriveBeliefPresentation ring style', () => {
-  // Little evidence behind the credence -> dashed. r=s=0.5 gives u = 2/3.
-  it('is dashed when the derived uncertainty is above 0.5', async () => {
+  // Little evidence behind the credence -> dashed. The r=s=0.5 fixture pair
+  // stores u = 2/3.
+  it('is dashed when the stored uncertainty is above 0.5', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
     expect(deriveBeliefPresentation(gradedNodeBeliefFields(0.5, 0.5)).beliefRingStyle).toBe('dashed');
   });
 
-  // The boundary belongs to dashed: uncertainty EXACTLY 0.5 (r+s = W = 2)
-  // still reads as "questionable".
+  // The boundary belongs to dashed: uncertainty EXACTLY 0.5 still reads as
+  // "questionable".
   it('is dashed at uncertainty exactly 0.5', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
-    // r=2, s=0 -> u = 2/4 = 0.5 exactly.
+    // The r=2, s=0 fixture pair stores u = 2/4 = 0.5 exactly.
     expect(deriveBeliefPresentation(gradedNodeBeliefFields(2, 0)).beliefRingStyle).toBe('dashed');
   });
 
-  // Heavy evidence -> solid. r=6, s=2 gives u = 2/10 = 0.2.
-  it('is solid when the derived uncertainty is below 0.5', async () => {
+  // Heavy evidence -> solid. The r=6, s=2 fixture pair stores u = 2/10 = 0.2.
+  it('is solid when the stored uncertainty is below 0.5', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
     expect(deriveBeliefPresentation(gradedNodeBeliefFields(6, 2)).beliefRingStyle).toBe('solid');
   });
 
   // A fixed credence is the dogmatic opinion: uncertainty 0 by definition,
-  // even though its masses are NULL — so its ring is always solid.
+  // even though its stored uncertainty is NULL — so its ring is always solid.
   it('is solid for a fixed-credence node (uncertainty 0 by definition)', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
     const fixedPresentation = deriveBeliefPresentation(fixedCredenceNodeBeliefFields(-0.4));
@@ -465,9 +470,9 @@ describe('deriveBeliefPresentation ring style', () => {
     expect(fixedPresentation.beliefRingStyle).toBe('solid');
   });
 
-  // The vacuous opinion — assessed and carrying nothing, r=s=0 — is maximal
-  // uncertainty (u=1): a neutral, dashed ring, never "no ring".
-  it('renders the vacuous opinion (both masses 0) as a dashed neutral ring', async () => {
+  // The vacuous opinion — assessed and carrying nothing — is maximal
+  // uncertainty (the stored u=1): a neutral, dashed ring, never "no ring".
+  it('renders the vacuous opinion (stored uncertainty 1) as a dashed neutral ring', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
     const vacuousPresentation = deriveBeliefPresentation(gradedNodeBeliefFields(0, 0));
     expect(vacuousPresentation.beliefRingHue).toBe('neutral');
@@ -479,12 +484,12 @@ describe('deriveBeliefPresentation ring style', () => {
 describe('deriveBeliefPresentation uncertainty agrees with the shared node-read mapper', () => {
   // The AGREEMENT test: for every node state the presentation module's
   // uncertainty must equal beliefFieldsForNodeRead's belief_uncertainty
-  // EXACTLY (toBe, not toBeCloseTo) — derivation-beats-stored, one formula,
-  // one owner. The same row object feeds both sides.
+  // EXACTLY (toBe, not toBeCloseTo) — one stored column, one owner. The same
+  // row object feeds both sides.
   it('equals beliefFieldsForNodeRead(row).belief_uncertainty exactly for graded, fixed and never-assessed rows', async () => {
     const { deriveBeliefPresentation } = await importBeliefPresentationModule();
-    // One row per node state the mapper distinguishes: engine-graded,
-    // vacuous, fixed (masses NULL, flag 1), and never assessed.
+    // One row per node state the mapper distinguishes: graded, vacuous,
+    // fixed (stored uncertainty NULL, flag 1), and never assessed.
     const nodeRowsToAgreeOn: BeliefPresentationNodeFields[] = [
       gradedNodeBeliefFields(6, 2),
       gradedNodeBeliefFields(0.5, 0.5),
@@ -509,21 +514,11 @@ describe('deriveBeliefPresentation uncertainty agrees with the shared node-read 
     expect(deriveBeliefPresentation(NEVER_ASSESSED_NODE_BELIEF_FIELDS).beliefRingStyle).toBeNull();
   });
 
-  // Derivation beats stored, at the presentation layer too: a bogus
-  // belief_uncertainty key riding on the row must be ignored in favour of
-  // the derivation from the masses — a stored uncertainty is exactly the
-  // stale cache the belief model refuses to create.
-  it('ignores a belief_uncertainty key riding on the row and derives from the masses', async () => {
-    const { deriveBeliefPresentation } = await importBeliefPresentationModule();
-    // Masses say u = 0.2 (solid); the stowaway key claims 0.99 (dashed).
-    const rowWithStowawayUncertainty = {
-      ...gradedNodeBeliefFields(6, 2),
-      belief_uncertainty: 0.99,
-    };
-    const derivedPresentation = deriveBeliefPresentation(rowWithStowawayUncertainty);
-    expect(derivedPresentation.beliefUncertainty).toBe(handCalculatedBeliefUncertainty(6, 2));
-    expect(derivedPresentation.beliefRingStyle).toBe('solid');
-  });
+  // deleted in the display-belief-door-writable slice: the "ignores a
+  // belief_uncertainty key riding on the row and derives from the masses"
+  // test — the slice inverts that rule: uncertainty is stored, and the
+  // stored value is what the presentation reads (pinned in
+  // beliefPresentationStoredUncertainty.test.ts).
 });
 
 describe('deriveBeliefPresentation fixed badge', () => {

@@ -49,14 +49,15 @@ afterEach(() => {
 });
 
 // One node's entire surviving belief surface, snapshotted whole so any belief
-// write at all — credence, timestamp, flag or either mass — breaks equality.
+// write at all — credence, uncertainty, timestamp or flag — breaks equality.
+// (Reshaped in the display-belief-door-writable slice: the mass columns died,
+// the stored belief_uncertainty display column took their place.)
 interface NodeBeliefSnapshotRow {
   id: number;
   belief_credence: number | null;
+  belief_uncertainty: number | null;
   belief_computed_at: string | null;
   belief_credence_is_fixed: number;
-  belief_evidence_for_mass: number | null;
-  belief_evidence_against_mass: number | null;
 }
 
 // Every node's belief columns plus every movement row: the full belief state
@@ -70,8 +71,8 @@ interface BeliefStateSnapshot {
 function snapshotBeliefState(context: TempBeliefDatabase): BeliefStateSnapshot {
   const nodeBeliefRows = context.sqlite
     .prepare(
-      `SELECT id, belief_credence, belief_computed_at, belief_credence_is_fixed,
-              belief_evidence_for_mass, belief_evidence_against_mass
+      `SELECT id, belief_credence, belief_uncertainty, belief_computed_at,
+              belief_credence_is_fixed
        FROM nodes ORDER BY id ASC`
     )
     .all() as NodeBeliefSnapshotRow[];

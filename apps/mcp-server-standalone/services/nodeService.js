@@ -385,31 +385,47 @@ function getNodeById(id) {
 }
 
 /**
- * Read one node's persisted belief state (fork addition): the belief_credence
- * the app-owned engine graded, when it was computed, and whether a human
- * asserted that credence by hand instead of the engine deriving it. Falls back
- * to an ungraded, derived state when the database predates the belief columns,
+ * Read one node's persisted belief state (fork addition): the four stored
+ * display columns — the belief_credence samai wrote (or a human asserted),
+ * when it was stamped, whether a human asserted it by hand, and the stored
+ * belief_uncertainty samai wrote beside the credence. Falls back to an
+ * ungraded, non-asserted state when the database predates the belief columns,
  * so callers keep working against legacy schemas — and reports the failure on
  * stderr rather than swallowing it, because a real error here is otherwise
  * indistinguishable from a node nobody has graded.
  */
 function getNodeBeliefState(id) {
-  // What an unreadable belief state looks like: ungraded, and derived rather
-  // than asserted (0 is the column default every ordinary node carries).
+  // What an unreadable belief state looks like: ungraded, and non-asserted
+  // (0 is the column default every ordinary node carries).
   const unreadableNodeBeliefState = {
     belief_credence: null,
     belief_computed_at: null,
-    belief_credence_is_fixed: 0
+    belief_credence_is_fixed: 0,
+    belief_uncertainty: null
   };
   try {
     const rows = query(
-      'SELECT belief_credence, belief_computed_at, belief_credence_is_fixed FROM nodes WHERE id = ?',
+      'SELECT belief_credence, belief_computed_at, belief_credence_is_fixed, belief_uncertainty FROM nodes WHERE id = ?',
       [id]
     );
     return rows[0] || unreadableNodeBeliefState;
-  } catch (beliefStateErr) {
-    console.error(`[ra-h-mcp-server] Failed to read belief state for node #${id}:`, beliefStateErr.message);
-    return unreadableNodeBeliefState;
+  } catch {
+    // A database predating the belief_uncertainty column (created before the
+    // display-belief slice, and never re-run through init-db) must not cost
+    // the caller the three older columns: retry without the new one and
+    // answer belief_uncertainty null — nothing was ever stored there.
+    try {
+      const legacyRows = query(
+        'SELECT belief_credence, belief_computed_at, belief_credence_is_fixed FROM nodes WHERE id = ?',
+        [id]
+      );
+      return legacyRows[0]
+        ? { ...legacyRows[0], belief_uncertainty: null }
+        : unreadableNodeBeliefState;
+    } catch (beliefStateErr) {
+      console.error(`[ra-h-mcp-server] Failed to read belief state for node #${id}:`, beliefStateErr.message);
+      return unreadableNodeBeliefState;
+    }
   }
 }
 

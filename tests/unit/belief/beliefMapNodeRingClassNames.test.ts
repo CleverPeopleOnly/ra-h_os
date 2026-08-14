@@ -17,12 +17,12 @@
  *  - style 'dashed' -> additionally `rah-map-node--belief-dashed`; style
  *    'solid' -> no dashed class,
  *  - style null -> no dashed class either: the ring RENDERS SOLID. This is
- *    the carry-forward rule for the illegitimate credence-without-masses
- *    state (credence set, fixed flag 0, masses NULL — a row the engine never
- *    writes): the shared node-read mapper derives a null uncertainty there,
- *    the presentation module carries that through as a null ring style, and
- *    the class layer resolves it to the solid default rather than inventing
- *    a third visual state for an illegitimate row,
+ *    the carry-forward rule for the illegitimate credence-without-uncertainty
+ *    state (credence set, fixed flag 0, stored uncertainty NULL — a row the
+ *    display write never produces): the shared node-read mapper answers a
+ *    null uncertainty there, the presentation module carries that through as
+ *    a null ring style, and the class layer resolves it to the solid default
+ *    rather than inventing a third visual state for an illegitimate row,
  *  - CSS cross-pin: every class name the function can emit for a derivable
  *    presentation exists in src/components/panes/map/map-styles.css, so the
  *    function can never emit a class the stylesheet lacks.
@@ -105,14 +105,15 @@ function expectedBeliefRingClassName(
 // The dashed-style marker class, orthogonal to hue and intensity.
 const EXPECTED_BELIEF_DASHED_CLASS_NAME = 'rah-map-node--belief-dashed';
 
-// W of belief model v2, restated by hand so the graded fixtures below cache
-// a credence that is an independent calculation, not an import of the
-// constant under test.
+// W of the retired belief model v2, restated by hand: the graded fixtures
+// below still speak in (r, s) evidence pairs so the original expectations
+// survive, but what they BUILD is a stored-column row (reshaped in the
+// display-belief-door-writable slice — the mass columns are gone).
 const HAND_CALCULATED_BELIEF_PRIOR_MASS = 2;
 
-// Build a graded (engine-derived) node's four belief columns from its two
-// masses, with the cached credence being the signed projection
-// (r - s) / (r + s + W) — exactly what the v2 engine persists.
+// Build a graded node's STORED belief columns from an (r, s) fixture pair:
+// credence (r - s) / (r + s + W) and uncertainty W / (r + s + W) are stored
+// directly, exactly as samai's engine writes them through the display write.
 function gradedNodeBeliefFields(
   forMass: number,
   againstMass: number
@@ -121,29 +122,29 @@ function gradedNodeBeliefFields(
     belief_credence:
       (forMass - againstMass) / (forMass + againstMass + HAND_CALCULATED_BELIEF_PRIOR_MASS),
     belief_credence_is_fixed: 0,
-    belief_evidence_for_mass: forMass,
-    belief_evidence_against_mass: againstMass,
+    belief_uncertainty:
+      HAND_CALCULATED_BELIEF_PRIOR_MASS /
+      (forMass + againstMass + HAND_CALCULATED_BELIEF_PRIOR_MASS),
   };
 }
 
-// A node nobody has ever assessed: credence NULL, masses NULL, flag 0 —
+// A node nobody has ever assessed: credence NULL, uncertainty NULL, flag 0 —
 // derives to the all-null presentation, the no-ring case.
 const NEVER_ASSESSED_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
   belief_credence: null,
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: null,
-  belief_evidence_against_mass: null,
+  belief_uncertainty: null,
 };
 
-// The illegitimate credence-without-masses row: credence set, fixed flag 0,
-// masses NULL. The engine never writes it, but the mapper answers it with a
-// null uncertainty and the presentation module with a null ring style — the
-// carry-forward state the null-style pin below exercises.
-const CREDENCE_WITHOUT_MASSES_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
+// The illegitimate credence-without-uncertainty row: credence set, fixed flag
+// 0, stored uncertainty NULL. The display write never produces it, but the
+// mapper answers it with a null uncertainty and the presentation module with
+// a null ring style — the carry-forward state the null-style pin below
+// exercises.
+const CREDENCE_WITHOUT_STORED_UNCERTAINTY_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
   belief_credence: 0.5,
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: null,
-  belief_evidence_against_mass: null,
+  belief_uncertainty: null,
 };
 
 // Build one literal presentation decision for the defensive pins and the
@@ -227,14 +228,14 @@ describe('beliefMapNodeRingClassNames on derived presentations', () => {
     expect(beliefMapNodeRingClassNames(neverAssessedPresentation)).toEqual([]);
   });
 
-  // THE NULL-STYLE CARRY-FORWARD: the illegitimate credence-without-masses
-  // row derives to a non-null hue with a NULL ring style. The class layer
-  // resolves null to the solid default — the ring class is worn, the dashed
-  // class is NOT — rather than inventing a third visual state for a row the
-  // engine never writes.
+  // THE NULL-STYLE CARRY-FORWARD: the illegitimate
+  // credence-without-uncertainty row derives to a non-null hue with a NULL
+  // ring style. The class layer resolves null to the solid default — the
+  // ring class is worn, the dashed class is NOT — rather than inventing a
+  // third visual state for a row the display write never produces.
   it('renders a null ring style as solid: ring class present, dashed class absent', () => {
     const nullStylePresentation = deriveBeliefPresentation(
-      CREDENCE_WITHOUT_MASSES_NODE_BELIEF_FIELDS
+      CREDENCE_WITHOUT_STORED_UNCERTAINTY_NODE_BELIEF_FIELDS
     );
     // Premise: this row really is the null-style state (hue set, style null).
     expect(nullStylePresentation.beliefRingHue).toBe('for');

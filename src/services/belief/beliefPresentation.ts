@@ -8,15 +8,17 @@
  *    a NULL credence — never assessed — means no belief treatment at all,
  *  - RING INTENSITY is the stepped percentage of BELIEF_RING_INTENSITY_STEPS,
  *    read off |credence| (the hue, not the intensity, carries the sign),
- *  - RING STYLE is dashed when the derived uncertainty is >= 0.5, solid below,
+ *  - RING STYLE is dashed when the uncertainty is >= 0.5, solid below,
  *  - the FIXED BADGE shows iff belief_credence_is_fixed is 1,
  *  - ACCESSIBLE TEXT speaks the enforced vocabulary (credence, uncertainty,
  *    fixed by hand) and a never-assessed node says so with no number at all.
  *
- * The uncertainty is NOT derived here: it comes from the shared node-read
- * mapper beliefFieldsForNodeRead (beliefMcpToolContract.js), so the UI and
- * the MCP doors read the same derivation and can never disagree — including
- * ignoring any stowaway belief_uncertainty key riding on the row.
+ * The uncertainty is the STORED belief_uncertainty column samai writes beside
+ * the credence (samai owns the belief engine since the storage split), read
+ * through the shared node-read mapper beliefFieldsForNodeRead
+ * (beliefMcpToolContract.js) so the UI and the MCP doors report one and the
+ * same value — including the fixed-node 0 the mapper answers regardless of
+ * the stored column.
  */
 
 import { beliefFieldsForNodeRead } from '@/services/belief/beliefMcpToolContract';
@@ -53,8 +55,7 @@ export interface BeliefPresentation {
 export type BeliefPresentationNodeFields = {
   belief_credence: number | null;
   belief_credence_is_fixed: number;
-  belief_evidence_for_mass: number | null;
-  belief_evidence_against_mass: number | null;
+  belief_uncertainty: number | null;
 };
 
 /**
@@ -114,14 +115,16 @@ function beliefRingHueForCredence(assessedCredence: number): BeliefRingHue {
  *
  * A NULL credence means never assessed: every ring field is null, no badge,
  * and the accessible text says so with no number — a null credence never
- * renders as 0 anywhere. The uncertainty always comes from the shared
- * node-read mapper, never from a stored value on the row.
+ * renders as 0 anywhere. The uncertainty always comes through the shared
+ * node-read mapper, so the fixed-node 0 rule applies here exactly as on the
+ * MCP doors.
  */
 export function deriveBeliefPresentation(
   nodeBeliefFields: BeliefPresentationNodeFields
 ): BeliefPresentation {
-  // The shared derivation (one formula, one owner): normalised credence,
-  // fixed flag and DERIVED uncertainty, exactly as the MCP doors report them.
+  // The shared node-read mapping (one rule, one owner): normalised credence,
+  // fixed flag and the stored uncertainty, exactly as the MCP doors report
+  // them.
   const mappedBeliefFields = beliefFieldsForNodeRead(nodeBeliefFields);
   // Whether a human asserted this credence by hand — drives the badge and
   // the "fixed by hand" clause of the accessible text.
@@ -139,7 +142,7 @@ export function deriveBeliefPresentation(
     };
   }
 
-  // The assessed credence and its mapper-derived uncertainty.
+  // The assessed credence and the uncertainty the mapper reported beside it.
   const assessedCredence = mappedBeliefFields.belief_credence;
   const beliefUncertainty = mappedBeliefFields.belief_uncertainty;
 
@@ -178,8 +181,8 @@ export function deriveBeliefPresentation(
  * Returns the empty array for a never-assessed node (beliefRingHue === null).
  * Otherwise returns one ring class with hue and intensity; additionally
  * includes the dashed class iff the style is 'dashed' (solid and null both
- * render solid, the carry-forward for the illegitimate credence-without-masses
- * state).
+ * render solid — null style means a credence with no stored uncertainty
+ * beside it, which gets the plain ring rather than a claim either way).
  */
 export function beliefMapNodeRingClassNames(
   beliefPresentation: BeliefPresentation

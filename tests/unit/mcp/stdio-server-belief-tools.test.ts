@@ -1,23 +1,26 @@
 /**
- * Tests for the three NEW belief tools on the LOCAL MCP door
+ * Tests for the NEW belief tools on the LOCAL MCP door
  * (apps/mcp-server/stdio-server.js):
  *
  *  - rah_set_belief_fixed_credence — assert one node's credence by hand,
- *  - rah_get_belief_movements — read the log of a node's credence changing,
- *  - rah_recompute_node_belief — ask the app's belief engine to regrade one
- *    node.
+ *  - rah_get_belief_movements — read the log of a node's credence changing.
  *
  * This is the local-door twin of
  * tests/unit/mcp/remote-mcp-route-belief-tools.test.ts, same fixtures and the
  * same contract: validate at the schema, forward to the app's belief
- * endpoints (POST /api/belief/fixed-credence, GET /api/belief/movements,
- * POST /api/belief/recompute — pinned behaviourally in tests/unit/api/), and
+ * endpoints (POST /api/belief/fixed-credence, GET /api/belief/movements —
+ * pinned behaviourally in tests/unit/api/), and
  * pass the app's answer through. Both doors take the schemas from the shared
  * contract (src/services/belief/beliefMcpToolContract.js); the structural
  * agreement is pinned in
  * tests/unit/mcp/mcp-doors-agree-on-belief-tool-surface.test.ts. The
  * STANDALONE door is not in scope: it never grades, and its own
  * setBeliefFixedCredence is only the semantics reference.
+ *
+ * deleted in the display-belief-door-writable slice: the
+ * rah_recompute_node_belief describe and its stub branch — the recompute
+ * surface is dead on both doors (the proxy's display-belief surface is
+ * pinned in stdio-server-display-belief-surface.test.ts).
  *
  * Seam (same as tests/unit/mcp/stdio-server-evidence.test.ts): the spawned
  * proxy is pointed at a local in-process HTTP stub via RAH_MCP_TARGET_URL;
@@ -47,12 +50,8 @@ const ASSERTED_NODE_ID = 9;
 const UNKNOWN_NODE_ID = 424242;
 // A node whose movement log is empty, for the quiet-success path.
 const QUIET_NODE_ID = 10;
-// A node whose recompute lands on "ungraded" (null credence).
-const EVIDENCELESS_NODE_ID = 11;
 // The timestamp the stubbed app stamps on every fixed-credence assertion.
 const STUBBED_BELIEF_COMPUTED_AT = '2026-07-30T10:00:00.000Z';
-// The credence the stubbed app answers for a graded recompute.
-const STUBBED_RECOMPUTED_CREDENCE = 0.44;
 
 // The movement log the stubbed app serves for ASSERTED_NODE_ID — already
 // newest first, exactly as the app route answers it.
@@ -155,33 +154,6 @@ async function handleApiStubRequest(req: http.IncomingMessage, res: http.ServerR
       success: true,
       count: servedMovements.length,
       movements: servedMovements,
-    });
-    return;
-  }
-
-  if (method === 'POST' && url.pathname === '/api/belief/recompute') {
-    const recomputedNodeId = body?.node_id as number;
-    if (recomputedNodeId === UNKNOWN_NODE_ID) {
-      answerWithJson(res, 404, {
-        success: false,
-        error: `Cannot recompute belief for node #${UNKNOWN_NODE_ID}: no such node.`,
-      });
-      return;
-    }
-    if (recomputedNodeId === EVIDENCELESS_NODE_ID) {
-      answerWithJson(res, 200, {
-        success: true,
-        node_id: recomputedNodeId,
-        belief_credence: null,
-        message: `Node #${recomputedNodeId} has no counted evidence and stays ungraded.`,
-      });
-      return;
-    }
-    answerWithJson(res, 200, {
-      success: true,
-      node_id: recomputedNodeId,
-      belief_credence: STUBBED_RECOMPUTED_CREDENCE,
-      message: `Recomputed belief for node #${recomputedNodeId}.`,
     });
     return;
   }
@@ -391,70 +363,16 @@ describe('app-MCP proxy rah_get_belief_movements', () => {
   });
 });
 
-describe('app-MCP proxy rah_recompute_node_belief', () => {
-  // The regrade path: node_id rides the POST body, and the app's graded
-  // answer passes through.
-  it('forwards the recompute to the app and reports the regraded credence', async () => {
-    await withMcpClient(async (client) => {
-      const toolResult = await client.callTool({
-        name: 'rah_recompute_node_belief',
-        arguments: { node_id: ASSERTED_NODE_ID },
-      });
-
-      expect((toolResult as { isError?: boolean }).isError ?? false).toBe(false);
-      const [forwardedRecompute] = findRecordedBeliefRequests('POST', '/api/belief/recompute');
-      expect(forwardedRecompute, 'the proxy should have POSTed to /api/belief/recompute').toBeDefined();
-      expect(forwardedRecompute.body).toMatchObject({ node_id: ASSERTED_NODE_ID });
-      expect(toolResult.structuredContent).toMatchObject({
-        success: true,
-        node_id: ASSERTED_NODE_ID,
-        belief_credence: STUBBED_RECOMPUTED_CREDENCE,
-      });
-    });
-  });
-
-  // Ungraded is a real answer: null credence, success, never 0.
-  it('reports a null credence as a successful ungraded answer, never 0 and never an error', async () => {
-    await withMcpClient(async (client) => {
-      const toolResult = await client.callTool({
-        name: 'rah_recompute_node_belief',
-        arguments: { node_id: EVIDENCELESS_NODE_ID },
-      });
-
-      expect((toolResult as { isError?: boolean }).isError ?? false).toBe(false);
-      const recomputeReply = (toolResult as { structuredContent?: unknown })
-        .structuredContent as { success: boolean; belief_credence: number | null };
-      expect(recomputeReply.success).toBe(true);
-      expect(recomputeReply.belief_credence).toBeNull();
-      expect(recomputeReply.belief_credence).not.toBe(0);
-    });
-  });
-
-  // A typo'd node id is an error, not an ungraded node.
-  it('refuses an unknown node with an error naming it', async () => {
-    await withMcpClient(async (client) => {
-      const toolResult = await client.callTool({
-        name: 'rah_recompute_node_belief',
-        arguments: { node_id: UNKNOWN_NODE_ID },
-      });
-
-      expect((toolResult as { isError?: boolean }).isError).toBe(true);
-      expect(JSON.stringify(toolResult.content)).toContain(String(UNKNOWN_NODE_ID));
-    });
-  });
-});
-
 describe('app-MCP proxy advertises the new belief tools', () => {
   // Discoverability: each new tool is listed with an input schema AND an
   // output schema, so an external agent can learn the whole contract.
-  it('lists all three belief tools with input and output schemas', async () => {
+  it('lists the new belief tools with input and output schemas', async () => {
     await withMcpClient(async (client) => {
       const listedTools = await client.listTools();
 
       for (const beliefToolName of [
         'rah_set_belief_fixed_credence',
         'rah_get_belief_movements',
-        'rah_recompute_node_belief',
       ]) {
         const advertisedBeliefTool = listedTools.tools.find(
           (tool) => tool.name === beliefToolName

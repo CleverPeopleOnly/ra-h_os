@@ -1,8 +1,14 @@
 /**
  * THE TWO APP-BACKED MCP DOORS SAY THE SAME THING ABOUT THE NEW BELIEF
- * SURFACE: the node-read belief columns on rah_get_nodes, and the three new
- * belief tools (rah_set_belief_fixed_credence, rah_get_belief_movements,
- * rah_recompute_node_belief).
+ * SURFACE: the node-read belief columns on rah_get_nodes, and the new
+ * belief tools (rah_set_belief_fixed_credence, rah_get_belief_movements).
+ *
+ * deleted in the display-belief-door-writable slice:
+ * rah_recompute_node_belief in newBeliefToolNames — the recompute surface is
+ * dead on both doors. rah_write_display_belief is deliberately NOT added
+ * here: it is remote-only, so there is no cross-door agreement to pin
+ * (pinned in remote-mcp-route-display-belief-tool.test.ts and
+ * stdio-server-display-belief-surface.test.ts).
  *
  * Same thesis as tests/unit/mcp/mcp-doors-agree-on-belief.test.ts, extended
  * to the surface this MR adds: RA-H serves the same rah_* tools from the
@@ -43,11 +49,10 @@ let localDoorTools: Tool[] = [];
 // Every tool the remote door advertises, read once and reused.
 let remoteDoorTools: Tool[] = [];
 
-// The three new belief tools, whose WHOLE schemas must agree across doors.
+// The new belief tools, whose WHOLE schemas must agree across doors.
 const newBeliefToolNames = [
   'rah_set_belief_fixed_credence',
   'rah_get_belief_movements',
-  'rah_recompute_node_belief',
 ];
 
 // The three belief columns a node read reports, compared field by field on

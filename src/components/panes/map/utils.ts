@@ -318,15 +318,15 @@ export function toRFNodes(params: {
           : 'second-hop'
       : 'overview';
 
-    // The four belief fields as the presentation derivation takes them. The
-    // Node type declares them optional, so undefined (a node from a caller
-    // predating belief) normalises to null — never assessed — and the flag
-    // to 0 (not fixed). A missing field must never read as a graded 0.
+    // The belief fields as the presentation derivation takes them: the
+    // stored display columns. The Node type declares them optional, so
+    // undefined (a node from a caller predating belief) normalises to null —
+    // never assessed — and the flag to 0 (not fixed). A missing field must
+    // never read as a graded 0.
     const nodeBeliefFields: BeliefPresentationNodeFields = {
       belief_credence: node.belief_credence ?? null,
       belief_credence_is_fixed: node.belief_credence_is_fixed ?? 0,
-      belief_evidence_for_mass: node.belief_evidence_for_mass ?? null,
-      belief_evidence_against_mass: node.belief_evidence_against_mass ?? null,
+      belief_uncertainty: node.belief_uncertainty ?? null,
     };
 
     return {

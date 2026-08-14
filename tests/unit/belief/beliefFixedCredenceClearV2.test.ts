@@ -5,15 +5,17 @@
  *
  * A single operation — clearBeliefFixedCredence in
  * src/services/belief/beliefFixedCredence.ts, the twin of the existing
- * setBeliefFixedCredence — clears belief_credence_is_fixed to 0 and
- * immediately regrades the node. In the interim world of the
- * evidence-leaves-the-edges-table slice no edge carries evidence, so that
- * regrade always lands never-assessed (see
- * beliefEngineWithoutEdgeEvidence.test.ts for the engine-side pins).
+ * setBeliefFixedCredence — clears belief_credence_is_fixed to 0 and NULLs
+ * the three display columns directly, landing the node never-assessed (see
+ * beliefClearFixedCredenceWithoutEngine.test.ts for the engine-free pins).
  *
  * deleted in the evidence-leaves-the-edges-table slice: the
  * regrades-from-its-evidence test and the propagates-through-the-cleared-node
  * test — both had edge evidence itself as their subject.
+ *
+ * reshaped in the display-belief-door-writable slice: the mass columns are
+ * gone, so the cleared-state assertion now reads the stored
+ * belief_uncertainty (NULL after a clear) instead of the two evidence masses.
  *
  * Also pinned: the shared MCP tool contract
  * (src/services/belief/beliefMcpToolContract.js) grows the input and output
@@ -37,7 +39,6 @@ import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
 } from './helpers/tempBeliefDatabase';
-import { readBeliefEvidenceMasses } from './helpers/beliefEvidenceMassExpectations';
 import * as beliefMcpToolContract from '@/services/belief/beliefMcpToolContract';
 
 // The database context under test; opened per test, closed after each.
@@ -72,8 +73,9 @@ async function importClearBeliefFixedCredence(): Promise<
 
 describe('clearBeliefFixedCredence (v2 un-fix door, service semantics)', () => {
   // Withdrawing the assertion of a node with NO evidence leaves it ungraded —
-  // credence, timestamp and masses all NULL. No movement row: an ungraded
-  // outcome has no to_credence to record (see the header's spec-gap note).
+  // credence, timestamp and stored uncertainty all NULL. No movement row: an
+  // ungraded outcome has no to_credence to record (see the header's spec-gap
+  // note).
   it('clearing a fixed node with no evidence leaves it ungraded and logs nothing new', async () => {
     db = await openTempBeliefDatabase();
     const evidencelessNodeId = db.insertNodeFixture({ title: 'assertion with nothing behind it' });
@@ -89,9 +91,10 @@ describe('clearBeliefFixedCredence (v2 un-fix door, service semantics)', () => {
     const clearedBelief = db.readNodeBelief(evidencelessNodeId);
     expect(clearedBelief.belief_credence).toBeNull();
     expect(clearedBelief.belief_computed_at).toBeNull();
-    const masses = readBeliefEvidenceMasses(db, evidencelessNodeId);
-    expect(masses.belief_evidence_for_mass).toBeNull();
-    expect(masses.belief_evidence_against_mass).toBeNull();
+    const clearedStoredUncertaintyRow = db.sqlite
+      .prepare('SELECT belief_uncertainty FROM nodes WHERE id = ?')
+      .get(evidencelessNodeId) as { belief_uncertainty: number | null };
+    expect(clearedStoredUncertaintyRow.belief_uncertainty).toBeNull();
     expect(db.readBeliefMovements(evidencelessNodeId)).toHaveLength(1);
   });
 

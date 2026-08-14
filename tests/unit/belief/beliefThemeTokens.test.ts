@@ -23,7 +23,7 @@
  * harness runs node-env vitest with no jsdom, so the pin reads the checked-in
  * stylesheet source and asserts each token: value pair inside the RIGHT theme
  * block — the same source-text pinning used by
- * beliefNodeTypeEvidenceMassColumns.test.ts.
+ * beliefMapRahNodeRingConsumption.test.ts.
  */
 
 import fs from 'fs';

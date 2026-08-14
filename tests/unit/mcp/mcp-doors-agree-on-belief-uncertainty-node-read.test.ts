@@ -1,27 +1,31 @@
 /**
- * BOTH APP-BACKED MCP DOORS REPORT belief_uncertainty ON NODE READS
- * (docs/belief-model-subjective-logic.md §2 and §6): rah_get_nodes returns
- * belief_uncertainty ALONGSIDE belief_credence — derived on read from the
- * node's evidence masses (uncertainty = 2/(r + s + 2)), never stored, and
- * NULL when the node was never assessed.
+ * BOTH APP-BACKED MCP DOORS REPORT belief_uncertainty ON NODE READS:
+ * rah_get_nodes returns belief_uncertainty ALONGSIDE belief_credence — the
+ * STORED nodes.belief_uncertainty value, and NULL when the node was never
+ * assessed.
  *
  * Two layers pinned in one file:
  *  1. ADVERTISED: both doors declare belief_uncertainty on the rah_get_nodes
  *     output schema, identically — same drift-proofing thesis as
  *     mcp-doors-agree-on-belief-tool-surface.test.ts, because both doors must
  *     take the fragment from the shared contract module
- *     (src/services/belief/beliefMcpToolContract.js, whose own derivation
+ *     (src/services/belief/beliefMcpToolContract.js, whose own mapper
  *     behaviour is pinned in
  *     tests/unit/belief/beliefMcpToolContractUncertaintyNodeReadFields.test.ts).
- *  2. DELIVERED: driving the remote door with node rows that carry evidence
- *     masses, the reply's belief_uncertainty is the derived value — and null
- *     for a never-assessed node, never 0 and never a dropped key.
+ *  2. DELIVERED: driving the remote door with node rows that carry a stored
+ *     belief_uncertainty, the reply's belief_uncertainty is that stored
+ *     value — and null for a never-assessed node, never 0 and never a
+ *     dropped key.
+ *
+ * deleted in the display-belief-door-writable slice: the pins on deriving
+ * uncertainty from evidence masses — the mass columns are gone and
+ * uncertainty is stored; the fixtures below are stored-uncertainty rows.
  *
  * Seam: the remote door through remoteMcpDoorHarness (real MCP client into
  * the exported POST handler, in-process app stub behind), the local door
  * spawned as a real child process for the schema comparison only. The stub's
- * node rows carry the masses because the app's node read serves the columns
- * it stores; the DERIVATION lives in the shared mapper the doors spread in.
+ * node rows carry the stored uncertainty because the app's node read serves
+ * the columns it stores.
  */
 
 import path from 'node:path';
@@ -45,26 +49,24 @@ let remoteDoorTools: Tool[] = [];
 // One node as the tool reports it back to the client.
 type ReportedNode = Record<string, unknown>;
 
-// A node graded under v2: §3 row 1's masses (0.45, 0) with their cached
-// projection, so the derived uncertainty must be 2/2.45.
-const massGradedNodeRecord = {
+// A graded node carrying a stored uncertainty beside its credence.
+const storedUncertaintyGradedNodeRecord = {
   id: 31,
-  title: 'Node graded from evidence masses',
+  title: 'Node graded with a stored uncertainty',
   source: 'Fixture source text.',
-  description: 'A node carrying v2 evidence masses.',
+  description: 'A node carrying a stored belief_uncertainty.',
   link: null,
   metadata: null,
   created_at: '2026-08-01T08:00:00.000Z',
   updated_at: '2026-08-02T08:00:00.000Z',
-  belief_credence: 0.45 / 2.45,
+  belief_credence: 0.31,
   belief_computed_at: '2026-08-02T09:00:00.000Z',
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: 0.45,
-  belief_evidence_against_mass: 0,
+  belief_uncertainty: 0.42,
 };
 
-// A node nobody has assessed: masses NULL, credence NULL — its uncertainty
-// must arrive as an explicit null.
+// A node nobody has assessed: stored uncertainty NULL, credence NULL — its
+// uncertainty must arrive as an explicit null.
 const neverAssessedNodeRecord = {
   id: 32,
   title: 'Node nobody has assessed',
@@ -77,13 +79,12 @@ const neverAssessedNodeRecord = {
   belief_credence: null,
   belief_computed_at: null,
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: null,
-  belief_evidence_against_mass: null,
+  belief_uncertainty: null,
 };
 
 // Every node the stubbed app serves, keyed by the id in the URL.
 const beliefNodeRecordsTheAppServes: Record<string, Record<string, unknown>> = {
-  '31': massGradedNodeRecord,
+  '31': storedUncertaintyGradedNodeRecord,
   '32': neverAssessedNodeRecord,
 };
 
@@ -184,14 +185,16 @@ describe('both MCP doors advertise belief_uncertainty on rah_get_nodes', () => {
 });
 
 describe('the remote MCP door delivers belief_uncertainty on node reads', () => {
-  // The derivation reaches the wire: masses (0.45, 0) → uncertainty 2/2.45,
-  // reported beside the cached credence.
-  it('reports the derived uncertainty of a mass-graded node beside its credence', async () => {
+  // The stored value reaches the wire: belief_uncertainty is reported beside
+  // the cached credence, exactly as stored.
+  it('reports the stored uncertainty of a graded node beside its credence', async () => {
     await remoteMcpDoorHarness.withRemoteMcpClient(async (client) => {
-      const [reportedNode] = await callGetNodesTool(client, [massGradedNodeRecord.id]);
+      const [reportedNode] = await callGetNodesTool(client, [
+        storedUncertaintyGradedNodeRecord.id,
+      ]);
 
-      expect(Number(reportedNode.belief_credence)).toBeCloseTo(0.45 / 2.45, 10);
-      expect(Number(reportedNode.belief_uncertainty)).toBeCloseTo(2 / 2.45, 10);
+      expect(Number(reportedNode.belief_credence)).toBeCloseTo(0.31, 10);
+      expect(Number(reportedNode.belief_uncertainty)).toBeCloseTo(0.42, 10);
     });
   });
 
@@ -212,12 +215,16 @@ describe('the remote MCP door delivers belief_uncertainty on node reads', () => 
   // uncertainty must not disturb the rest of the record.
   it('GUARD: still reports the three v1 belief columns beside the uncertainty', async () => {
     await remoteMcpDoorHarness.withRemoteMcpClient(async (client) => {
-      const [reportedNode] = await callGetNodesTool(client, [massGradedNodeRecord.id]);
+      const [reportedNode] = await callGetNodesTool(client, [
+        storedUncertaintyGradedNodeRecord.id,
+      ]);
 
-      expect(reportedNode.belief_computed_at).toBe(massGradedNodeRecord.belief_computed_at);
+      expect(reportedNode.belief_computed_at).toBe(
+        storedUncertaintyGradedNodeRecord.belief_computed_at
+      );
       expect(reportedNode.belief_credence_is_fixed).toBe(0);
-      expect(reportedNode.id).toBe(massGradedNodeRecord.id);
-      expect(reportedNode.title).toBe(massGradedNodeRecord.title);
+      expect(reportedNode.id).toBe(storedUncertaintyGradedNodeRecord.id);
+      expect(reportedNode.title).toBe(storedUncertaintyGradedNodeRecord.title);
     });
   });
 });

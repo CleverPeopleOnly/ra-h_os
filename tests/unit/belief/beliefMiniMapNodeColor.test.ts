@@ -69,14 +69,15 @@ const appGlobalsStylesheetPath = path.resolve(
 // The app stylesheet source, read once, for the token cross-pin.
 const appGlobalsStylesheetSource = fs.readFileSync(appGlobalsStylesheetPath, 'utf8');
 
-// W of belief model v2, restated by hand so the graded fixtures below cache
-// a credence that is an independent calculation, not an import of the
-// constant under test.
+// W of the retired belief model v2, restated by hand: the graded fixtures
+// below still speak in (r, s) evidence pairs so the original expectations
+// survive, but what they BUILD is a stored-column row (reshaped in the
+// display-belief-door-writable slice — the mass columns are gone).
 const HAND_CALCULATED_BELIEF_PRIOR_MASS = 2;
 
-// Build a graded (engine-derived) node's four belief columns from its two
-// masses, with the cached credence being the signed projection
-// (r - s) / (r + s + W) — exactly what the v2 engine persists.
+// Build a graded node's STORED belief columns from an (r, s) fixture pair:
+// credence (r - s) / (r + s + W) and uncertainty W / (r + s + W) are stored
+// directly, exactly as samai's engine writes them through the display write.
 function gradedNodeBeliefFields(
   forMass: number,
   againstMass: number
@@ -85,28 +86,28 @@ function gradedNodeBeliefFields(
     belief_credence:
       (forMass - againstMass) / (forMass + againstMass + HAND_CALCULATED_BELIEF_PRIOR_MASS),
     belief_credence_is_fixed: 0,
-    belief_evidence_for_mass: forMass,
-    belief_evidence_against_mass: againstMass,
+    belief_uncertainty:
+      HAND_CALCULATED_BELIEF_PRIOR_MASS /
+      (forMass + againstMass + HAND_CALCULATED_BELIEF_PRIOR_MASS),
   };
 }
 
-// A node nobody has ever assessed: credence NULL, masses NULL, flag 0 —
+// A node nobody has ever assessed: credence NULL, uncertainty NULL, flag 0 —
 // derives to the all-null presentation, the no-tint case.
 const NEVER_ASSESSED_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
   belief_credence: null,
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: null,
-  belief_evidence_against_mass: null,
+  belief_uncertainty: null,
 };
 
-// The illegitimate credence-without-masses row: credence set, fixed flag 0,
-// masses NULL — derives to a non-null hue with a NULL ring style. The
-// MiniMap tint is hue-only, so this row must tint exactly like a solid one.
-const CREDENCE_WITHOUT_MASSES_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
+// The illegitimate credence-without-uncertainty row: credence set, fixed flag
+// 0, stored uncertainty NULL — derives to a non-null hue with a NULL ring
+// style. The MiniMap tint is hue-only, so this row must tint exactly like a
+// solid one.
+const CREDENCE_WITHOUT_STORED_UNCERTAINTY_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
   belief_credence: 0.5,
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: null,
-  belief_evidence_against_mass: null,
+  belief_uncertainty: null,
 };
 
 // Build one literal presentation decision for the defensive stowaway pin,
@@ -181,7 +182,7 @@ describe('beliefMiniMapNodeColor leaves a never-assessed node untinted', () => {
 
 describe('beliefMiniMapNodeColor tints by hue alone', () => {
   // HUE-ONLY: a barely-committed and a strongly-committed 'for' node — and
-  // the null-style credence-without-masses row — all emit the IDENTICAL
+  // the null-style credence-without-uncertainty row — all emit the IDENTICAL
   // string. Intensity bands and ring style belong to the map node's ring;
   // the MiniMap flattens them to the hue.
   it('emits one identical string across intensity bands and ring styles of one hue', () => {
@@ -193,7 +194,7 @@ describe('beliefMiniMapNodeColor tints by hue alone', () => {
     );
     // The null-style carry-forward row: hue 'for', ring style null.
     const nullStyleForPresentation = deriveBeliefPresentation(
-      CREDENCE_WITHOUT_MASSES_NODE_BELIEF_FIELDS
+      CREDENCE_WITHOUT_STORED_UNCERTAINTY_NODE_BELIEF_FIELDS
     );
     // Premises of this case: same hue, different bands, one null style.
     expect(committedForPresentation.beliefRingHue).toBe('for');

@@ -70,7 +70,10 @@ const toolNamesTheRemoteMcpDoorAdvertises = [
   'rah_get_context',
   'rah_set_belief_fixed_credence',
   'rah_get_belief_movements',
-  'rah_recompute_node_belief',
+  // Swapped in for rah_recompute_node_belief in the
+  // display-belief-door-writable slice: the recompute surface is dead and the
+  // door's writable belief surface is the display write.
+  'rah_write_display_belief',
 ];
 
 // The bearer token this suite installs as RAH_MCP_DOOR_TOKEN: the door fails

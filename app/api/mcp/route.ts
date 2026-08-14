@@ -17,8 +17,6 @@ import {
   beliefClearFixedCredenceOutputSchemaFields,
   beliefMovementsReadInputSchemaFields,
   beliefMovementsReadOutputSchemaFields,
-  beliefRecomputeInputSchemaFields,
-  beliefRecomputeOutputSchemaFields,
 } from '@/services/belief/beliefMcpToolContract';
 
 export const runtime = 'nodejs';
@@ -768,29 +766,87 @@ function createServer(request: NextRequest): McpServer {
     }
   );
 
+  // The display-belief write is REMOTE-DOOR-ONLY, matching the journal
+  // tools' precedent: samai writes through the remote door, so its schema is
+  // declared here rather than in the shared contract and the local stdio
+  // door never gains the tool.
   server.registerTool(
-    'rah_recompute_node_belief',
+    'rah_write_display_belief',
     {
-      title: 'Recompute RA-H node belief',
-      description: 'Restate one node\'s belief_credence. Belief evidence lives outside this store, so a non-fixed node restates to ungraded — credence null, a real answer, never reported as 0 — and a fixed node reports its hand-asserted credence.',
-      inputSchema: beliefRecomputeInputSchemaFields,
-      outputSchema: beliefRecomputeOutputSchemaFields,
+      title: 'Write RA-H display belief',
+      description: 'Write one node\'s display belief: samai owns the belief engine since the belief-storage split, and this store never grades — the three columns are a display surface samai lands verbatim. Exactly two legal shapes: a GRADE (belief_credence, belief_uncertainty and belief_computed_at all non-null) or an UNGRADE (all three null). A fixed node is refused — a hand-asserted credence is only changed through the assert/clear tools.',
+      inputSchema: {
+        node_id: z
+          .number()
+          .int()
+          .positive()
+          .describe('ID of the node whose display belief is being written'),
+        // Credence's interval is CLOSED here — samai's engine may derive the
+        // endpoints — unlike the OPEN interval of a hand assertion.
+        belief_credence: z
+          .number()
+          .min(-1)
+          .max(1)
+          .nullable()
+          .describe('How much samai believes the node: a number in [-1, 1], or null on an UNGRADE.'),
+        // Open at 0: the dogmatic opinion is reserved for a hand-asserted
+        // credence, so samai may never write it.
+        belief_uncertainty: z
+          .number()
+          .gt(0)
+          .max(1)
+          .nullable()
+          .describe('How little evidence the credence rests on: a number in (0, 1], or null on an UNGRADE. 0 is not writable — it means a hand-asserted credence.'),
+        belief_computed_at: z
+          .string()
+          .nullable()
+          .describe('When samai computed the grade (ISO-8601), or null on an UNGRADE.'),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        node_id: z.number().describe('ID of the node whose display belief was written'),
+        // The STORED row's four belief columns as the app answered them —
+        // read back, never an echo of the request.
+        belief_credence: z.number().nullable(),
+        belief_uncertainty: z.number().nullable(),
+        belief_computed_at: z.string().nullable(),
+        belief_credence_is_fixed: z.union([z.literal(0), z.literal(1)]),
+        message: z.string(),
+      },
     },
-    async ({ node_id }) => {
-      const payload = await callRaHApi(request, '/api/belief/recompute', {
+    async ({ node_id, belief_credence, belief_uncertainty, belief_computed_at }) => {
+      // The two legal shapes, refused DOOR-SIDE so a mixture never becomes a
+      // request: a GRADE (all three non-null) or an UNGRADE (all three null).
+      const nullFieldCount = [belief_credence, belief_uncertainty, belief_computed_at]
+        .filter((writtenField) => writtenField === null).length;
+      if (nullFieldCount !== 0 && nullFieldCount !== 3) {
+        throw new Error(
+          'A display-belief write has exactly two legal shapes: a GRADE with all three of ' +
+            'belief_credence, belief_uncertainty and belief_computed_at non-null, or an UNGRADE ' +
+            'with all three null. A mixture is refused.'
+        );
+      }
+
+      // The four fields forward verbatim to the ONE app endpoint; the app's
+      // refusals (unknown node, fixed node) pass through naming what refused
+      // them.
+      const payload = await callRaHApi(request, '/api/belief/display', {
         method: 'POST',
-        body: JSON.stringify({ node_id }),
+        body: JSON.stringify({ node_id, belief_credence, belief_uncertainty, belief_computed_at }),
       });
 
-      const summary = payload.message || `Recomputed belief for node #${node_id}.`;
+      const summary = payload.message || `Wrote the display belief of node #${node_id}.`;
       return {
         content: [{ type: 'text', text: summary }],
-        // The regraded credence passes through verbatim — including null,
-        // which must stay null and never be coerced to 0.
+        // The stored row the app answered, passed through field for field —
+        // nulls included, never coerced.
         structuredContent: {
           success: true,
           node_id: payload.node_id,
           belief_credence: payload.belief_credence ?? null,
+          belief_uncertainty: payload.belief_uncertainty ?? null,
+          belief_computed_at: payload.belief_computed_at ?? null,
+          belief_credence_is_fixed: payload.belief_credence_is_fixed,
           message: summary,
         },
       };
@@ -1238,7 +1294,7 @@ export async function GET(request: NextRequest) {
     'rah_get_context',
     'rah_set_belief_fixed_credence',
     'rah_get_belief_movements',
-    'rah_recompute_node_belief',
+    'rah_write_display_belief',
   ];
 
   return NextResponse.json(

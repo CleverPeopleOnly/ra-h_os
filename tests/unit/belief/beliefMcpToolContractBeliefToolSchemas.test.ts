@@ -1,11 +1,15 @@
 /**
- * Tests for the input and output schemas of the THREE new belief tools the
+ * Tests for the input and output schemas of the new belief tools the
  * shared MCP tool contract (src/services/belief/beliefMcpToolContract.js) must
  * grow, so both app-backed doors can register them from one declaration:
  *
  *  - rah_set_belief_fixed_credence — assert one node's credence by hand,
- *  - rah_get_belief_movements — read the log of a node's credence changing,
- *  - rah_recompute_node_belief — ask the app's belief engine to regrade a node.
+ *  - rah_get_belief_movements — read the log of a node's credence changing.
+ *
+ * deleted in the display-belief-door-writable slice: the
+ * rah_recompute_node_belief output-schema describe and the tool's entries in
+ * the shared node_id loop and the vocabulary sweep — the recompute surface is
+ * dead; the writable belief surface is rah_write_display_belief.
  *
  * The set tool mirrors the standalone door's setBeliefFixedCredence semantics
  * (apps/mcp-server-standalone/index.js): credence lives in the OPEN interval
@@ -32,22 +36,18 @@ import * as beliefMcpToolContract from '@/services/belief/beliefMcpToolContract'
 // inputSchema/outputSchema registration.
 type BeliefToolSchemaFields = Record<string, z.ZodTypeAny>;
 
-// The six new schema-field exports under test, typed locally because the
-// contract does not export them yet — that missing surface is the red.
+// The new schema-field exports under test, typed locally through the
+// namespace cast.
 const {
   beliefSetFixedCredenceInputSchemaFields,
   beliefSetFixedCredenceOutputSchemaFields,
   beliefMovementsReadInputSchemaFields,
   beliefMovementsReadOutputSchemaFields,
-  beliefRecomputeInputSchemaFields,
-  beliefRecomputeOutputSchemaFields,
 } = beliefMcpToolContract as unknown as {
   beliefSetFixedCredenceInputSchemaFields: BeliefToolSchemaFields;
   beliefSetFixedCredenceOutputSchemaFields: BeliefToolSchemaFields;
   beliefMovementsReadInputSchemaFields: BeliefToolSchemaFields;
   beliefMovementsReadOutputSchemaFields: BeliefToolSchemaFields;
-  beliefRecomputeInputSchemaFields: BeliefToolSchemaFields;
-  beliefRecomputeOutputSchemaFields: BeliefToolSchemaFields;
 };
 
 // Credences inside the open interval every set call must accept. 0 is the
@@ -70,13 +70,12 @@ const rejectedNonNumberCredenceValues: unknown[] = ['0.5', '', null, true, false
 const acceptedNodeIdValues = [1, 7, 100000];
 const rejectedNodeIdValues: unknown[] = [0, -3, 2.5, '7', null, true, {}];
 
-// The three tools' node_id schemas, tested as one set: the same identifier
+// The tools' node_id schemas, tested as one set: the same identifier
 // rule must hold at every belief tool, or an agent that learned it once would
 // be misled at the next tool.
 const nodeIdSchemasAllBeliefToolsShare = [
   ['rah_set_belief_fixed_credence', () => beliefSetFixedCredenceInputSchemaFields.node_id],
   ['rah_get_belief_movements', () => beliefMovementsReadInputSchemaFields.node_id],
-  ['rah_recompute_node_belief', () => beliefRecomputeInputSchemaFields.node_id],
 ] as const;
 
 // One well-formed movement entry as the movements read must report it — the
@@ -140,7 +139,7 @@ describe('rah_set_belief_fixed_credence input schema', () => {
   });
 });
 
-describe('node_id input schema shared by all three belief tools', () => {
+describe('node_id input schema shared by the belief tools', () => {
   for (const [beliefToolName, getNodeIdSchema] of nodeIdSchemasAllBeliefToolsShare) {
     // Node ids are positive integers everywhere in RA-H; the belief tools
     // refuse anything else at the schema, before a request reaches the app.
@@ -291,60 +290,17 @@ describe('rah_set_belief_fixed_credence output schema', () => {
   });
 });
 
-describe('rah_recompute_node_belief output schema', () => {
-  // The recompute reply carries the regraded credence — and null is a REAL
-  // outcome, not an error: a node with no counted evidence is ungraded.
-  it('accepts a graded reply and an ungraded (null credence) reply alike', () => {
-    const recomputeOutputSchema = z.object(beliefRecomputeOutputSchemaFields as z.ZodRawShape);
-
-    expect(
-      recomputeOutputSchema.safeParse({
-        success: true,
-        node_id: 9,
-        belief_credence: 0.44,
-        message: 'Recomputed belief for node #9.',
-      }).success,
-      'a graded recompute reply must be accepted'
-    ).toBe(true);
-    expect(
-      recomputeOutputSchema.safeParse({
-        success: true,
-        node_id: 9,
-        belief_credence: null,
-        message: 'Node #9 has no counted evidence and stays ungraded.',
-      }).success,
-      'an ungraded (null credence) recompute reply must be accepted — null is a real state'
-    ).toBe(true);
-  });
-
-  // A numeric string is a non-number wherever credence travels.
-  it('rejects a string credence in the reply', () => {
-    const recomputeOutputSchema = z.object(beliefRecomputeOutputSchemaFields as z.ZodRawShape);
-
-    expect(
-      recomputeOutputSchema.safeParse({
-        success: true,
-        node_id: 9,
-        belief_credence: '0.44',
-        message: 'Recomputed belief for node #9.',
-      }).success
-    ).toBe(false);
-  });
-});
-
 describe('belief vocabulary in the new tool schemas', () => {
   // Every description an agent reads must speak the vocabulary: trust,
   // standing, score and weight are banned as synonyms for credence anywhere
   // in belief code, comments or tool descriptions.
   it('uses no banned synonym for credence in any new field description', () => {
-    // All six new schema-field bags, flattened to their per-field descriptions.
+    // All the new schema-field bags, flattened to their per-field descriptions.
     const allNewBeliefSchemaFieldBags: BeliefToolSchemaFields[] = [
       beliefSetFixedCredenceInputSchemaFields,
       beliefSetFixedCredenceOutputSchemaFields,
       beliefMovementsReadInputSchemaFields,
       beliefMovementsReadOutputSchemaFields,
-      beliefRecomputeInputSchemaFields,
-      beliefRecomputeOutputSchemaFields,
     ];
     // The banned synonyms, checked case-insensitively against every
     // description string the schemas carry.

@@ -5,15 +5,14 @@ export const runtime = 'nodejs';
 
 /**
  * POST /api/belief/fixed-credence/clear — withdraw one node's asserted
- * credence (the v2 un-fix door, docs/belief-model-subjective-logic.md §2).
+ * credence (the un-fix door).
  *
  * The endpoint both app-backed MCP doors' rah_clear_belief_fixed_credence
- * forwards to. It clears belief_credence_is_fixed and immediately regrades
- * the node from its actual evidence (movement trigger
- * 'belief-fixed-credence-cleared'), sweeping the change through the node's
- * outgoing evidence. The reply's belief_credence is nullable: a node whose
- * evidence leaves it ungraded answers null — a real outcome, never an error,
- * and never coerced to 0.
+ * forwards to. It clears belief_credence_is_fixed and writes the three
+ * display columns to NULL directly — no engine runs (samai owns the belief
+ * engine since the storage split), so the node is never-assessed until samai
+ * next writes its display belief. The reply's belief_credence is nullable:
+ * null is a real outcome, never an error, and never coerced to 0.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -34,8 +33,8 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // The write itself: flag cleared, node regraded from its actual evidence,
-    // movement logged iff the credence moved. null back means no such node.
+    // The write itself: flag cleared and the display columns NULLed together,
+    // with no movement logged. null back means no such node.
     const fixedCredenceClearance = await clearBeliefFixedCredence(clearedNodeId);
     if (fixedCredenceClearance === null) {
       return NextResponse.json({
@@ -45,12 +44,8 @@ export async function POST(request: NextRequest) {
     }
 
     // The reply mirrors the set endpoint's shape, signs flipped by the door's
-    // meaning: the flag is 0 and the credence is whatever the regrade landed
-    // on — including null for a now-ungraded node.
-    const summary =
-      fixedCredenceClearance.beliefCredence === null
-        ? `Withdrew the asserted credence of node #${clearedNodeId}; it has no counted evidence and is now ungraded.`
-        : `Withdrew the asserted credence of node #${clearedNodeId}; the engine regraded it from its evidence.`;
+    // meaning: the flag is 0 and the credence is null — never-assessed.
+    const summary = `Withdrew the asserted credence of node #${clearedNodeId}; it is now ungraded until samai next writes its display belief.`;
     return NextResponse.json({
       success: true,
       node_id: clearedNodeId,
