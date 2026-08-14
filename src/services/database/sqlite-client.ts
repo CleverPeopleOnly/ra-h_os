@@ -1798,11 +1798,52 @@ class SQLiteClient {
   }
 }
 
-// Export singleton instance (similar to PostgreSQL client interface)
-export const sqliteDb = SQLiteClient.getInstance();
+// LAZY on purpose — the database opens on FIRST USE, never at import.
+//
+// This module used to end with `export const sqliteDb =
+// SQLiteClient.getInstance();`, which ran the private constructor — mkdir of
+// the database directory, better-sqlite3 open, and every schema migration —
+// as a side effect of merely importing the module. Any build or script that
+// transitively imported app code therefore opened whatever
+// SQLITE_DB_PATH || default resolved to: during the belief-storage split a
+// `npm run build` part-migrated the developer's PERSONAL store exactly this
+// way. `SQLiteClient.getInstance()` is the single lazy point; nothing in this
+// module may call it at evaluation time.
 
-// Export function to get client instance
-export const getSQLiteClient = () => sqliteDb;
+// Export singleton accessor (similar to PostgreSQL client interface). Each
+// call resolves — and on the first call, opens and fully migrates — the one
+// shared SQLiteClient instance.
+export const getSQLiteClient = (): SQLiteClient => SQLiteClient.getInstance();
+
+// Export singleton instance handle for callers that dereference `sqliteDb`
+// directly. A Proxy rather than the instance itself, so that importing this
+// module stays inert: each property access resolves the shared instance via
+// getInstance() (opening the database on the first one) and forwards to it.
+// The Proxy target is a bare SQLiteClient-prototype object, which keeps
+// `instanceof SQLiteClient` true and lets the guard below answer "is this a
+// real member?" without touching the database.
+export const sqliteDb: SQLiteClient = new Proxy(
+  Object.create(SQLiteClient.prototype) as SQLiteClient,
+  {
+    get(prototypeCarrier, propertyKey) {
+      // Accesses that are not SQLiteClient members — console.log/util.inspect
+      // probing well-known symbols, an `await` probing `then` — must not
+      // become the "first use" that opens the database.
+      if (!(propertyKey in prototypeCarrier)) {
+        return undefined;
+      }
+      const openSqliteClient = SQLiteClient.getInstance();
+      const memberValue = Reflect.get(openSqliteClient, propertyKey, openSqliteClient);
+      // Bind methods to the real instance so their private-field access works
+      // whether called through the proxy or after being detached.
+      return typeof memberValue === 'function' ? memberValue.bind(openSqliteClient) : memberValue;
+    },
+    set(_prototypeCarrier, propertyKey, assignedValue) {
+      Reflect.set(SQLiteClient.getInstance(), propertyKey, assignedValue);
+      return true;
+    }
+  }
+);
 
 // Export class for testing
 export { SQLiteClient };
