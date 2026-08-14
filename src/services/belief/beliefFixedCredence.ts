@@ -6,16 +6,18 @@
  * credence actually changed — re-asserting the same number is not a change
  * and logs nothing.
  *
- * Belief evidence left the edges table (it lives in samai's own store now),
- * so neither door propagates anywhere: there are no evidence edges through
- * which an assertion could reach another node. The un-fix door,
- * clearBeliefFixedCredence, clears the flag and immediately recomputes the
- * node — which, with no evidence basis left to read, lands it never-assessed
- * and logs no movement (an ungraded outcome has no to_credence to record).
+ * samai owns the belief engine since the belief-storage split, so no engine
+ * runs on either write here. The un-fix door, clearBeliefFixedCredence,
+ * clears the flag and writes the three display columns to NULL DIRECTLY:
+ * withdrawing an assertion leaves the node never-assessed until samai next
+ * writes its display belief through the remote door.
  */
 
 import { getSQLiteClient } from '@/services/database/sqlite-client';
-import { recomputeNodeBelief } from '@/services/belief/beliefService';
+import type { BeliefMovementTrigger } from '@/services/belief/beliefService';
+
+// The one trigger a fixed-credence assertion stamps on its movement row.
+const BELIEF_FIXED_CREDENCE_SET_TRIGGER: BeliefMovementTrigger = 'belief-fixed-credence-set';
 
 // What one successful fixed-credence assertion wrote: the credence now stored
 // on the node and the shared timestamp stamped on the node (and on the
@@ -53,16 +55,19 @@ export function setBeliefFixedCredence(
   }
   const previousBeliefCredence = nodeBeliefStateRow.belief_credence ?? null;
 
-  // Single timestamp shared by the node write and any movement row. The two
-  // evidence masses clear to NULL alongside the assertion (spec §2: a fixed
-  // credence is the dogmatic opinion — there is no evidence ledger behind an
-  // assertion, so masses left by an earlier engine grading would be stale).
+  // Single timestamp shared by the node write and any movement row. The
+  // stored belief_uncertainty clears to NULL alongside the assertion: it was
+  // samai's uncertainty about a credence this write has just overwritten, so
+  // leaving it would pair samai's stale figure with the human's number. The
+  // read surface answers 0 for a fixed node regardless (the dogmatic
+  // opinion), so nothing the UI or doors report changes — NULLing is purely
+  // about not storing a stale value.
   const beliefComputedAt = new Date().toISOString();
   sqlite
     .prepare(
       `UPDATE nodes
           SET belief_credence = ?, belief_credence_is_fixed = 1, belief_computed_at = ?,
-              belief_evidence_for_mass = NULL, belief_evidence_against_mass = NULL
+              belief_uncertainty = NULL
         WHERE id = ?`
     )
     .run(assertedBeliefCredence, beliefComputedAt, nodeId);
@@ -83,7 +88,7 @@ export function setBeliefFixedCredence(
         nodeId,
         previousBeliefCredence,
         assertedBeliefCredence,
-        'belief-fixed-credence-set',
+        BELIEF_FIXED_CREDENCE_SET_TRIGGER,
         beliefComputedAt
       );
   }
@@ -91,20 +96,22 @@ export function setBeliefFixedCredence(
   return { beliefCredence: assertedBeliefCredence, beliefComputedAt };
 }
 
-// What one successful un-fix reports back: the credence the immediate
-// recompute landed on — null for a now-ungraded node, a real outcome and
-// never an error.
+// What one successful un-fix reports back: the node's credence after the
+// withdrawal — always null, because a withdrawal leaves the node
+// never-assessed; a real outcome and never an error.
 export interface BeliefFixedCredenceClearance {
-  // The node's credence after the recompute; null when it landed ungraded.
+  // The node's credence after the withdrawal; null — never-assessed.
   beliefCredence: number | null;
 }
 
-// The un-fix door (v2): withdraw one node's asserted credence. Clears
-// belief_credence_is_fixed to 0 and IMMEDIATELY recomputes the node — which,
-// with no edge carrying evidence any more, lands it never-assessed. No
-// movement is logged: an ungraded outcome has no to_credence to record.
-// Returns null when no such node exists — clearing an assertion about
-// nothing must be an error at the caller, never a silent no-op.
+// The un-fix door: withdraw one node's asserted credence. Clears
+// belief_credence_is_fixed to 0 and writes credence, uncertainty and
+// computed_at to NULL directly — no engine is involved (samai owns the
+// engine), and the node stays never-assessed until samai next writes its
+// display belief. No movement is logged: an ungraded outcome has no
+// to_credence to record. Returns null when no such node exists — clearing an
+// assertion about nothing must be an error at the caller, never a silent
+// no-op.
 export async function clearBeliefFixedCredence(
   nodeId: number
 ): Promise<BeliefFixedCredenceClearance | null> {
@@ -118,12 +125,17 @@ export async function clearBeliefFixedCredence(
     return null;
   }
 
-  // Withdraw the assertion: the flag clears, and the engine owns the credence
-  // again from this write on.
-  sqlite.prepare('UPDATE nodes SET belief_credence_is_fixed = 0 WHERE id = ?').run(nodeId);
+  // Withdraw the assertion in one write: the flag clears and all three
+  // display columns NULL together — the never-assessed state.
+  sqlite
+    .prepare(
+      `UPDATE nodes
+          SET belief_credence_is_fixed = 0,
+              belief_credence = NULL, belief_uncertainty = NULL, belief_computed_at = NULL
+        WHERE id = ?`
+    )
+    .run(nodeId);
 
-  // The immediate recompute: with no edge carrying evidence, it clears the
-  // node to never-assessed and reports null — a real outcome, not an error.
-  const regradeResult = await recomputeNodeBelief(nodeId, 'belief-fixed-credence-cleared');
-  return { beliefCredence: regradeResult.beliefCredence };
+  // Never-assessed is the whole outcome: null credence, reported honestly.
+  return { beliefCredence: null };
 }

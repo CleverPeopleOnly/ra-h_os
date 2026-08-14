@@ -1,7 +1,6 @@
 import { embedNodeContent } from '@/services/embedding/ingestion';
 import { nodeService } from '@/services/database';
 import { getSQLiteClient } from '@/services/database/sqlite-client';
-import { recomputeNodeBelief } from '@/services/belief/beliefService';
 
 interface AutoEmbedTask {
   nodeId: number;
@@ -120,19 +119,12 @@ export class AutoEmbedQueue {
     }
 
     console.log(`🔄 [AutoEmbedQueue] Embedding node ${task.nodeId}${task.reason ? ` (${task.reason})` : ''}`);
+    // Embedding is the WHOLE task: samai owns the belief engine, so
+    // completing an embed touches no belief state — the node's display
+    // belief and its movement log are samai's to write, never this queue's.
     const result = await embedNodeContent(task.nodeId);
     if (!result.success) {
       console.error('[AutoEmbedQueue] Embedding failed', task.nodeId, result.error);
-      return;
-    }
-
-    // Belief hook: a freshly embedded node gets its belief regraded, logging
-    // the movement under this entry point's own trigger (spec §5). A
-    // recompute failure must never mark the embed task itself as failed.
-    try {
-      await recomputeNodeBelief(task.nodeId, 'embed-grade');
-    } catch (beliefError) {
-      console.warn('[AutoEmbedQueue] Belief recompute failed after embed', task.nodeId, beliefError);
     }
   }
 }

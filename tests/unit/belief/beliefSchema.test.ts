@@ -36,6 +36,7 @@
  * see tempBeliefDatabase.ts for the safety seam.
  */
 
+import { spawnSync } from 'node:child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -1229,6 +1230,101 @@ describe('sources-as-nodes schema migration', () => {
       edgeColumnNamesAfterFirstRun
     );
     expect(db.hasTable('belief_source_trust')).toBe(false);
+  });
+});
+
+// The belief_movements(node_id) index tests below moved here from
+// beliefSchemaEvidenceMassesV2.test.ts when that file was deleted in the
+// display-belief-door-writable slice (the mass columns it pinned are gone;
+// the movement-log index outlives them).
+
+// One row of "PRAGMA index_list(<table>)" as these tests read it.
+interface SqliteIndexListRow {
+  name: string;
+}
+
+// One row of "PRAGMA index_info(<index>)" as these tests read it.
+interface SqliteIndexInfoRow {
+  name: string;
+}
+
+// True when the belief_movements table carries at least one index whose
+// leading column is node_id — the shape spec §5 demands, checked through any
+// better-sqlite3 connection so the app and standalone sides share one probe.
+function hasBeliefMovementsNodeIdIndex(
+  runPragma: (pragmaSql: string) => unknown[]
+): boolean {
+  const movementIndexes = runPragma('PRAGMA index_list(belief_movements)') as SqliteIndexListRow[];
+  return movementIndexes.some(movementIndex => {
+    const indexedColumns = runPragma(
+      `PRAGMA index_info(${JSON.stringify(movementIndex.name)})`
+    ) as SqliteIndexInfoRow[];
+    return indexedColumns.length > 0 && indexedColumns[0].name === 'node_id';
+  });
+}
+
+// Absolute path of the standalone server entry point, whose "init-db"
+// subcommand drives the standalone copy of the schema in cli.js.
+const standaloneServerEntryPath = path.join(
+  process.cwd(),
+  'apps',
+  'mcp-server-standalone',
+  'index.js'
+);
+
+// Run standalone init-db against one database file, failing the test with its
+// stderr if it does not exit cleanly — same drive as the parity tests.
+function runStandaloneInitDb(targetDbPath: string): void {
+  const initDbResult = spawnSync(process.execPath, [standaloneServerEntryPath, 'init-db'], {
+    cwd: process.cwd(),
+    env: { ...process.env, RAH_DB_PATH: targetDbPath },
+    encoding: 'utf8',
+    timeout: 30000,
+  });
+  expect(initDbResult.status, `standalone init-db stderr: ${initDbResult.stderr}`).toBe(0);
+}
+
+describe('belief_movements(node_id) index', () => {
+  // Spec §5: belief_movements gains an index on node_id — every movement read
+  // filters on it. Fresh database.
+  it('fresh database: belief_movements has an index whose leading column is node_id', async () => {
+    db = await openTempBeliefDatabase();
+    const sqlite = db.sqlite;
+    expect(
+      hasBeliefMovementsNodeIdIndex(pragmaSql => sqlite.prepare(pragmaSql).all()),
+      'belief_movements needs an index led by node_id'
+    ).toBe(true);
+  });
+
+  // The same index appears when client init runs over a legacy database that
+  // never had the belief tables at all.
+  it('legacy database: client init creates the belief_movements(node_id) index', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: createLegacyDatabaseWithoutBeliefColumns,
+    });
+    const sqlite = db.sqlite;
+    expect(
+      hasBeliefMovementsNodeIdIndex(pragmaSql => sqlite.prepare(pragmaSql).all())
+    ).toBe(true);
+  });
+
+  // The standalone DDL also carries the movement-log index (spec §7 names
+  // both schema owners for it).
+  it('standalone init-db creates the belief_movements(node_id) index', async () => {
+    db = await openTempBeliefDatabase({
+      prepareExistingDbFile: (targetDbPath: string) => {
+        runStandaloneInitDb(targetDbPath);
+        const directDb = new Database(targetDbPath, { readonly: true, fileMustExist: true });
+        try {
+          expect(
+            hasBeliefMovementsNodeIdIndex(pragmaSql => directDb.prepare(pragmaSql).all()),
+            'standalone init-db must index belief_movements on node_id'
+          ).toBe(true);
+        } finally {
+          directDb.close();
+        }
+      },
+    });
   });
 });
 

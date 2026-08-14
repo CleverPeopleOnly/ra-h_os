@@ -449,8 +449,8 @@ async function main() {
         if (node) {
           const rawSource = node.source ?? null;
           const sourceTruncated = rawSource ? rawSource.length > CHUNK_LIMIT : false;
-          // Persisted belief state of this node, as graded by the app-owned
-          // belief engine (NULL values when the node is ungraded).
+          // Persisted display-belief state of this node, as samai wrote it
+          // or a human asserted it (NULL values when the node is ungraded).
           const nodeBeliefState = nodeService.getNodeBeliefState(id);
 
           nodes.push({
@@ -470,7 +470,16 @@ async function main() {
             belief_computed_at: nodeBeliefState.belief_computed_at ?? null,
             // Whether a human asserted that credence rather than the node
             // being ungraded — belief evidence lives outside this store.
-            belief_credence_is_fixed: nodeBeliefState.belief_credence_is_fixed ?? 0
+            belief_credence_is_fixed: nodeBeliefState.belief_credence_is_fixed ?? 0,
+            // The stored belief_uncertainty samai wrote beside the credence,
+            // passed through verbatim (null when never assessed) — except a
+            // FIXED node answers 0 regardless of the stored value: a
+            // hand-asserted credence is the dogmatic opinion, on this door
+            // exactly as on the app doors' shared mapper.
+            belief_uncertainty:
+              nodeBeliefState.belief_credence_is_fixed === 1
+                ? 0
+                : nodeBeliefState.belief_uncertainty ?? null
           });
         }
       }

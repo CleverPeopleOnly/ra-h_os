@@ -9,11 +9,11 @@ import { z } from 'zod';
 
 /**
  * The four belief fields of one node as a node-read tool reports them: the
- * three stored columns plus the derived belief_uncertainty (belief model v2 —
- * derived on read from the row's evidence masses, never stored). Credence,
- * its stamp and the uncertainty are nullable because NULL (never assessed) is
- * a state of its own; the fixed flag is not — the column is NOT NULL
- * DEFAULT 0.
+ * four STORED display columns (the belief-storage split reversed the old
+ * derive-on-read rule — samai writes belief_uncertainty beside the credence
+ * now). Credence, its stamp and the uncertainty are nullable because NULL
+ * (never assessed) is a state of its own; the fixed flag is not — the column
+ * is NOT NULL DEFAULT 0.
  */
 export type BeliefNodeReadFields = {
   belief_credence: number | null;
@@ -26,9 +26,10 @@ export type BeliefNodeReadFields = {
  * Normalise one node row's belief columns for a node read: a missing credence
  * or stamp becomes null, a stored NULL stays null, a real 0 stays 0, and a
  * missing fixed flag falls back to the column's own default of 0.
- * belief_uncertainty is DERIVED from the row's evidence masses (0 for a
- * fixed-credence node — the dogmatic opinion; null when never assessed); any
- * belief_uncertainty key arriving on the row is ignored.
+ * belief_uncertainty is the STORED column passed through verbatim (null when
+ * never assessed) — except for a fixed-credence node, which answers 0
+ * regardless of the stored value: a hand-asserted credence is the dogmatic
+ * opinion.
  */
 export declare function beliefFieldsForNodeRead(
   nodeRow: Record<string, unknown>
@@ -66,9 +67,9 @@ export declare const beliefSetFixedCredenceOutputSchemaFields: {
 };
 
 /**
- * rah_clear_belief_fixed_credence input (the v2 un-fix door): the node whose
- * asserted credence is withdrawn — the only argument, because the engine
- * decides the credence from the node's actual evidence now.
+ * rah_clear_belief_fixed_credence input (the un-fix door): the node whose
+ * asserted credence is withdrawn — the only argument, because a withdrawal
+ * leaves the node never-assessed until samai next writes its display belief.
  */
 export declare const beliefClearFixedCredenceInputSchemaFields: {
   node_id: z.ZodNumber;
@@ -77,8 +78,8 @@ export declare const beliefClearFixedCredenceInputSchemaFields: {
 /**
  * rah_clear_belief_fixed_credence output — the mirror of the set tool's
  * reply: the fixed flag is the literal 0 (a successful clear always leaves
- * the node un-fixed) and the credence is nullable (the regrade may land
- * ungraded — a real outcome, not an error).
+ * the node un-fixed) and the credence is nullable (a withdrawal leaves the
+ * node never-assessed — a real outcome, not an error).
  */
 export declare const beliefClearFixedCredenceOutputSchemaFields: {
   success: z.ZodBoolean;
@@ -112,18 +113,3 @@ export declare const beliefMovementsReadOutputSchemaFields: {
   >;
 };
 
-/** rah_recompute_node_belief input: the node to regrade. */
-export declare const beliefRecomputeInputSchemaFields: {
-  node_id: z.ZodNumber;
-};
-
-/**
- * rah_recompute_node_belief output. belief_credence is nullable because a
- * node with no counted evidence stays ungraded — a real answer, not an error.
- */
-export declare const beliefRecomputeOutputSchemaFields: {
-  success: z.ZodBoolean;
-  node_id: z.ZodNumber;
-  belief_credence: z.ZodNullable<z.ZodNumber>;
-  message: z.ZodString;
-};

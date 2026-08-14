@@ -26,61 +26,25 @@
 const { z } = require('zod');
 
 /**
- * W of belief model v2 (docs/belief-model-subjective-logic.md §2): the
- * non-informative prior mass of the Beta/Subjective Logic correspondence.
- * Deliberately RESTATED here rather than imported from
- * src/services/belief/beliefGradingPolicy.ts: this module must stay plain
- * CommonJS the local door can `require` from source, and that policy module
- * is TypeScript. The value is pinned on both sides by the belief tests.
- */
-const BELIEF_PRIOR_MASS = 2;
-
-/**
- * How little evidence one node row's credence rests on, DERIVED from the
- * row's evidence masses (belief model v2, spec §2) — never read from the row:
- * a stored belief_uncertainty would be exactly the stale cache §2 refuses to
- * create, so the derivation always wins.
- *
- *  - a FIXED credence is the dogmatic opinion: uncertainty 0 by definition,
- *    even though its masses are NULL — there is no evidence ledger behind an
- *    assertion, but an assertion is the opposite of "never assessed",
- *  - masses present: W / (r + s + W),
- *  - masses NULL (or missing): never assessed — null, the same state the
- *    credence itself reports as null.
- *
- * @param {Record<string, unknown>} nodeRow One node row as the app reported it.
- * @returns {number | null} The derived uncertainty, or null.
- */
-function deriveBeliefUncertaintyForNodeRead(nodeRow) {
-  if (nodeRow.belief_credence_is_fixed === 1) {
-    return 0;
-  }
-  // The two masses move together (both NULL or both non-NULL); a missing key
-  // reads as "nothing known", i.e. null, like every other nullable column.
-  const beliefEvidenceForMass = nodeRow.belief_evidence_for_mass ?? null;
-  const beliefEvidenceAgainstMass = nodeRow.belief_evidence_against_mass ?? null;
-  if (typeof beliefEvidenceForMass !== 'number' || typeof beliefEvidenceAgainstMass !== 'number') {
-    return null;
-  }
-  return (
-    BELIEF_PRIOR_MASS / (beliefEvidenceForMass + beliefEvidenceAgainstMass + BELIEF_PRIOR_MASS)
-  );
-}
-
-/**
  * The four belief fields of one node, as a node-read tool must report them:
- * the three stored columns plus the DERIVED belief_uncertainty (v2, spec §2 —
- * derived on read from the row's evidence masses, never stored; the masses
- * themselves are state, not read surface).
+ * the four STORED display columns — belief_credence, belief_computed_at,
+ * belief_credence_is_fixed, belief_uncertainty. The uncertainty used to be
+ * derived on read from the row's evidence masses; the belief-storage split
+ * REVERSED that (recorded ruling: samai's docs/belief-storage-split rulings):
+ * the engine and its masses live in samai now, samai writes the uncertainty
+ * beside the credence through the remote door, and the stored column IS the
+ * answer. The one rule that survives the reversal: a FIXED credence is the
+ * dogmatic opinion, so a fixed node answers uncertainty 0 regardless of what
+ * the stored column says.
  *
- * `?? null` normalises only a MISSING key on the two nullable columns: a
+ * `?? null` normalises only a MISSING key on the three nullable columns: a
  * column the app did not report at all reads as "nothing known" and becomes
  * null, a stored NULL is already null, and a real 0 is kept as 0. NULL
  * credence means nobody has grounded the node, while 0 means it was assessed
  * and believed neither way — different states that must never collapse into
  * each other. belief_credence_is_fixed has NO null state (the column is
  * NOT NULL DEFAULT 0), so a missing key falls back to the column's own
- * default of 0 — an ordinary derived-credence node.
+ * default of 0 — an ordinary node samai may grade.
  *
  * @param {Record<string, unknown>} nodeRow One node row as the app reported it.
  */
@@ -89,7 +53,8 @@ function beliefFieldsForNodeRead(nodeRow) {
     belief_credence: nodeRow.belief_credence ?? null,
     belief_computed_at: nodeRow.belief_computed_at ?? null,
     belief_credence_is_fixed: nodeRow.belief_credence_is_fixed ?? 0,
-    belief_uncertainty: deriveBeliefUncertaintyForNodeRead(nodeRow),
+    belief_uncertainty:
+      nodeRow.belief_credence_is_fixed === 1 ? 0 : nodeRow.belief_uncertainty ?? null,
   };
 }
 
@@ -117,9 +82,11 @@ const beliefNodeReadOutputSchemaFields = {
   belief_credence_is_fixed: z
     .union([z.literal(0), z.literal(1)])
     .describe('1 when a human asserted the belief_credence by hand; 0 otherwise — belief evidence lives outside this store, so a non-asserted node is ungraded (credence null).'),
-  // How little evidence the credence rests on: unsigned, derived on read —
-  // 0 is a human assertion (the dogmatic opinion), values near 1 mean the
-  // credence rests on almost nothing, and null means never assessed.
+  // How little evidence the credence rests on: unsigned, the STORED display
+  // column samai writes beside the credence — 0 is a human assertion (the
+  // dogmatic opinion, answered by the mapper regardless of the stored
+  // value), values near 1 mean the credence rests on almost nothing, and
+  // null means never assessed.
   belief_uncertainty: z
     .number()
     .nullable()
@@ -165,9 +132,10 @@ const beliefSetFixedCredenceOutputSchemaFields = {
 
 /**
  * Input schema fields of rah_clear_belief_fixed_credence: withdraw one node's
- * asserted credence (the v2 un-fix door). The node is the ONLY argument — a
- * credence input here would contradict the door's whole meaning: the engine
- * decides the credence from the node's actual evidence now.
+ * asserted credence (the un-fix door). The node is the ONLY argument — a
+ * credence input here would contradict the door's whole meaning: withdrawing
+ * an assertion leaves the node never-assessed until samai next writes its
+ * display belief.
  */
 const beliefClearFixedCredenceInputSchemaFields = {
   node_id: z
@@ -181,8 +149,8 @@ const beliefClearFixedCredenceInputSchemaFields = {
  * Output schema fields of rah_clear_belief_fixed_credence — the mirror of the
  * set tool's reply, with the two signs flipped by the door's meaning: the
  * fixed flag is the LITERAL 0 (a successful clear always leaves the node
- * un-fixed) and the credence is NULLABLE (the regrade from the node's actual
- * evidence may land ungraded — a real outcome, never an error).
+ * un-fixed) and the credence is NULLABLE (a withdrawal leaves the node
+ * never-assessed — a real outcome, never an error).
  */
 const beliefClearFixedCredenceOutputSchemaFields = {
   success: z.boolean(),
@@ -190,7 +158,7 @@ const beliefClearFixedCredenceOutputSchemaFields = {
   belief_credence: z
     .number()
     .nullable()
-    .describe('The credence the engine regraded the node to from its actual evidence; null when the node has no counted evidence and is now ungraded — a real state, never reported as 0.'),
+    .describe('The credence stored on the node after the withdrawal; null when the withdrawal left it never-assessed — a real state, never reported as 0.'),
   belief_credence_is_fixed: z
     .literal(0)
     .describe('Always 0: a successful clear leaves the node un-fixed.'),
@@ -240,34 +208,6 @@ const beliefMovementsReadOutputSchemaFields = {
   ),
 };
 
-/**
- * Input schema fields of rah_recompute_node_belief: ask for one node's
- * belief_credence to be restated. Belief evidence lives outside this
- * store, so a non-fixed node restates to ungraded.
- */
-const beliefRecomputeInputSchemaFields = {
-  node_id: z
-    .number()
-    .int()
-    .positive()
-    .describe('ID of the node whose belief_credence the engine should recompute'),
-};
-
-/**
- * Output schema fields of rah_recompute_node_belief. belief_credence is
- * nullable because ungraded is a REAL outcome, not an error: a node with no
- * counted evidence answers null, never 0.
- */
-const beliefRecomputeOutputSchemaFields = {
-  success: z.boolean(),
-  node_id: z.number().describe('ID of the node that was regraded'),
-  belief_credence: z
-    .number()
-    .nullable()
-    .describe('The regraded credence actually persisted on the node; null when the node has no counted evidence and stays ungraded — a real state, never reported as 0.'),
-  message: z.string(),
-};
-
 module.exports = {
   beliefFieldsForNodeRead,
   beliefNodeReadOutputSchemaFields,
@@ -277,6 +217,4 @@ module.exports = {
   beliefClearFixedCredenceOutputSchemaFields,
   beliefMovementsReadInputSchemaFields,
   beliefMovementsReadOutputSchemaFields,
-  beliefRecomputeInputSchemaFields,
-  beliefRecomputeOutputSchemaFields,
 };

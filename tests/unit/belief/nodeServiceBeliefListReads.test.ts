@@ -2,23 +2,26 @@
  * LIST reads must carry the node's belief columns: nodeService.getNodes
  * (src/services/database/nodes.ts, getNodesSQLite) is the read behind
  * GET /api/nodes — the list every belief UI surface (MR-B) will render from —
- * and its SELECT today names every column EXCEPT the five belief ones:
- * belief_credence, belief_computed_at, belief_credence_is_fixed,
- * belief_evidence_for_mass and belief_evidence_against_mass. The by-id read
- * (getNodeByIdSQLite) already carries all five; this file pins the same
- * surface onto the list read, against a real temp database:
+ * and it must name every one of the four belief columns:
+ * belief_credence, belief_computed_at, belief_credence_is_fixed and
+ * belief_uncertainty. The by-id read (getNodeByIdSQLite) already carries all
+ * four; this file pins the same surface onto the list read, against a real
+ * temp database:
  *
- *  - a node whose belief columns hold a graded state (seeded directly —
- *    since the evidence-leaves-the-edges-table slice the engine no longer
- *    grades from edges) reports its cached credence projection, its grading
- *    timestamp, and both stored evidence masses — including an against-mass
- *    of exactly 0, which must never collapse into the NULL that means never
- *    assessed,
- *  - an ungraded node reports all of credence, computed_at and both masses as
+ *  - a node whose belief columns hold a graded state (seeded directly — the
+ *    engine left this fork in the display-belief-door-writable slice, so the
+ *    display columns are written, never derived) reports its stored credence,
+ *    its grading timestamp and its stored uncertainty,
+ *  - an ungraded node reports credence, computed_at and uncertainty as
  *    explicit nulls (present-and-null, never a missing key) with the fixed
  *    flag 0,
- *  - a fixed-credence node reports its asserted credence with flag 1 and
- *    masses NULL — there is no evidence ledger behind a human assertion.
+ *  - a fixed-credence node reports its asserted credence with flag 1 and a
+ *    NULL stored uncertainty — the fixed-node "reads as 0" rule lives in the
+ *    shared contract's node-read mapper, never in the SELECT.
+ *
+ * reshaped in the display-belief-door-writable slice: the two evidence-mass
+ * columns are gone from nodes, so the five-key surface became this four-key
+ * one and the fixtures seed a stored belief_uncertainty instead of masses.
  *
  * Seam: tests/unit/belief/helpers/tempBeliefDatabase.ts — the node service is
  * imported dynamically AFTER the temp database opens, so it binds to the same
@@ -31,20 +34,14 @@ import {
   openTempBeliefDatabase,
   type TempBeliefDatabase,
 } from './helpers/tempBeliefDatabase';
-import {
-  expectedBeliefCredenceProjection,
-} from './helpers/beliefEvidenceMassExpectations';
 
-// The five belief columns of one listed node as the list read must report
-// them. Declared locally because the Node type does not carry the two mass
-// columns yet — that missing surface is pinned separately in
-// beliefNodeTypeEvidenceMassColumns.test.ts.
+// The four belief columns of one listed node as the list read must report
+// them.
 interface BeliefNodeListReadFields {
   belief_credence: number | null;
   belief_computed_at: string | null;
   belief_credence_is_fixed: number;
-  belief_evidence_for_mass: number | null;
-  belief_evidence_against_mass: number | null;
+  belief_uncertainty: number | null;
 }
 
 // The exact key set the list read must carry per node — asserted as PRESENT
@@ -53,20 +50,22 @@ const BELIEF_NODE_LIST_READ_COLUMN_NAMES = [
   'belief_credence',
   'belief_computed_at',
   'belief_credence_is_fixed',
-  'belief_evidence_for_mass',
-  'belief_evidence_against_mass',
+  'belief_uncertainty',
 ] as const;
 
 // The timestamp tempBeliefDatabase stamps on every node it seeds WITH a
 // credence, so a seeded fixed-credence fixture looks already graded.
 const SEEDED_BELIEF_COMPUTED_AT = '2026-07-01T00:00:00.000Z';
 
+// The stored display pair the graded fixture carries.
+const SEEDED_GRADED_CREDENCE = 0.31;
+const SEEDED_GRADED_UNCERTAINTY = 0.42;
+
 // The live temp-database context for the current test.
 let tempBeliefDb: TempBeliefDatabase;
 
 // Read the whole node list through the real service and hand back one node's
-// belief fields by id, cast locally because the Node type does not declare
-// the mass columns yet.
+// belief fields by id, cast locally over the service's row type.
 async function readListedNodeBeliefFieldsThroughNodeService(
   nodeId: number
 ): Promise<BeliefNodeListReadFields & { id: number }> {
@@ -81,10 +80,9 @@ async function readListedNodeBeliefFieldsThroughNodeService(
 }
 
 // Seed a target node whose belief columns hold a graded state, written
-// directly with SQL. Since the evidence-leaves-the-edges-table slice the
-// engine no longer grades from edges (a non-fixed recompute lands
-// never-assessed), so the read surface is pinned over directly seeded
-// column values — the pins on what a read reports stay identical.
+// directly with SQL — the display columns are written by samai's engine
+// through the display write, never derived in this fork, so the read surface
+// is pinned over directly seeded column values.
 function seedNodeWithGradedBeliefColumns(): number {
   // The node the list read must report a graded belief state for.
   const seededTargetNodeId = tempBeliefDb.insertNodeFixture({
@@ -93,15 +91,13 @@ function seedNodeWithGradedBeliefColumns(): number {
   tempBeliefDb.sqlite
     .prepare(
       `UPDATE nodes
-       SET belief_credence = ?, belief_computed_at = ?,
-           belief_evidence_for_mass = ?, belief_evidence_against_mass = ?
+       SET belief_credence = ?, belief_computed_at = ?, belief_uncertainty = ?
        WHERE id = ?`
     )
     .run(
-      expectedBeliefCredenceProjection(0.4, 0),
+      SEEDED_GRADED_CREDENCE,
       SEEDED_BELIEF_COMPUTED_AT,
-      0.4,
-      0,
+      SEEDED_GRADED_UNCERTAINTY,
       seededTargetNodeId
     );
   return seededTargetNodeId;
@@ -116,34 +112,28 @@ afterEach(() => {
 });
 
 describe('nodeService.getNodes belief columns (list read behind GET /api/nodes)', () => {
-  // The core gap: the list SELECT omits all five belief columns, so nothing
-  // rendered from the list can show belief at all.
-  it('reports all five belief columns for a node with a seeded graded state', async () => {
+  // The core gap: a list SELECT that omits the belief columns leaves nothing
+  // rendered from the list able to show belief at all.
+  it('reports all four belief columns for a node with a seeded graded state', async () => {
     const gradedTargetNodeId = seedNodeWithGradedBeliefColumns();
 
     const listedGradedNode =
       await readListedNodeBeliefFieldsThroughNodeService(gradedTargetNodeId);
 
-    // The seeded masses: one positive contribution of 0.4.
-    expect(listedGradedNode.belief_evidence_for_mass).toBeCloseTo(0.4, 10);
-    // An against-mass of exactly 0 is a graded state — never NULL.
-    expect(listedGradedNode.belief_evidence_against_mass).toBe(0);
-    expect(listedGradedNode.belief_evidence_against_mass).not.toBeNull();
-    // The cached credence is the v2 projection of those masses.
-    expect(listedGradedNode.belief_credence).toBeCloseTo(
-      expectedBeliefCredenceProjection(0.4, 0),
-      10
-    );
+    // The stored credence rides through untouched.
+    expect(listedGradedNode.belief_credence).toBeCloseTo(SEEDED_GRADED_CREDENCE, 10);
+    // The stored uncertainty rides beside it.
+    expect(listedGradedNode.belief_uncertainty).toBeCloseTo(SEEDED_GRADED_UNCERTAINTY, 10);
     // The grading timestamp rides along.
     expect(typeof listedGradedNode.belief_computed_at).toBe('string');
     // Nobody asserted this credence by hand: the column default is 0.
     expect(listedGradedNode.belief_credence_is_fixed).toBe(0);
   });
 
-  // NULL is a real state on four of the five columns — nobody has grounded
+  // NULL is a real state on three of the four columns — nobody has grounded
   // the node — and must arrive as explicit nulls under PRESENT keys, never
   // as missing keys and never coerced to 0.
-  it('reports an ungraded node with explicit nulls under all five keys', async () => {
+  it('reports an ungraded node with explicit nulls under all four keys', async () => {
     const ungradedNodeId = tempBeliefDb.insertNodeFixture({
       title: 'Ungraded node nobody has grounded',
     });
@@ -154,8 +144,7 @@ describe('nodeService.getNodes belief columns (list read behind GET /api/nodes)'
     expect(listedUngradedNode.belief_credence).toBeNull();
     expect(listedUngradedNode.belief_credence).not.toBe(0);
     expect(listedUngradedNode.belief_computed_at).toBeNull();
-    expect(listedUngradedNode.belief_evidence_for_mass).toBeNull();
-    expect(listedUngradedNode.belief_evidence_against_mass).toBeNull();
+    expect(listedUngradedNode.belief_uncertainty).toBeNull();
     expect(listedUngradedNode.belief_credence_is_fixed).toBe(0);
     // Present-and-null: every belief key exists on the listed row, so a
     // caller can tell "ungraded" from "not reported".
@@ -165,8 +154,9 @@ describe('nodeService.getNodes belief columns (list read behind GET /api/nodes)'
   });
 
   // A human-asserted credence must arrive flagged as fixed with its sign
-  // intact, and with masses NULL — an assertion has no evidence ledger.
-  it('reports a fixed-credence node with flag 1, its negative credence, and NULL masses', async () => {
+  // intact, and with a NULL stored uncertainty — an assertion carries no
+  // stored uncertainty of its own (the read-as-0 rule is the mapper's).
+  it('reports a fixed-credence node with flag 1, its negative credence, and NULL stored uncertainty', async () => {
     const fixedCredenceNodeId = tempBeliefDb.insertFixedBeliefCredenceNodeFixture({
       title: 'Node whose credence a human asserted by hand',
       beliefCredence: -0.4,
@@ -178,7 +168,6 @@ describe('nodeService.getNodes belief columns (list read behind GET /api/nodes)'
     expect(listedFixedNode.belief_credence_is_fixed).toBe(1);
     expect(listedFixedNode.belief_credence).toBe(-0.4);
     expect(listedFixedNode.belief_computed_at).toBe(SEEDED_BELIEF_COMPUTED_AT);
-    expect(listedFixedNode.belief_evidence_for_mass).toBeNull();
-    expect(listedFixedNode.belief_evidence_against_mass).toBeNull();
+    expect(listedFixedNode.belief_uncertainty).toBeNull();
   });
 });

@@ -26,9 +26,7 @@ const {
   beliefClearFixedCredenceInputSchemaFields,
   beliefClearFixedCredenceOutputSchemaFields,
   beliefMovementsReadInputSchemaFields,
-  beliefMovementsReadOutputSchemaFields,
-  beliefRecomputeInputSchemaFields,
-  beliefRecomputeOutputSchemaFields
+  beliefMovementsReadOutputSchemaFields
 } = require('../../src/services/belief/beliefMcpToolContract.js');
 
 const instructions = [
@@ -891,35 +889,6 @@ server.registerTool(
       structuredContent: {
         count: movementCount,
         movements
-      }
-    };
-  }
-);
-
-server.registerTool(
-  'rah_recompute_node_belief',
-  {
-    title: 'Recompute RA-H node belief',
-    description: 'Restate one node\'s belief_credence. Belief evidence lives outside this store, so a non-fixed node restates to ungraded — credence null, a real answer, never reported as 0 — and a fixed node reports its hand-asserted credence.',
-    inputSchema: beliefRecomputeInputSchemaFields,
-    outputSchema: beliefRecomputeOutputSchemaFields
-  },
-  async ({ node_id }) => {
-    const result = await callRaHApi('/api/belief/recompute', {
-      method: 'POST',
-      body: JSON.stringify({ node_id })
-    });
-
-    const summary = result.message || `Recomputed belief for node #${node_id}.`;
-    return {
-      content: [{ type: 'text', text: summary }],
-      // The regraded credence passes through verbatim — including null, which
-      // must stay null and never be coerced to 0.
-      structuredContent: {
-        success: true,
-        node_id: result.node_id,
-        belief_credence: result.belief_credence ?? null,
-        message: summary
       }
     };
   }

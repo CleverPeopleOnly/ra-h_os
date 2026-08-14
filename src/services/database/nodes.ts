@@ -5,7 +5,7 @@ import { EmbeddingService } from '@/services/embeddings';
 import { getHighSignalSearchTerms, scoreNodeSearchMatch } from './searchRanking';
 import { buildCanonicalNodeMetadata, mergeNodeMetadata } from '@/services/nodes/metadata';
 import { getVectorBackend } from '@/services/vectorBackend/factory';
-// The five belief columns (fork addition) every node-read SELECT below
+// The four belief columns (fork addition) every node-read SELECT below
 // appends, declared once so no read surface can drop them — see the fragment
 // module for the full contract.
 import { BELIEF_NODE_READ_COLUMNS_SQL } from '@/services/belief/beliefNodeReadColumnsSql';

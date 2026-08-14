@@ -58,13 +58,14 @@ function beliefPresentationOfEmittedNode(
   return (emittedNode.data as BeliefAwareRahNodeData).beliefPresentation;
 }
 
-// W of belief model v2, restated by hand so the graded fixtures below store a
-// cached credence that is an independent calculation, not an import of the
-// constant under test.
+// W of the retired belief model v2, restated by hand: the graded fixtures
+// below still speak in (r, s) evidence pairs so the original expectations
+// survive, but what they BUILD is a stored-column row (reshaped in the
+// display-belief-door-writable slice — the mass columns are gone).
 const HAND_CALCULATED_BELIEF_PRIOR_MASS = 2;
 
-// The cached credence the v2 engine persists for the two masses: the signed
-// projection (r - s) / (r + s + W).
+// Hand-calculated credence projection (r - s) / (r + s + W) for an (r, s)
+// fixture pair.
 function handCalculatedBeliefCredenceProjection(forMass: number, againstMass: number): number {
   return (
     (forMass - againstMass) /
@@ -72,26 +73,32 @@ function handCalculatedBeliefCredenceProjection(forMass: number, againstMass: nu
   );
 }
 
-// Build a graded (engine-derived) node's four belief columns from its two
-// masses, with the cached credence being the projection — exactly what the
-// v2 engine persists onto the nodes row.
+// Hand-calculated uncertainty W / (r + s + W) for an (r, s) fixture pair.
+function handCalculatedBeliefUncertainty(forMass: number, againstMass: number): number {
+  return (
+    HAND_CALCULATED_BELIEF_PRIOR_MASS /
+    (forMass + againstMass + HAND_CALCULATED_BELIEF_PRIOR_MASS)
+  );
+}
+
+// Build a graded node's STORED belief columns from an (r, s) fixture pair:
+// credence and uncertainty are stored directly, exactly as samai's engine
+// writes them through the display write.
 function gradedNodeBeliefFields(forMass: number, againstMass: number): BeliefPresentationNodeFields {
   return {
     belief_credence: handCalculatedBeliefCredenceProjection(forMass, againstMass),
     belief_credence_is_fixed: 0,
-    belief_evidence_for_mass: forMass,
-    belief_evidence_against_mass: againstMass,
+    belief_uncertainty: handCalculatedBeliefUncertainty(forMass, againstMass),
   };
 }
 
-// A node whose credence a human asserted by hand: flag 1, masses NULL —
-// there is no evidence ledger behind an assertion.
+// A node whose credence a human asserted by hand: flag 1, stored uncertainty
+// NULL — an assertion carries no stored uncertainty (the mapper answers 0).
 function fixedCredenceNodeBeliefFields(assertedCredence: number): BeliefPresentationNodeFields {
   return {
     belief_credence: assertedCredence,
     belief_credence_is_fixed: 1,
-    belief_evidence_for_mass: null,
-    belief_evidence_against_mass: null,
+    belief_uncertainty: null,
   };
 }
 
@@ -100,8 +107,7 @@ function fixedCredenceNodeBeliefFields(assertedCredence: number): BeliefPresenta
 const NEVER_ASSESSED_NODE_BELIEF_FIELDS: BeliefPresentationNodeFields = {
   belief_credence: null,
   belief_credence_is_fixed: 0,
-  belief_evidence_for_mass: null,
-  belief_evidence_against_mass: null,
+  belief_uncertainty: null,
 };
 
 // One DbNode-shaped fixture carrying only what toRFNodes reads: id and title

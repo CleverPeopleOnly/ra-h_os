@@ -218,13 +218,12 @@ function ensureBeliefSchema(db) {
     // Set when a human asserted this node's credence instead of the app's
     // belief engine deriving it.
     ['nodes', 'belief_credence_is_fixed', 'INTEGER NOT NULL DEFAULT 0'],
-    // The two v2 evidence masses (belief model v2, spec §2): the primary
-    // belief state behind the cached credence projection. Both REAL and
-    // NULLABLE, because both-NULL is the "never assessed" state — which is
-    // what ADD COLUMN backfills every existing row with. Schema only: this
-    // path never rewrites data.
-    ['nodes', 'belief_evidence_for_mass', 'REAL'],
-    ['nodes', 'belief_evidence_against_mass', 'REAL'],
+    // The stored display uncertainty: samai owns the belief engine since the
+    // belief-storage split and writes belief_uncertainty beside the credence
+    // through the app's remote door. REAL and NULLABLE, because NULL is the
+    // "never assessed" state — which is what ADD COLUMN backfills every
+    // existing row with.
+    ['nodes', 'belief_uncertainty', 'REAL'],
   ];
 
   for (const [tableName, columnName, columnDefinition] of beliefColumnAdditions) {
@@ -235,6 +234,39 @@ function ensureBeliefSchema(db) {
       .map((column) => column.name);
     if (!existingColumnNames.includes(columnName)) {
       db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition};`);
+    }
+  }
+
+  // Display-belief migration, mirroring the app's sqlite-client: a legacy
+  // file still carrying the two v2 evidence mass columns has them DROPPED —
+  // the evidence ledger lives in samai now — after a one-time backfill so
+  // already-graded rows keep an honest stored uncertainty: W/(r+s+W) with
+  // W=2 where both masses are non-NULL; never-assessed rows stay NULL. The
+  // PRAGMA guard makes a rerun a no-op, and ALTER TABLE DROP COLUMN edits
+  // the table in place (neither mass column is in any index or trigger).
+  const removedNodeMassColumnNames = [
+    'belief_evidence_for_mass',
+    'belief_evidence_against_mass',
+  ];
+  const nodeColumnNamesBeforeMassDrop = db
+    .prepare('PRAGMA table_info(nodes)')
+    .all()
+    .map((column) => column.name);
+  const legacyMassColumnsPresent = removedNodeMassColumnNames.every((massColumnName) =>
+    nodeColumnNamesBeforeMassDrop.includes(massColumnName)
+  );
+  if (legacyMassColumnsPresent) {
+    db.exec(`
+      UPDATE nodes
+         SET belief_uncertainty =
+               2.0 / (belief_evidence_for_mass + belief_evidence_against_mass + 2.0)
+       WHERE belief_evidence_for_mass IS NOT NULL
+         AND belief_evidence_against_mass IS NOT NULL;
+    `);
+  }
+  for (const removedNodeMassColumnName of removedNodeMassColumnNames) {
+    if (nodeColumnNamesBeforeMassDrop.includes(removedNodeMassColumnName)) {
+      db.exec(`ALTER TABLE nodes DROP COLUMN ${removedNodeMassColumnName};`);
     }
   }
 
