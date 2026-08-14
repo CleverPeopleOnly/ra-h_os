@@ -82,8 +82,7 @@ export async function GET(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // Both belief columns travel on the rows the service returns and are
-    // serialised verbatim, so a NULL belief_evidence_contribution stays NULL.
+    // The stored rows the service returns are serialised verbatim.
     const edges = await edgeService.getEdges(parsedEdgeReadFilter.filter);
 
     return NextResponse.json({
@@ -214,21 +213,16 @@ export async function POST(request: NextRequest) {
       console.warn('edgeExists check failed; proceeding to create:', e);
     }
 
+    // The create argument is rebuilt field by field, so any stray key a stale
+    // client still sends (a belief_evidence_support, for one) is simply not
+    // copied — never an error.
     const edge = await edgeService.createEdge({
       from_node_id: fromId,
       to_node_id: toId,
       explanation,
       created_via: createdVia,
       source: body.source,
-      skip_inference: skipInference,
-      // Belief evidence pass-through (MR-B): the one writable evidence field
-      // — the signed support — must reach edgeService intact; plain edge
-      // bodies carry none, so it stays undefined and no evidence value is
-      // invented. The merged-away belief_evidence_direction /
-      // belief_evidence_strength and the removed belief_evidence_origin_key
-      // are simply not rebuilt onto this argument, so a stale client's values
-      // are ignored rather than rejected.
-      belief_evidence_support: body.belief_evidence_support
+      skip_inference: skipInference
     });
 
     // Post-inference collision, merged by the service: inference swapped the

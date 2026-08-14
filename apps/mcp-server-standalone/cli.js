@@ -195,8 +195,9 @@ function renameBeliefColumnToCredence(db, tableName, legacyColumnName, credenceC
 
 /**
  * Belief-engine schema (fork addition): make init-db create the same belief
- * columns and tables the app's belief engine expects, so evidence written
- * through the standalone server has the app-parity schema to land in.
+ * NODE columns and tables the app expects. Edges carry no belief data —
+ * belief evidence left this fork — so this path creates no edge evidence
+ * column and drops any a legacy file still carries.
  */
 function ensureBeliefSchema(db) {
   // Vocabulary migration, run BEFORE the additions below so a database still
@@ -215,19 +216,15 @@ function ensureBeliefSchema(db) {
     ['nodes', 'belief_credence', 'REAL'],
     ['nodes', 'belief_computed_at', 'TEXT'],
     // Set when a human asserted this node's credence instead of the app's
-    // belief engine deriving it from the node's evidence (its outgoing
-    // support-bearing edges).
+    // belief engine deriving it.
     ['nodes', 'belief_credence_is_fixed', 'INTEGER NOT NULL DEFAULT 0'],
     // The two v2 evidence masses (belief model v2, spec §2): the primary
     // belief state behind the cached credence projection. Both REAL and
     // NULLABLE, because both-NULL is the "never assessed" state — which is
     // what ADD COLUMN backfills every existing row with. Schema only: this
-    // path never rewrites data (the app's startup recovery sweep does the
-    // regrading).
+    // path never rewrites data.
     ['nodes', 'belief_evidence_for_mass', 'REAL'],
     ['nodes', 'belief_evidence_against_mass', 'REAL'],
-    ['edges', 'belief_evidence_support', 'REAL'],
-    ['edges', 'belief_evidence_contribution', 'REAL'],
   ];
 
   for (const [tableName, columnName, columnDefinition] of beliefColumnAdditions) {
@@ -238,6 +235,25 @@ function ensureBeliefSchema(db) {
       .map((column) => column.name);
     if (!existingColumnNames.includes(columnName)) {
       db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition};`);
+    }
+  }
+
+  // Belief evidence left the edges table (it lives in samai's own store now),
+  // so an edge is a plain relationship row: a legacy file still carrying
+  // either evidence column has it DROPPED here, mirroring the app-side
+  // migration. ALTER TABLE DROP COLUMN edits the table in place (neither
+  // column is in any index), and the PRAGMA guard makes a rerun a no-op.
+  const removedEdgeEvidenceColumnNames = [
+    'belief_evidence_support',
+    'belief_evidence_contribution',
+  ];
+  const edgeColumnNamesBeforeEvidenceDrop = db
+    .prepare('PRAGMA table_info(edges)')
+    .all()
+    .map((column) => column.name);
+  for (const removedEdgeEvidenceColumnName of removedEdgeEvidenceColumnNames) {
+    if (edgeColumnNamesBeforeEvidenceDrop.includes(removedEdgeEvidenceColumnName)) {
+      db.exec(`ALTER TABLE edges DROP COLUMN ${removedEdgeEvidenceColumnName};`);
     }
   }
 

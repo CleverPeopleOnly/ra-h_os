@@ -6,25 +6,16 @@
  * credence actually changed — re-asserting the same number is not a change
  * and logs nothing.
  *
- * A fixed credence is the bootstrap a graph needs before anything in it can
- * be graded: a node's credence is also the credence carried by every piece of
- * evidence that node supplies, so until at least one node has a credence
- * there is nothing for the engine to grade from.
- *
- * V2 (docs/belief-model-subjective-logic.md §2, §4 point 5): set/clear-fixed
- * are the ONLY writes that move a fixed node's projection, so both doors here
- * push the change to the nodes DERIVING FROM it — the from-ends of its
- * incoming support-bearing edges (canon direction, spec §8). New in v2 is the
- * un-fix door, clearBeliefFixedCredence: clear the flag and immediately
- * regrade the node from its actual evidence (movement trigger
- * 'belief-fixed-credence-cleared').
+ * Belief evidence left the edges table (it lives in samai's own store now),
+ * so neither door propagates anywhere: there are no evidence edges through
+ * which an assertion could reach another node. The un-fix door,
+ * clearBeliefFixedCredence, clears the flag and immediately recomputes the
+ * node — which, with no evidence basis left to read, lands it never-assessed
+ * and logs no movement (an ungraded outcome has no to_credence to record).
  */
 
 import { getSQLiteClient } from '@/services/database/sqlite-client';
-import {
-  propagateBeliefFromSourceNode,
-  recomputeNodeBelief,
-} from '@/services/belief/beliefService';
+import { recomputeNodeBelief } from '@/services/belief/beliefService';
 
 // What one successful fixed-credence assertion wrote: the credence now stored
 // on the node and the shared timestamp stamped on the node (and on the
@@ -95,34 +86,25 @@ export function setBeliefFixedCredence(
         'belief-fixed-credence-set',
         beliefComputedAt
       );
-
-    // Spec §4 point 5: an assertion is one of the two writes that move a
-    // fixed node's projection, so the changed credence sweeps out to the
-    // nodes deriving from it (each regrades with trigger 'propagation').
-    // An unchanged re-assertion moves nothing and propagates nothing.
-    propagateBeliefFromSourceNode(nodeId);
   }
 
   return { beliefCredence: assertedBeliefCredence, beliefComputedAt };
 }
 
-// What one successful un-fix reports back: the credence the immediate regrade
-// landed on — null when the node's actual evidence leaves it ungraded, a real
-// outcome and never an error.
+// What one successful un-fix reports back: the credence the immediate
+// recompute landed on — null for a now-ungraded node, a real outcome and
+// never an error.
 export interface BeliefFixedCredenceClearance {
-  // The node's credence after the regrade from its actual evidence.
+  // The node's credence after the recompute; null when it landed ungraded.
   beliefCredence: number | null;
 }
 
 // The un-fix door (v2): withdraw one node's asserted credence. Clears
-// belief_credence_is_fixed to 0 and IMMEDIATELY regrades the node from its
-// actual evidence (movement trigger 'belief-fixed-credence-cleared'), which
-// also sweeps out to the nodes deriving from it — the clear is the other
-// write that moves a fixed node's projection (spec §4 point 5). When the
-// regrade lands ungraded, no movement is logged: an ungraded outcome has no
-// to_credence to record. Returns null when no such node exists — clearing an
-// assertion about nothing must be an error at the caller, never a silent
-// no-op.
+// belief_credence_is_fixed to 0 and IMMEDIATELY recomputes the node — which,
+// with no edge carrying evidence any more, lands it never-assessed. No
+// movement is logged: an ungraded outcome has no to_credence to record.
+// Returns null when no such node exists — clearing an assertion about
+// nothing must be an error at the caller, never a silent no-op.
 export async function clearBeliefFixedCredence(
   nodeId: number
 ): Promise<BeliefFixedCredenceClearance | null> {
@@ -140,8 +122,8 @@ export async function clearBeliefFixedCredence(
   // again from this write on.
   sqlite.prepare('UPDATE nodes SET belief_credence_is_fixed = 0 WHERE id = ?').run(nodeId);
 
-  // The immediate regrade from the node's actual evidence — a real v2 grading
-  // that persists the masses, stamps the edges and propagates onward.
+  // The immediate recompute: with no edge carrying evidence, it clears the
+  // node to never-assessed and reports null — a real outcome, not an error.
   const regradeResult = await recomputeNodeBelief(nodeId, 'belief-fixed-credence-cleared');
   return { beliefCredence: regradeResult.beliefCredence };
 }

@@ -8,9 +8,11 @@
  * plain list read (nodeServiceBeliefListReads.test.ts), against a real temp
  * database:
  *
- *  - a node graded VIA THE REAL ENGINE and found by search reports its cached
- *    credence projection, its grading timestamp and both persisted evidence
- *    masses — including an against-mass of exactly 0, never NULL,
+ *  - a node whose belief columns hold a graded state (seeded directly —
+ *    since the evidence-leaves-the-edges-table slice the engine no longer
+ *    grades from edges) and found by search reports its cached credence
+ *    projection, its grading timestamp and both stored evidence masses —
+ *    including an against-mass of exactly 0, never NULL,
  *  - an ungraded node found by search reports explicit nulls under PRESENT
  *    keys with the fixed flag 0,
  *  - a fixed-credence node found by search reports flag 1, its asserted
@@ -76,32 +78,31 @@ async function searchListedNodeBeliefFieldsThroughNodeService(
   return searchedNode!;
 }
 
-// Seed the smallest gradeable graph — a fixed-credence source (0.8) talking
-// about a searchable target through one evidence edge (support 0.5) — and
-// grade the target through the REAL engine, so the searched row carries
-// exactly what the engine persisted: r = 0.8 x 0.5 = 0.4, s = 0.
-async function seedAndGradeSearchableTargetNodeThroughRealEngine(): Promise<number> {
-  // The bootstrap source: its human-asserted credence is the credence its
-  // evidence carries. Title deliberately does NOT contain the search term.
-  const fixedCredenceSourceNodeId = tempBeliefDb.insertFixedBeliefCredenceNodeFixture({
-    title: 'Bootstrap origin for the searched read',
-    beliefCredence: 0.8,
-  });
-  // The node the engine will grade and the search read must report.
-  const gradedTargetNodeId = tempBeliefDb.insertNodeFixture({
+// Seed a target node whose belief columns hold a graded state, written
+// directly with SQL. Since the evidence-leaves-the-edges-table slice the
+// engine no longer grades from edges (a non-fixed recompute lands
+// never-assessed), so the read surface is pinned over directly seeded
+// column values — the pins on what a read reports stay identical.
+function seedSearchableNodeWithGradedBeliefColumns(): number {
+  // The node the search read must report a graded belief state for.
+  const seededTargetNodeId = tempBeliefDb.insertNodeFixture({
     title: 'Osteology target the searched read must report belief for',
   });
-  // Canon direction: the graded node derives from the fixed source.
-  tempBeliefDb.insertEvidenceEdgeFixture({
-    derivedNodeId: gradedTargetNodeId,
-    sourceNodeId: fixedCredenceSourceNodeId,
-    support: 0.5,
-  });
-  // Grade through the real engine bound to this database generation, so the
-  // masses and the cached projection are the engine's own writes.
-  const { recomputeNodeBelief } = await tempBeliefDb.importBeliefService();
-  await recomputeNodeBelief(gradedTargetNodeId);
-  return gradedTargetNodeId;
+  tempBeliefDb.sqlite
+    .prepare(
+      `UPDATE nodes
+       SET belief_credence = ?, belief_computed_at = ?,
+           belief_evidence_for_mass = ?, belief_evidence_against_mass = ?
+       WHERE id = ?`
+    )
+    .run(
+      expectedBeliefCredenceProjection(0.4, 0),
+      SEEDED_BELIEF_COMPUTED_AT,
+      0.4,
+      0,
+      seededTargetNodeId
+    );
+  return seededTargetNodeId;
 }
 
 beforeEach(async () => {
@@ -116,15 +117,15 @@ describe('nodeService.getNodes belief columns on SEARCHED list reads', () => {
   // The searched-path gap: every search SELECT names its columns by hand, so
   // belief must ride the shared fragment there too or a searched list shows
   // no belief at all.
-  it('reports all five belief columns for an engine-graded node found by search', async () => {
-    const gradedTargetNodeId = await seedAndGradeSearchableTargetNodeThroughRealEngine();
+  it('reports all five belief columns for a seeded graded node found by search', async () => {
+    const gradedTargetNodeId = seedSearchableNodeWithGradedBeliefColumns();
 
     const searchedGradedNode = await searchListedNodeBeliefFieldsThroughNodeService(
       'Osteology',
       gradedTargetNodeId
     );
 
-    // The engine's persisted masses: one positive contribution of 0.4.
+    // The seeded masses: one positive contribution of 0.4.
     expect(searchedGradedNode.belief_evidence_for_mass).toBeCloseTo(0.4, 10);
     // An against-mass of exactly 0 is a graded state — never NULL.
     expect(searchedGradedNode.belief_evidence_against_mass).toBe(0);

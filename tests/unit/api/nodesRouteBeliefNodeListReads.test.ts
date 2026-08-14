@@ -9,8 +9,10 @@
  *  - every listed node object carries the five belief keys: belief_credence,
  *    belief_computed_at, belief_credence_is_fixed, belief_evidence_for_mass,
  *    belief_evidence_against_mass,
- *  - a node graded via the real engine reports its cached credence projection
- *    and both persisted masses,
+ *  - a node whose belief columns hold a graded state (seeded directly —
+ *    since the evidence-leaves-the-edges-table slice the engine no longer
+ *    grades from edges) reports its cached credence projection and both
+ *    stored masses,
  *  - an ungraded node reports explicit nulls (JSON null, present keys) — a
  *    real state that must never be coerced to 0 and never dropped from the
  *    payload.
@@ -85,28 +87,31 @@ async function readListedNodeThroughRoute(nodeId: number): Promise<BeliefNodeLis
   return listedNode!;
 }
 
-// Seed the smallest gradeable graph and grade the target through the REAL
-// engine (fixed source 0.8 x support 0.5 -> r = 0.4, s = 0), so the route
-// reports exactly what the engine persisted.
-async function seedAndGradeTargetNodeThroughRealEngine(): Promise<number> {
-  // The bootstrap source whose asserted credence the evidence carries.
-  const fixedCredenceSourceNodeId = tempBeliefDb.insertFixedBeliefCredenceNodeFixture({
-    title: 'Fixed-credence source node for the route list',
-    beliefCredence: 0.8,
+// Seed a target node whose belief columns hold a graded state, written
+// directly with SQL. Since the evidence-leaves-the-edges-table slice the
+// engine no longer grades from edges (a non-fixed recompute lands
+// never-assessed), so the route's JSON surface is pinned over directly
+// seeded column values — the pins on what the route reports stay identical.
+function seedNodeWithGradedBeliefColumns(): number {
+  // The node the route must report a graded belief state for.
+  const seededTargetNodeId = tempBeliefDb.insertNodeFixture({
+    title: 'Seeded graded target node the route must report belief for',
   });
-  // The node the engine grades and the route must report.
-  const gradedTargetNodeId = tempBeliefDb.insertNodeFixture({
-    title: 'Engine-graded target node the route must report belief for',
-  });
-  // Canon direction: the graded node derives from the fixed source.
-  tempBeliefDb.insertEvidenceEdgeFixture({
-    derivedNodeId: gradedTargetNodeId,
-    sourceNodeId: fixedCredenceSourceNodeId,
-    support: 0.5,
-  });
-  const { recomputeNodeBelief } = await tempBeliefDb.importBeliefService();
-  await recomputeNodeBelief(gradedTargetNodeId);
-  return gradedTargetNodeId;
+  tempBeliefDb.sqlite
+    .prepare(
+      `UPDATE nodes
+       SET belief_credence = ?, belief_computed_at = ?,
+           belief_evidence_for_mass = ?, belief_evidence_against_mass = ?
+       WHERE id = ?`
+    )
+    .run(
+      expectedBeliefCredenceProjection(0.4, 0),
+      '2026-07-01T00:00:00.000Z',
+      0.4,
+      0,
+      seededTargetNodeId
+    );
+  return seededTargetNodeId;
 }
 
 beforeEach(async () => {
@@ -118,10 +123,10 @@ afterEach(() => {
 });
 
 describe('GET /api/nodes belief columns on the node list', () => {
-  // The route surface in one pass: an engine-graded node's five belief keys
-  // reach the JSON with the engine's own numbers.
-  it('carries all five belief keys with the engine-persisted numbers for a graded node', async () => {
-    const gradedTargetNodeId = await seedAndGradeTargetNodeThroughRealEngine();
+  // The route surface in one pass: a graded node's five belief keys reach
+  // the JSON with the stored numbers.
+  it('carries all five belief keys with the stored numbers for a graded node', async () => {
+    const gradedTargetNodeId = seedNodeWithGradedBeliefColumns();
 
     const listedGradedNode = await readListedNodeThroughRoute(gradedTargetNodeId);
 

@@ -11,19 +11,18 @@
  *
  *  - each entry of structuredContent.edges carries `explanation` and
  *    `created_at` as the app returned them,
- *  - the same normalisation discipline the belief columns already follow on this
- *    mapping applies to the new fields: a MISSING key becomes null and a stored
- *    NULL stays null. An edge with no explanation must report null, NEVER an
- *    empty string — an empty string reads as "an explanation was written and it
- *    said nothing",
+ *  - the normalisation discipline of this mapping applies to the new
+ *    fields: a MISSING key becomes null and a stored NULL stays null. An
+ *    edge with no explanation must report null, NEVER an empty string — an
+ *    empty string reads as "an explanation was written and it said
+ *    nothing",
  *  - the advertised output schema names both fields, so an external agent can
  *    discover them. (The MCP SDK validates structuredContent against the
  *    advertised output schema, so the mapping and the schema are only usable
  *    once they are in step.)
  *
- * The belief columns' own pass-through is pinned once, in
- * tests/unit/mcp/stdio-server-belief-edge-reads.test.ts; the fixtures below
- * carry them for realism but this file does not assert them a second time.
+ * Reshaped in the evidence-leaves-the-edges-table slice: the fixtures no
+ * longer carry evidence values — edges hold no belief evidence any more.
  *
  * Seam (same as tests/unit/mcp/stdio-server-belief-edge-reads.test.ts): the
  * spawned proxy is pointed at a local in-process HTTP stub via
@@ -40,10 +39,10 @@ import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-// One edge row as an edge read must carry it: the identity and belief columns
-// the tool already reports, plus the explanation and creation timestamp it
-// drops today. explanation is nullable because an edge that has none must say
-// so with null rather than an empty string.
+// One edge row as an edge read must carry it: the identity columns the tool
+// already reports, plus the explanation and creation timestamp it drops
+// today. explanation is nullable because an edge that has none must say so
+// with null rather than an empty string.
 interface EdgeReadRow {
   id: number;
   from_node_id: number;
@@ -54,8 +53,6 @@ interface EdgeReadRow {
   type?: string | null;
   explanation?: string | null;
   created_at: string;
-  belief_evidence_support: number | null;
-  belief_evidence_contribution: number | null;
 }
 
 // Three explanation states the read path must keep distinct, as the app would
@@ -69,8 +66,6 @@ const threeStateEdgeExplanationRows: EdgeReadRow[] = [
     source: 'user',
     explanation: 'The source node reports a measured result bearing on the claim node.',
     created_at: '2026-07-03T10:00:00.000Z',
-    belief_evidence_support: 0.75,
-    belief_evidence_contribution: 0.6,
   },
   {
     id: 22,
@@ -79,8 +74,6 @@ const threeStateEdgeExplanationRows: EdgeReadRow[] = [
     source: 'user',
     explanation: null,
     created_at: '2026-07-04T10:00:00.000Z',
-    belief_evidence_support: null,
-    belief_evidence_contribution: null,
   },
   {
     id: 23,
@@ -88,8 +81,6 @@ const threeStateEdgeExplanationRows: EdgeReadRow[] = [
     to_node_id: 1,
     source: 'ai_similarity',
     created_at: '2026-07-05T10:00:00.000Z',
-    belief_evidence_support: 0.5,
-    belief_evidence_contribution: null,
   },
 ];
 
@@ -217,7 +208,7 @@ describe('app-MCP proxy rah_query_edges explanation and creation-timestamp reads
     });
   });
 
-  // An absent key normalises to null, exactly as the belief columns on this
+  // An absent key normalises to null, exactly as the other nullable fields on this
   // same mapping already do — never to undefined and never to an empty string.
   it('normalises a missing explanation key to null rather than an empty string', async () => {
     await withMcpClient(async (client) => {

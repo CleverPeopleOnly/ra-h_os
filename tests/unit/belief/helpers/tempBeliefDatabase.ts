@@ -19,11 +19,12 @@
  * methods (or a dynamic import made AFTER openTempBeliefDatabase resolves),
  * so they bind to the same fresh client generation.
  *
- * SOURCES ARE NODES: a source's influence over the evidence it supplies is
- * its OWN nodes.belief_credence — the same number and the same word as the
- * belief of any other node. There is no separate trust table and no
- * trustOriginKey in node metadata any more, so the fixtures below give a
- * source node a credence directly.
+ * SOURCES ARE NODES: a source's influence is its OWN nodes.belief_credence —
+ * the same number and the same word as the belief of any other node. There
+ * is no separate trust table and no trustOriginKey in node metadata any
+ * more, so the fixtures below give a source node a credence directly. And
+ * since the evidence-leaves-the-edges-table slice no edge carries belief
+ * evidence at all, so the one edge fixture writes a plain relationship row.
  */
 
 import fs from 'fs';
@@ -103,22 +104,10 @@ export interface TempBeliefDatabase {
   setNodeBeliefCredence(nodeId: number, beliefCredence: number | null): void;
   // Read the raw belief_credence_is_fixed flag of one node (0/1).
   readNodeBeliefCredenceIsFixed(nodeId: number): number | null;
-  // Insert an evidence edge fixture directly (bypasses EdgeService and its
-  // LLM inference paths — and therefore bypasses every write-door range
-  // check, which have their own tests). The edge is stored in RA-H's canon
-  // direction, Derivative→Source: the derived node's credence derives from
-  // the source, so derivedNodeId lands in the row's from_node_id and
-  // sourceNodeId in its to_node_id. Support says how loudly the source
-  // speaks about the derived node — UNSIGNED, 0..1; the sign of a
-  // contribution comes from the SOURCE node's credence, never from support.
-  insertEvidenceEdgeFixture(options: {
-    derivedNodeId: number;
-    sourceNodeId: number;
-    support: number;
-  }): number;
-  // Insert a plain, NON-evidence edge fixture: belief_evidence_support is
-  // left NULL, which is the one thing that makes an edge not evidence. Used
-  // to prove such an edge is invisible to grading and to the recovery sweep.
+  // Insert a plain relationship edge fixture directly (bypasses EdgeService
+  // and its LLM inference paths). Since the evidence-leaves-the-edges-table
+  // slice this is the only kind of edge there is: no edge carries belief
+  // evidence, so an edge fixture never touches belief state.
   insertNonEvidenceEdgeFixture(options: { fromNodeId: number; toNodeId: number }): number;
   // Read a node's persisted belief state: its graded credence (NULL when
   // ungraded) and when that credence was computed.
@@ -128,8 +117,6 @@ export interface TempBeliefDatabase {
   };
   // Read a node's belief movement rows, oldest first.
   readBeliefMovements(nodeId: number): BeliefMovementRow[];
-  // Read the stamped effective contribution of one evidence edge.
-  readEvidenceStamp(edgeId: number): number | null;
   // Read the column list of a table via PRAGMA table_info.
   readTableColumns(tableName: string): SqliteTableColumn[];
   // True when the named table exists in this database.
@@ -250,20 +237,6 @@ export async function openTempBeliefDatabase(
       return row?.belief_credence_is_fixed ?? null;
     },
 
-    insertEvidenceEdgeFixture({ derivedNodeId, sourceNodeId, support }) {
-      // Canon storage: the derived node is the row's from-end ("my credence
-      // derives from you"), the source is the row's to-end.
-      const result = activeSqliteClient
-        .prepare(
-          `INSERT INTO edges
-             (from_node_id, to_node_id, source, explanation,
-              belief_evidence_support)
-           VALUES (?, ?, 'user', 'evidence edge fixture', ?)`
-        )
-        .run(derivedNodeId, sourceNodeId, support);
-      return Number(result.lastInsertRowid);
-    },
-
     insertNonEvidenceEdgeFixture({ fromNodeId, toNodeId }) {
       const result = activeSqliteClient
         .prepare(
@@ -287,13 +260,6 @@ export async function openTempBeliefDatabase(
            FROM belief_movements WHERE node_id = ? ORDER BY id ASC`
         )
         .all(nodeId) as BeliefMovementRow[];
-    },
-
-    readEvidenceStamp(edgeId) {
-      const row = activeSqliteClient
-        .prepare('SELECT belief_evidence_contribution FROM edges WHERE id = ?')
-        .get(edgeId) as { belief_evidence_contribution: number | null } | undefined;
-      return row?.belief_evidence_contribution ?? null;
     },
 
     readTableColumns(tableName) {

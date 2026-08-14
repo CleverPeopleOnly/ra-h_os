@@ -8,9 +8,12 @@
  * one database file, in both orders:
  *
  *   1. standalone init-db creates the file, then the app's belief engine
- *      grades a real claim in it — proving the standalone path produces every
- *      column the engine reads (including belief_credence_is_fixed) and none
- *      of the deleted ones (belief_source_trust),
+ *      runs in it — proving the standalone path produces every column the
+ *      engine reads (including belief_credence_is_fixed) and none of the
+ *      deleted ones (belief_source_trust). Since the
+ *      evidence-leaves-the-edges-table slice the engine's only real grade is
+ *      a human-asserted fixed credence: a non-fixed recompute lands
+ *      never-assessed,
  *   2. the app creates the file, then standalone init-db runs over it —
  *      proving the standalone path leaves the app's belief columns, its
  *      asserted-credence rows and its indexes alone.
@@ -86,40 +89,34 @@ function readTableNamesDirectly(targetDbPath: string): string[] {
 }
 
 describe('app and standalone agree on the belief schema', () => {
-  // Direction 1, the end-to-end proof: a database the STANDALONE path created
-  // must be one the APP's belief engine can grade in without touching the
-  // schema itself. A fixed expert at credence 0.9 supports a claim with
-  // support 0.8, and the claim grades on the resulting 0.72 contribution.
-  it('the app belief engine grades a claim in a database created by standalone init-db', async () => {
+  // Direction 1, the end-to-end proof: a database the STANDALONE path
+  // created must be one the APP's belief engine can run in without touching
+  // the schema itself. In the interim world that means a fixed credence
+  // asserted through the app reads back intact, and a recompute of a
+  // non-fixed claim lands never-assessed.
+  it('the app belief engine runs in a database created by standalone init-db', async () => {
     db = await openTempBeliefDatabase({
       prepareExistingDbFile: runStandaloneInitDb,
     });
 
-    const expertNodeId = db.insertFixedBeliefCredenceNodeFixture({
+    const expertNodeId = db.insertNodeFixture({
       title: 'human expert asserted through the standalone-created database',
-      beliefCredence: 0.9,
     });
-    const claimNodeId = db.insertNodeFixture({ title: 'claim the expert supports' });
-    // Canon direction: the claim derives from the expert (claim→expert).
-    const expertEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      derivedNodeId: claimNodeId,
-      sourceNodeId: expertNodeId,
-      support: 0.8,
-    });
-    const { recomputeNodeBelief } = await db.importBeliefService();
+    const claimNodeId = db.insertNodeFixture({ title: 'claim related to the expert' });
+    db.insertNonEvidenceEdgeFixture({ fromNodeId: claimNodeId, toNodeId: expertNodeId });
 
-    await recomputeNodeBelief(claimNodeId);
-
-    // 0.8 × 0.9 = 0.72, graded by the pinned v2 projection: 0.72/2.72
-    // (docs/belief-model-subjective-logic.md §3, the 0.72-contribution
-    // arithmetic of §2 — EDITED from the v1 exponential anchor).
-    expect(Number(db.readEvidenceStamp(expertEvidenceEdgeId))).toBeCloseTo(0.72, 10);
-    expect(Number(db.readNodeBelief(claimNodeId).belief_credence)).toBeCloseTo(
-      0.72 / 2.72,
-      10
-    );
-    // The expert's asserted credence survived the app opening the file.
+    // The app's fixed-credence door writes into the standalone-created file.
+    const { setBeliefFixedCredence } = await import('@/services/belief/beliefFixedCredence');
+    setBeliefFixedCredence(expertNodeId, 0.9);
+    expect(Number(db.readNodeBelief(expertNodeId).belief_credence)).toBeCloseTo(0.9, 10);
     expect(db.readNodeBeliefCredenceIsFixed(expertNodeId)).toBe(1);
+
+    // The app's engine recomputes the non-fixed claim: never-assessed, the
+    // interim world's only outcome for a derived node.
+    const { recomputeNodeBelief } = await db.importBeliefService();
+    const recomputeResult = await recomputeNodeBelief(claimNodeId);
+    expect(recomputeResult.beliefCredence).toBeNull();
+    expect(db.readNodeBelief(claimNodeId).belief_credence).toBeNull();
   });
 
   // Direction 1, the schema half: whatever else it creates, the standalone
@@ -147,23 +144,19 @@ describe('app and standalone agree on the belief schema', () => {
 
   // Direction 2: standalone init-db running over a database the APP created
   // must leave the belief state alone — the asserted credence stays asserted,
-  // the evidence keeps its support and stamp, no trust table reappears, and
-  // the traversal indexes survive.
+  // the edge row survives, no trust table reappears, and the traversal
+  // indexes survive.
   it('standalone init-db over an app-created database preserves the belief columns, rows and indexes', async () => {
     db = await openTempBeliefDatabase();
     const expertNodeId = db.insertFixedBeliefCredenceNodeFixture({
       title: 'human expert asserted through the app',
       beliefCredence: 0.9,
     });
-    const claimNodeId = db.insertNodeFixture({ title: 'claim the expert supports' });
-    // Canon direction: the claim derives from the expert (claim→expert).
-    const expertEvidenceEdgeId = db.insertEvidenceEdgeFixture({
-      derivedNodeId: claimNodeId,
-      sourceNodeId: expertNodeId,
-      support: 0.8,
+    const claimNodeId = db.insertNodeFixture({ title: 'claim related to the expert' });
+    const relationshipEdgeId = db.insertNonEvidenceEdgeFixture({
+      fromNodeId: claimNodeId,
+      toNodeId: expertNodeId,
     });
-    const { recomputeNodeBelief } = await db.importBeliefService();
-    await recomputeNodeBelief(claimNodeId);
     const appCreatedDbPath = db.tempDbPath;
 
     // Hand the file over: close the app client, then run the standalone
@@ -178,6 +171,10 @@ describe('app and standalone agree on the belief schema', () => {
       expect(readColumnNamesDirectly(appCreatedDbPath, 'nodes')).toContain(
         'belief_credence_is_fixed'
       );
+      // And no evidence column reappears on edges.
+      const edgeColumnNames = readColumnNamesDirectly(appCreatedDbPath, 'edges');
+      expect(edgeColumnNames).not.toContain('belief_evidence_support');
+      expect(edgeColumnNames).not.toContain('belief_evidence_contribution');
 
       // The asserted expert is untouched.
       const preservedExpertRow = directDb
@@ -186,23 +183,12 @@ describe('app and standalone agree on the belief schema', () => {
       expect(Number(preservedExpertRow.belief_credence)).toBeCloseTo(0.9, 10);
       expect(preservedExpertRow.belief_credence_is_fixed).toBe(1);
 
-      // The graded claim and its stamped evidence edge are untouched.
-      const preservedClaimRow = directDb
-        .prepare('SELECT belief_credence FROM nodes WHERE id = ?')
-        .get(claimNodeId) as { belief_credence: number };
-      // EDITED per spec §2/§3: the v2 projection anchor 0.72/2.72 replaces
-      // the v1 exponential 1 − e^(−0.72).
-      expect(Number(preservedClaimRow.belief_credence)).toBeCloseTo(0.72 / 2.72, 10);
-      const preservedEvidenceRow = directDb
-        .prepare(
-          'SELECT belief_evidence_support, belief_evidence_contribution FROM edges WHERE id = ?'
-        )
-        .get(expertEvidenceEdgeId) as {
-        belief_evidence_support: number;
-        belief_evidence_contribution: number;
-      };
-      expect(Number(preservedEvidenceRow.belief_evidence_support)).toBeCloseTo(0.8, 10);
-      expect(Number(preservedEvidenceRow.belief_evidence_contribution)).toBeCloseTo(0.72, 10);
+      // The relationship edge row is untouched.
+      const preservedEdgeRow = directDb
+        .prepare('SELECT from_node_id, to_node_id FROM edges WHERE id = ?')
+        .get(relationshipEdgeId) as { from_node_id: number; to_node_id: number };
+      expect(preservedEdgeRow.from_node_id).toBe(claimNodeId);
+      expect(preservedEdgeRow.to_node_id).toBe(expertNodeId);
 
       // The traversal indexes the app created are still there: the standalone
       // pass must not rebuild the edges table out from under them.

@@ -2,7 +2,6 @@ import { embedNodeContent } from '@/services/embedding/ingestion';
 import { nodeService } from '@/services/database';
 import { getSQLiteClient } from '@/services/database/sqlite-client';
 import { recomputeNodeBelief } from '@/services/belief/beliefService';
-import { runBeliefRecoverySweep } from '@/services/belief/beliefRecoveryService';
 
 interface AutoEmbedTask {
   nodeId: number;
@@ -22,16 +21,6 @@ export class AutoEmbedQueue {
   private readonly cooldownMs = DEFAULT_COOLDOWN_MS;
 
   async recoverStuckNodes(): Promise<void> {
-    // Belief recovery sweep: regrade nodes with never-stamped evidence
-    // (standalone writes while the app was closed), stale stamps, and
-    // v1-graded nodes still missing their evidence masses (model migration).
-    // Warn-only — a belief sweep failure must never break embedding recovery.
-    try {
-      await runBeliefRecoverySweep();
-    } catch (beliefRecoveryError) {
-      console.warn('[AutoEmbedQueue] Belief recovery sweep failed', beliefRecoveryError);
-    }
-
     const notChunked = await nodeService.getNodes({ chunkStatus: 'not_chunked', limit: 1000 });
     for (const node of notChunked) {
       this.enqueue(node.id, { reason: 'startup_recovery' });

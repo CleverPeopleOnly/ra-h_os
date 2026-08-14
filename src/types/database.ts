@@ -62,6 +62,9 @@ export interface Chunk {
   created_at: string;
 }
 
+// An edge is a plain knowledge-graph relationship: belief evidence left this
+// fork (it lives in samai's own store now), so an edge row carries no belief
+// field of any kind.
 export interface Edge {
   id: number;
   from_node_id: number;
@@ -69,28 +72,14 @@ export interface Edge {
   context?: any;
   source: EdgeSource;
   created_at: string;
-  // Belief-engine evidence columns (fork addition). Both are read straight off
-  // the edges row, and NULL is a meaningful state on each of them.
-  // How loudly the to-end source speaks about the from-end derived node: one
-  // UNSIGNED number in [0, 1]. NULL means the edge is not evidence at all (a
-  // plain relationship edge, never assessed); 0 means it was assessed and
-  // carries nothing.
-  belief_evidence_support?: number | null;
-  // What this edge adds to its from-end derived node: the to-end source's
-  // signed belief_credence × this edge's support, stamped by the belief
-  // engine. NULL means the edge has never been graded — the state the
-  // recovery sweep looks for — so it must never be reported as 0.
-  belief_evidence_contribution?: number | null;
 }
 
-// Which side of a node an edge read is asking for. 'out_of' is the node's
-// evidence basis: the support-bearing edges it derives its belief_credence
-// from. 'into' is the mirror side, the edges through which other nodes
-// derive from it. 'both' is either side and is the default.
+// Which side of a node an edge read is asking for. 'out_of' is the edges
+// leaving the node (its from_node_id side); 'into' is the mirror side, the
+// edges pointing at it. 'both' is either side and is the default.
 export type BeliefEdgeReadDirection = 'into' | 'out_of' | 'both';
 
-// The filter an edge read accepts. Applied IN SQL by every edge read, so both
-// belief columns of the selected page reach the caller untouched. The
+// The filter an edge read accepts. Applied IN SQL by every edge read. The
 // parameter names are the ones the API route and both MCP doors use.
 export interface BeliefEdgeReadFilter {
   // Only edges touching this node; omitted means the whole edges table.
@@ -163,16 +152,6 @@ export interface EdgeData {
   created_via: EdgeCreatedVia;
   source: EdgeSource;
   skip_inference?: boolean; // reserved for bulk imports / migrations
-  // Belief-engine evidence field (MR-A). When belief_evidence_support is set
-  // the edge is evidence bearing on the from-end derived node and edge
-  // creation triggers a belief recompute of that node. Stored in a dedicated
-  // edge column, never in the app-owned context JSON.
-  // How loudly the to-end source speaks about the from-end derived node, as
-  // one unsigned number in [0, 1]: 0 means assessed and carries nothing,
-  // absent means the edge is not evidence at all. Which way the evidence
-  // cuts comes from the source's signed belief_credence, never from this
-  // field.
-  belief_evidence_support?: number;
 }
 
 export interface ChatData {

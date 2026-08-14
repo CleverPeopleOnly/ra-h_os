@@ -132,10 +132,9 @@ export const queryEdgeTool = tool({
       const requestedPagePosition = filters.offset ?? 0;
 
       // The one node side SQL can narrow by. from_node_id asks for the edges
-      // LEAVING a node ('out_of') — under canon that is the node's own
-      // evidence basis, the support-bearing edges it derives its credence
-      // from; to_node_id asks for the edges pointing AT it ('into'), the
-      // edges through which OTHER nodes derive from this one.
+      // LEAVING a node ('out_of') — under canon the relationships the node
+      // derives from; to_node_id asks for the edges pointing AT it ('into'),
+      // the edges through which OTHER nodes derive from this one.
       const nodeSideOfEdgeRead: Pick<BeliefEdgeReadFilter, 'nodeId' | 'direction'> =
         filters.from_node_id != null
           ? { nodeId: filters.from_node_id, direction: 'out_of' }

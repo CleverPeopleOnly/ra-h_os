@@ -7,8 +7,7 @@
  *   - renames the columns to `source_id`/`target_id`, when the fork naming
  *     rule is that MCP fields follow the column names exactly —
  *     `from_node_id`/`to_node_id`;
- *   - omits `explanation`, `created_at`, and BOTH belief columns, so a
- *     belief-aware agent reading this door cannot see evidence at all;
+ *   - omits `explanation` and `created_at`;
  *   - reports a field called `weight`, taken from `context.confidence`. That
  *     number is the relationship-LABEL confidence — how sure the app is that
  *     it typed the relationship correctly — and has nothing whatever to do
@@ -18,11 +17,10 @@
  *   - takes neither `direction` nor `offset`, so the two doors do not even
  *     accept the same arguments.
  *
- * The belief fields come from the shared contract's mapper
- * (src/services/belief/beliefMcpToolContract.js), which is where the
- * three-state normalisation lives: a MISSING key becomes null, a stored NULL
- * stays null, and a real 0 stays 0 — because NULL means the edge is not
- * evidence at all while 0 means it was assessed and carries nothing.
+ * deleted in the evidence-leaves-the-edges-table slice: the
+ * surfaces-support-and-contribution describe, and the belief-column half of
+ * the advertise test — the edge tools shed the evidence read fields, pinned
+ * in remote-mcp-route-edge-tools-shed-evidence.test.ts.
  *
  * Seam: tests/unit/mcp/helpers/remoteMcpDoorHarness.ts.
  */
@@ -175,61 +173,6 @@ describe('remote MCP door rah_query_edges reports the edge columns by their own 
   });
 });
 
-describe('remote MCP door rah_query_edges reports both belief columns', () => {
-  // The three states the shared mapper exists to keep apart, all in one read:
-  // a plain relationship edge (no keys at all), an evidence edge that has
-  // never been graded (stored NULL contribution), and a graded one whose
-  // assessed support is a real 0.
-  it('surfaces support and contribution for plain, ungraded and graded edges', async () => {
-    edgeRowsTheAppReturns = [
-      // Plain relationship edge: the app reports no belief columns at all.
-      { id: 5, from_node_id: 2, to_node_id: 1, explanation: 'A plain relationship.', created_at: '2026-07-30T00:00:00.000Z' },
-      // Assessed as evidence, never graded: support present, contribution NULL.
-      {
-        id: 6,
-        from_node_id: 3,
-        to_node_id: 1,
-        explanation: 'Assessed but not yet graded.',
-        created_at: '2026-07-30T00:00:01.000Z',
-        belief_evidence_support: 0.8,
-        belief_evidence_contribution: null,
-      },
-      // Assessed as carrying nothing, and graded to nothing. Both real zeroes.
-      {
-        id: 7,
-        from_node_id: 4,
-        to_node_id: 1,
-        explanation: 'Assessed, and it bears neither way.',
-        created_at: '2026-07-30T00:00:02.000Z',
-        belief_evidence_support: 0,
-        belief_evidence_contribution: 0,
-      },
-    ];
-
-    await remoteMcpDoorHarness.withRemoteMcpClient(async (client) => {
-      const [plainEdge, ungradedEdge, assessedZeroEdge] = await callQueryEdgesTool(client, {
-        nodeId: 1,
-      });
-
-      // Missing keys normalise to null: not evidence at all.
-      expect(plainEdge.belief_evidence_support).toBeNull();
-      expect(plainEdge.belief_evidence_contribution).toBeNull();
-      // Both keys are always present, so a caller can tell null from absent.
-      expect(Object.keys(plainEdge)).toContain('belief_evidence_support');
-      expect(Object.keys(plainEdge)).toContain('belief_evidence_contribution');
-
-      // A stored NULL contribution stays null — never graded, never 0.
-      expect(ungradedEdge.belief_evidence_support).toBe(0.8);
-      expect(ungradedEdge.belief_evidence_contribution).toBeNull();
-
-      // The state the whole normalisation exists for: real zeroes survive as
-      // zeroes, so an assessed "carries nothing" never reads as unassessed.
-      expect(assessedZeroEdge.belief_evidence_support).toBe(0);
-      expect(assessedZeroEdge.belief_evidence_contribution).toBe(0);
-    });
-  });
-});
-
 describe('remote MCP door rah_query_edges takes the same arguments as the local door', () => {
   // direction and offset exist on the local door and not on this one, so the
   // same agent asking the same question of the two doors gets different
@@ -285,10 +228,10 @@ describe('remote MCP door rah_query_edges takes the same arguments as the local 
     });
   });
 
-  // Discoverability: the new arguments and the belief columns must be visible
-  // in the advertised schemas, and this door must finally declare an output
-  // schema at all — declaring none is why the drift went unnoticed.
-  it('advertises direction and offset on the input schema and both belief columns on the output schema', async () => {
+  // Discoverability: the new arguments must be visible in the advertised
+  // schemas, and this door must declare an output schema at all — declaring
+  // none is why the drift went unnoticed.
+  it('advertises direction and offset on the input schema and the edge columns on the output schema', async () => {
     await remoteMcpDoorHarness.withRemoteMcpClient(async (client) => {
       const listedTools = await client.listTools();
       const queryEdgesTool = listedTools.tools.find((tool) => tool.name === 'rah_query_edges');
@@ -300,8 +243,6 @@ describe('remote MCP door rah_query_edges takes the same arguments as the local 
 
       expect(queryEdgesTool?.outputSchema, 'rah_query_edges must declare an output schema').toBeDefined();
       const outputSchemaJson = JSON.stringify(queryEdgesTool?.outputSchema);
-      expect(outputSchemaJson).toContain('belief_evidence_support');
-      expect(outputSchemaJson).toContain('belief_evidence_contribution');
       expect(outputSchemaJson).toContain('from_node_id');
       expect(outputSchemaJson).toContain('to_node_id');
       expect(outputSchemaJson).toContain('explanation');

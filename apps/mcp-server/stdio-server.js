@@ -19,10 +19,6 @@ const packageJson = require('../../package.json');
 // The fork-owned belief pieces of the MCP tool contract, shared verbatim with
 // the remote door (app/api/mcp/route.ts) so the two cannot drift apart again.
 const {
-  beliefEvidenceSupportInputSchemaForEdgeCreate,
-  beliefEvidenceSupportInputSchemaForEdgeUpdate,
-  beliefEvidenceFieldsForEdgeRead,
-  beliefEvidenceEdgeReadOutputSchemaFields,
   beliefFieldsForNodeRead,
   beliefNodeReadOutputSchemaFields,
   beliefSetFixedCredenceInputSchemaFields,
@@ -197,23 +193,13 @@ const deleteSkillInputSchema = {
   name: z.string().min(1).describe('Skill name to delete')
 };
 
-// rah_create_edge schemas
+// rah_create_edge schemas. An edge is a plain knowledge-graph relationship:
+// it carries an explanation, never belief data.
 const createEdgeInputSchema = {
   sourceId: z.number().int().positive().describe('Source node ID'),
   targetId: z.number().int().positive().describe('Target node ID'),
   explanation: z.string().min(1).describe('REQUIRED: Why does this connection exist? Be specific.'),
-  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.'),
-  // Belief evidence field (fork addition): optional, forwarded verbatim to
-  // the app's /api/edges — the app-owned belief engine does the grading.
-  // Support is UNSIGNED, 0..1: how loudly the source (the edge's to-end)
-  // speaks about the derived node (the from-end). Which way the evidence
-  // cuts comes from the source NODE's signed credence, never from this
-  // field. Omitting the field says "not evidence at
-  // all"; a support of 0 says the edge WAS assessed and carries nothing — a
-  // recorded judgement, never rejected, because a classifier that finds no
-  // bearing must not have to invent one. Taken from the shared contract so the
-  // remote door advertises exactly the same argument.
-  belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeCreate
+  confirmed_by_user: z.boolean().describe('Must be true. Only create the edge after the user explicitly confirmed this proposed relationship.')
 };
 
 // The stored-row object both edge-write tools declare under `edge` on their
@@ -264,7 +250,7 @@ const queryEdgesInputSchema = {
   direction: z
     .enum(['into', 'out_of', 'both'])
     .optional()
-    .describe('Which side of nodeId to read: "out_of" returns edges whose from_node_id is the node — its evidence basis, the support-bearing edges it derives its belief_credence from; "into" returns edges whose to_node_id is the node — the edges through which other nodes derive from it; "both" returns either side. Defaults to "both".'),
+    .describe('Which side of nodeId to read: "out_of" returns edges whose from_node_id is the node; "into" returns edges whose to_node_id is the node; "both" returns either side. Defaults to "both".'),
   limit: z.number().min(1).max(50).optional().describe('Max edges to return'),
   // Page position. min(0) makes a negative offset a schema rejection, since
   // there is no page before the first one.
@@ -292,11 +278,7 @@ const queryEdgesOutputSchema = {
       explanation: z.string().nullable(),
       // When the edge was written. Nullable for the same reason: a row that
       // arrives without the key normalises to null rather than to undefined.
-      created_at: z.string().nullable(),
-      // Belief-engine evidence columns (fork addition), reported verbatim and
-      // declared from the shared contract so both doors advertise them
-      // identically.
-      ...beliefEvidenceEdgeReadOutputSchemaFields
+      created_at: z.string().nullable()
     })
   )
 };
@@ -304,24 +286,12 @@ const queryEdgesOutputSchema = {
 // rah_update_edge schemas
 const updateEdgeInputSchema = {
   id: z.number().int().positive().describe('Edge ID to update'),
-  // The explanation is OPTIONAL: it is the recorded human reasoning for why the
-  // connection exists, and correcting how loudly the source speaks about the
-  // node deriving from it is not an occasion to rewrite it. There is no read-one-edge-by-id
-  // tool to fetch the stored words and hand them back, so a required
-  // explanation would force a support correction to invent prose over them.
-  // Omitting it leaves the stored explanation untouched; a blank one is refused
-  // by the handler rather than treated as an omission.
-  explanation: z.string().min(1).optional().describe('New explanation text (will re-infer relationship type). Omit the field entirely to correct only the belief evidence support and leave the stored explanation exactly as it is.'),
-  confirmed_by_user: z.boolean().describe('Must be true. Only update the edge after the user explicitly confirmed the corrected relationship.'),
-  // Belief evidence field (fork addition): the same unsigned 0..1 support
-  // rah_create_edge accepts, so a support written once can be corrected later.
-  // The range is enforced here, before any request reaches the app. Omitting
-  // the field leaves the stored support exactly as it is; null un-assesses the
-  // edge so it stops being evidence at all; a support of 0 says the edge WAS
-  // assessed and carries nothing — a recorded judgement, never rejected. Taken
-  // from the shared contract so the remote door advertises exactly the same
-  // argument.
-  belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeUpdate
+  // The explanation is OPTIONAL: it is the recorded human reasoning for why
+  // the connection exists. Omitting it leaves the stored explanation
+  // untouched; a blank one is refused by the handler rather than treated as
+  // an omission.
+  explanation: z.string().min(1).optional().describe('New explanation text (will re-infer relationship type). Omit the field entirely to leave the stored explanation exactly as it is.'),
+  confirmed_by_user: z.boolean().describe('Must be true. Only update the edge after the user explicitly confirmed the corrected relationship.')
 };
 
 const updateEdgeOutputSchema = {
@@ -676,15 +646,18 @@ server.registerTool(
   'rah_create_edge',
   {
     title: 'Create RA-H edge',
-    description: 'Create a connection between two nodes only after the user has explicitly confirmed the proposed relationship. Check existing edges first when you are not already sure the relationship is new. When the edge carries belief_evidence_support it is evidence, and it must run from the derived node (the node whose credence the evidence grades) to its source: sourceId names the derived node, targetId the source it derives from.',
+    description: 'Create a connection between two nodes only after the user has explicitly confirmed the proposed relationship. Check existing edges first when you are not already sure the relationship is new. An edge is a plain knowledge-graph relationship: it carries an explanation, never belief data.',
     inputSchema: createEdgeInputSchema,
     outputSchema: createEdgeOutputSchema
   },
-  async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_support }) => {
+  async ({ sourceId, targetId, explanation, confirmed_by_user }) => {
     if (!confirmed_by_user) {
       throw new Error('rah_create_edge requires explicit user confirmation before writing the relationship.');
     }
 
+    // The forwarded body is rebuilt field by field, so a stray key a stale
+    // caller still sends (belief_evidence_support was one) never reaches the
+    // app — the input schema already stripped it.
     const payload = {
       from_node_id: sourceId,
       to_node_id: targetId,
@@ -693,11 +666,6 @@ server.registerTool(
       created_via: 'mcp',
       confirmed_by_user: true
     };
-
-    // Belief evidence pass-through (fork addition): include the signed
-    // support only when the caller supplied it, so plain relationship edges
-    // keep an evidence-free payload.
-    if (belief_evidence_support !== undefined) payload.belief_evidence_support = belief_evidence_support;
 
     const result = await callRaHApi('/api/edges', {
       method: 'POST',
@@ -750,20 +718,18 @@ server.registerTool(
       content: [{ type: 'text', text: `Found ${edges.length} edge(s).` }],
       structuredContent: {
         count: edges.length,
-        // The explanation, the creation timestamp and both belief columns pass
-        // through verbatim. `?? null` normalises only a MISSING key to null; a
-        // stored NULL is already null and a real 0 is kept as 0, so an ungraded
-        // evidence edge never looks graded and an unexplained edge never looks
-        // like one explained with an empty string. The belief columns get that
-        // same normalisation from the shared contract's mapper.
+        // The explanation and the creation timestamp pass through verbatim.
+        // `?? null` normalises only a MISSING key to null; a stored NULL is
+        // already null, so an unexplained edge never looks like one explained
+        // with an empty string. The mapping is field by field, so an evidence
+        // value a not-yet-migrated app might still report is never relayed.
         edges: edges.map(e => ({
           id: e.id,
           from_node_id: e.from_node_id,
           to_node_id: e.to_node_id,
           type: e.type ?? e.source ?? null,
           explanation: e.explanation ?? null,
-          created_at: e.created_at ?? null,
-          ...beliefEvidenceFieldsForEdgeRead(e)
+          created_at: e.created_at ?? null
         }))
       }
     };
@@ -778,13 +744,13 @@ server.registerTool(
     inputSchema: updateEdgeInputSchema,
     outputSchema: updateEdgeOutputSchema
   },
-  async ({ id, explanation, confirmed_by_user, belief_evidence_support }) => {
+  async ({ id, explanation, confirmed_by_user }) => {
     if (!confirmed_by_user) {
       throw new Error('rah_update_edge requires explicit user confirmation before writing the corrected relationship.');
     }
 
-    // The corrected explanation, absent when this is a support-only correction.
-    // A SUPPLIED explanation that is blank is refused rather than treated as an
+    // The corrected explanation, absent when the caller sent none. A SUPPLIED
+    // explanation that is blank is refused rather than treated as an
     // omission: writing whitespace over recorded human reasoning destroys it
     // just as surely as inventing replacement prose would.
     const correctedEdgeExplanation = typeof explanation === 'string' ? explanation.trim() : '';
@@ -806,17 +772,6 @@ server.registerTool(
     } else {
       payload.created_via = 'mcp';
     }
-
-    // Belief evidence pass-through (fork addition): include the corrected
-    // support only when the caller supplied one, so an explanation-only
-    // correction still sends an evidence-free payload rather than turning a
-    // plain relationship edge into assessed evidence. The test is against
-    // undefined and not against null, because an explicit null is the caller
-    // un-assessing the edge and must reach the app present and null — a dropped
-    // key reads as "no support supplied" and leaves the edge graded. Sent
-    // TOP-LEVEL, not inside context, because it belongs to the edges column and
-    // not to the app-owned context JSON.
-    if (belief_evidence_support !== undefined) payload.belief_evidence_support = belief_evidence_support;
 
     const result = await callRaHApi(`/api/edges/${id}`, {
       method: 'PUT',
@@ -848,7 +803,7 @@ server.registerTool(
   'rah_set_belief_fixed_credence',
   {
     title: 'Set RA-H fixed belief credence',
-    description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from the node\'s evidence (its outgoing support-bearing edges). This is the bootstrap a graph needs before anything in it can be graded: a node\'s credence is also the credence carried by every piece of evidence that node supplies. Calling it again replaces the asserted credence in place.',
+    description: 'Assert one node\'s belief_credence by hand and mark it as fixed. Belief evidence lives outside this store, so a node\'s credence is either hand-asserted through this tool or null (ungraded). Calling it again replaces the asserted credence in place.',
     inputSchema: beliefSetFixedCredenceInputSchemaFields,
     outputSchema: beliefSetFixedCredenceOutputSchemaFields
   },
@@ -880,7 +835,7 @@ server.registerTool(
   'rah_clear_belief_fixed_credence',
   {
     title: 'Clear RA-H fixed belief credence',
-    description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the app-owned belief engine immediately regrade the node from its actual evidence (its outgoing support-bearing edges). A null credence in the reply is a real answer, not an error: the node has no counted evidence and is now ungraded — never reported as 0.',
+    description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the node become ungraded. Belief evidence lives outside this store, so a null credence in the reply is a real answer, not an error — never reported as 0.',
     inputSchema: beliefClearFixedCredenceInputSchemaFields,
     outputSchema: beliefClearFixedCredenceOutputSchemaFields
   },
@@ -945,7 +900,7 @@ server.registerTool(
   'rah_recompute_node_belief',
   {
     title: 'Recompute RA-H node belief',
-    description: 'Ask the app-owned belief engine to regrade one node\'s belief_credence from its evidence — its outgoing support-bearing edges, each counted as the credence of the source node it points at times the edge\'s support. A null credence in the reply is a real answer, not an error: the node has no counted evidence and stays ungraded — never reported as 0.',
+    description: 'Restate one node\'s belief_credence. Belief evidence lives outside this store, so a non-fixed node restates to ungraded — credence null, a real answer, never reported as 0 — and a fixed node reports its hand-asserted credence.',
     inputSchema: beliefRecomputeInputSchemaFields,
     outputSchema: beliefRecomputeOutputSchemaFields
   },

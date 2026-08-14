@@ -9,10 +9,6 @@ import { z } from 'zod';
 // apart again. The module is CommonJS because that door requires it from
 // source; the companion .d.ts is what types it here.
 import {
-  beliefEvidenceSupportInputSchemaForEdgeCreate,
-  beliefEvidenceSupportInputSchemaForEdgeUpdate,
-  beliefEvidenceFieldsForEdgeRead,
-  beliefEvidenceEdgeReadOutputSchemaFields,
   beliefFieldsForNodeRead,
   beliefNodeReadOutputSchemaFields,
   beliefSetFixedCredenceInputSchemaFields,
@@ -448,16 +444,12 @@ function createServer(request: NextRequest): McpServer {
     'rah_create_edge',
     {
       title: 'Create RA-H edge',
-      description: 'Create a connection between two nodes only after the user has explicitly confirmed the proposed relationship. When the edge carries belief_evidence_support it is evidence, and it must run from the derived node (the node whose credence the evidence grades) to its source: sourceId names the derived node, targetId the source it derives from.',
+      description: 'Create a connection between two nodes only after the user has explicitly confirmed the proposed relationship. An edge is a plain knowledge-graph relationship: it carries an explanation, never belief data.',
       inputSchema: {
         sourceId: z.number().int().positive(),
         targetId: z.number().int().positive(),
         explanation: z.string().min(1),
         confirmed_by_user: z.boolean(),
-        // Belief evidence field (fork addition), taken from the shared
-        // contract: an unsigned 0..1 support forwarded verbatim to the app's
-        // /api/edges, where the belief engine does the grading.
-        belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeCreate,
       },
       outputSchema: {
         success: z.boolean(),
@@ -472,11 +464,14 @@ function createServer(request: NextRequest): McpServer {
         edge: edgeWriteStoredRowOutputSchema,
       },
     },
-    async ({ sourceId, targetId, explanation, confirmed_by_user, belief_evidence_support }) => {
+    async ({ sourceId, targetId, explanation, confirmed_by_user }) => {
       if (!confirmed_by_user) {
         throw new Error('rah_create_edge requires explicit user confirmation before writing the relationship.');
       }
 
+      // The forwarded body is rebuilt field by field, so a stray key a stale
+      // caller still sends (belief_evidence_support was one) never reaches
+      // the app — the input schema already stripped it.
       const edgeCreateBody: Record<string, unknown> = {
         from_node_id: sourceId,
         to_node_id: targetId,
@@ -485,13 +480,6 @@ function createServer(request: NextRequest): McpServer {
         created_via: 'mcp',
         confirmed_by_user: true,
       };
-
-      // Belief evidence pass-through (fork addition): include the support only
-      // when the caller supplied it, so a plain relationship edge keeps an
-      // evidence-free payload rather than being written as assessed evidence.
-      if (belief_evidence_support !== undefined) {
-        edgeCreateBody.belief_evidence_support = belief_evidence_support;
-      }
 
       const payload = await callRaHApi(request, '/api/edges', {
         method: 'POST',
@@ -531,7 +519,7 @@ function createServer(request: NextRequest): McpServer {
         direction: z
           .enum(['into', 'out_of', 'both'])
           .optional()
-          .describe('Which side of nodeId to read: "out_of" returns edges whose from_node_id is the node — its evidence basis, the support-bearing edges it derives its belief_credence from; "into" returns edges whose to_node_id is the node — the edges through which other nodes derive from it; "both" returns either side. Defaults to "both".'),
+          .describe('Which side of nodeId to read: "out_of" returns edges whose from_node_id is the node; "into" returns edges whose to_node_id is the node; "both" returns either side. Defaults to "both".'),
         limit: z.number().min(1).max(50).optional().describe('Max edges to return'),
         // Page position. min(0) makes a negative offset a schema rejection,
         // since there is no page before the first one.
@@ -560,9 +548,6 @@ function createServer(request: NextRequest): McpServer {
             // When the edge was written. Nullable for the same reason: a row
             // that arrives without the key normalises to null.
             created_at: z.string().nullable(),
-            // Belief-engine evidence columns (fork addition), declared from the
-            // shared contract so both doors advertise them identically.
-            ...beliefEvidenceEdgeReadOutputSchemaFields,
           })
         ),
       },
@@ -586,7 +571,9 @@ function createServer(request: NextRequest): McpServer {
           // The columns are reported under their own names, and the
           // relationship-LABEL confidence is deliberately not reported at all:
           // it says how sure the app is that it typed the relationship, which
-          // is not a belief quantity and must never be read as one.
+          // is not a belief quantity and must never be read as one. The
+          // mapping is field by field, so an evidence value a not-yet-migrated
+          // app might still report is never relayed.
           edges: edges.map((edge: any) => ({
             id: edge.id,
             from_node_id: edge.from_node_id,
@@ -594,7 +581,6 @@ function createServer(request: NextRequest): McpServer {
             type: edge.context?.type ?? null,
             explanation: edge.explanation ?? null,
             created_at: edge.created_at ?? null,
-            ...beliefEvidenceFieldsForEdgeRead(edge),
           })),
         },
       };
@@ -609,20 +595,11 @@ function createServer(request: NextRequest): McpServer {
       inputSchema: {
         id: z.number().int().positive(),
         // The explanation is OPTIONAL: it is the recorded human reasoning for
-        // why the connection exists, and correcting how loudly the source
-        // speaks about the node deriving from it is not an occasion to
-        // rewrite it. There is
-        // no read-one-edge-by-id tool to fetch the stored words and hand them
-        // back, so a required explanation would force a support correction to
-        // invent prose over them. A blank one is refused by the handler rather
+        // why the connection exists. Omitting it leaves the stored words
+        // exactly as they are; a blank one is refused by the handler rather
         // than treated as an omission.
         explanation: z.string().min(1).optional(),
         confirmed_by_user: z.boolean(),
-        // Belief evidence field (fork addition), taken from the shared
-        // contract: the same unsigned 0..1 support rah_create_edge accepts, so
-        // a support written once can be corrected later — plus null, which
-        // un-assesses the edge so it stops being evidence at all.
-        belief_evidence_support: beliefEvidenceSupportInputSchemaForEdgeUpdate,
       },
       outputSchema: {
         success: z.boolean(),
@@ -635,13 +612,13 @@ function createServer(request: NextRequest): McpServer {
         edge: edgeWriteStoredRowOutputSchema,
       },
     },
-    async ({ id, explanation, confirmed_by_user, belief_evidence_support }) => {
+    async ({ id, explanation, confirmed_by_user }) => {
       if (!confirmed_by_user) {
         throw new Error('rah_update_edge requires explicit user confirmation before writing the corrected relationship.');
       }
 
-      // The corrected explanation, absent when this is a support-only
-      // correction. A SUPPLIED explanation that is blank is refused rather than
+      // The corrected explanation, absent when the caller sent none. A
+      // SUPPLIED explanation that is blank is refused rather than
       // treated as an omission: writing whitespace over recorded human reasoning
       // destroys it just as surely as inventing replacement prose would.
       const correctedEdgeExplanation = typeof explanation === 'string' ? explanation.trim() : '';
@@ -667,19 +644,6 @@ function createServer(request: NextRequest): McpServer {
         edgeUpdateBody.context = { explanation: correctedEdgeExplanation, created_via: 'mcp' };
       } else {
         edgeUpdateBody.created_via = 'mcp';
-      }
-
-      // Belief evidence pass-through (fork addition): include the corrected
-      // support only when the caller supplied one, so an explanation-only
-      // correction still sends an evidence-free payload rather than turning a
-      // plain relationship edge into assessed evidence. The test is against
-      // undefined and not against null, because an explicit null is the caller
-      // un-assessing the edge and must reach the app present and null — a
-      // dropped key reads as "no support supplied" and leaves the edge graded.
-      // Sent TOP-LEVEL, not inside context, because it belongs to the edges
-      // column and not to the app-owned context JSON.
-      if (belief_evidence_support !== undefined) {
-        edgeUpdateBody.belief_evidence_support = belief_evidence_support;
       }
 
       const payload = await callRaHApi(request, `/api/edges/${id}`, {
@@ -713,7 +677,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_set_belief_fixed_credence',
     {
       title: 'Set RA-H fixed belief credence',
-      description: 'Assert one node\'s belief_credence by hand and mark it as fixed, so the app-owned belief engine reports it rather than deriving it from the node\'s evidence (its outgoing support-bearing edges). This is the bootstrap a graph needs before anything in it can be graded: a node\'s credence is also the credence carried by every piece of evidence that node supplies. Calling it again replaces the asserted credence in place.',
+      description: 'Assert one node\'s belief_credence by hand and mark it as fixed. Belief evidence lives outside this store, so a node\'s credence is either hand-asserted through this tool or null (ungraded). Calling it again replaces the asserted credence in place.',
       inputSchema: beliefSetFixedCredenceInputSchemaFields,
       outputSchema: beliefSetFixedCredenceOutputSchemaFields,
     },
@@ -745,7 +709,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_clear_belief_fixed_credence',
     {
       title: 'Clear RA-H fixed belief credence',
-      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the app-owned belief engine immediately regrade the node from its actual evidence (its outgoing support-bearing edges). A null credence in the reply is a real answer, not an error: the node has no counted evidence and is now ungraded — never reported as 0.',
+      description: 'Withdraw one node\'s hand-asserted belief_credence: clear its fixed flag and let the node become ungraded. Belief evidence lives outside this store, so a null credence in the reply is a real answer, not an error — never reported as 0.',
       inputSchema: beliefClearFixedCredenceInputSchemaFields,
       outputSchema: beliefClearFixedCredenceOutputSchemaFields,
     },
@@ -808,7 +772,7 @@ function createServer(request: NextRequest): McpServer {
     'rah_recompute_node_belief',
     {
       title: 'Recompute RA-H node belief',
-      description: 'Ask the app-owned belief engine to regrade one node\'s belief_credence from its evidence — its outgoing support-bearing edges, each counted as the credence of the source node it points at times the edge\'s support. A null credence in the reply is a real answer, not an error: the node has no counted evidence and stays ungraded — never reported as 0.',
+      description: 'Restate one node\'s belief_credence. Belief evidence lives outside this store, so a non-fixed node restates to ungraded — credence null, a real answer, never reported as 0 — and a fixed node reports its hand-asserted credence.',
       inputSchema: beliefRecomputeInputSchemaFields,
       outputSchema: beliefRecomputeOutputSchemaFields,
     },

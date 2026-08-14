@@ -8,11 +8,12 @@
  * (getNodeByIdSQLite) already carries all five; this file pins the same
  * surface onto the list read, against a real temp database:
  *
- *  - a node graded VIA THE REAL ENGINE (recomputeNodeBelief over a seeded
- *    fixed-credence source and one evidence edge) reports its cached credence
- *    projection, its grading timestamp, and both persisted evidence masses —
- *    including an against-mass of exactly 0, which must never collapse into
- *    the NULL that means never assessed,
+ *  - a node whose belief columns hold a graded state (seeded directly —
+ *    since the evidence-leaves-the-edges-table slice the engine no longer
+ *    grades from edges) reports its cached credence projection, its grading
+ *    timestamp, and both stored evidence masses — including an against-mass
+ *    of exactly 0, which must never collapse into the NULL that means never
+ *    assessed,
  *  - an ungraded node reports all of credence, computed_at and both masses as
  *    explicit nulls (present-and-null, never a missing key) with the fixed
  *    flag 0,
@@ -79,32 +80,31 @@ async function readListedNodeBeliefFieldsThroughNodeService(
   return listedNode!;
 }
 
-// Seed the smallest gradeable graph — a derived node deriving from a
-// fixed-credence source (0.8) over one canon evidence edge (support 0.5) —
-// and grade the derived node through the REAL engine, so the listed row
-// carries exactly what the engine persisted: r = 0.8 x 0.5 = 0.4, s = 0,
-// credence = 0.4/2.4.
-async function seedAndGradeTargetNodeThroughRealEngine(): Promise<number> {
-  // The bootstrap source: its human-asserted credence is the credence its
-  // evidence carries.
-  const fixedCredenceSourceNodeId = tempBeliefDb.insertFixedBeliefCredenceNodeFixture({
-    title: 'Fixed-credence source node for the list read',
-    beliefCredence: 0.8,
+// Seed a target node whose belief columns hold a graded state, written
+// directly with SQL. Since the evidence-leaves-the-edges-table slice the
+// engine no longer grades from edges (a non-fixed recompute lands
+// never-assessed), so the read surface is pinned over directly seeded
+// column values — the pins on what a read reports stay identical.
+function seedNodeWithGradedBeliefColumns(): number {
+  // The node the list read must report a graded belief state for.
+  const seededTargetNodeId = tempBeliefDb.insertNodeFixture({
+    title: 'Seeded graded node the list read must report belief for',
   });
-  // The node the engine will grade and the list read must report.
-  const gradedTargetNodeId = tempBeliefDb.insertNodeFixture({
-    title: 'Engine-graded derived node the list read must report belief for',
-  });
-  tempBeliefDb.insertEvidenceEdgeFixture({
-    derivedNodeId: gradedTargetNodeId,
-    sourceNodeId: fixedCredenceSourceNodeId,
-    support: 0.5,
-  });
-  // Grade through the real engine bound to this database generation, so the
-  // masses and the cached projection are the engine's own writes.
-  const { recomputeNodeBelief } = await tempBeliefDb.importBeliefService();
-  await recomputeNodeBelief(gradedTargetNodeId);
-  return gradedTargetNodeId;
+  tempBeliefDb.sqlite
+    .prepare(
+      `UPDATE nodes
+       SET belief_credence = ?, belief_computed_at = ?,
+           belief_evidence_for_mass = ?, belief_evidence_against_mass = ?
+       WHERE id = ?`
+    )
+    .run(
+      expectedBeliefCredenceProjection(0.4, 0),
+      SEEDED_BELIEF_COMPUTED_AT,
+      0.4,
+      0,
+      seededTargetNodeId
+    );
+  return seededTargetNodeId;
 }
 
 beforeEach(async () => {
@@ -118,13 +118,13 @@ afterEach(() => {
 describe('nodeService.getNodes belief columns (list read behind GET /api/nodes)', () => {
   // The core gap: the list SELECT omits all five belief columns, so nothing
   // rendered from the list can show belief at all.
-  it('reports all five belief columns for a node graded via the real engine', async () => {
-    const gradedTargetNodeId = await seedAndGradeTargetNodeThroughRealEngine();
+  it('reports all five belief columns for a node with a seeded graded state', async () => {
+    const gradedTargetNodeId = seedNodeWithGradedBeliefColumns();
 
     const listedGradedNode =
       await readListedNodeBeliefFieldsThroughNodeService(gradedTargetNodeId);
 
-    // The engine's persisted masses: one positive contribution of 0.4.
+    // The seeded masses: one positive contribution of 0.4.
     expect(listedGradedNode.belief_evidence_for_mass).toBeCloseTo(0.4, 10);
     // An against-mass of exactly 0 is a graded state — never NULL.
     expect(listedGradedNode.belief_evidence_against_mass).toBe(0);
@@ -134,7 +134,7 @@ describe('nodeService.getNodes belief columns (list read behind GET /api/nodes)'
       expectedBeliefCredenceProjection(0.4, 0),
       10
     );
-    // The engine stamped its own grading timestamp.
+    // The grading timestamp rides along.
     expect(typeof listedGradedNode.belief_computed_at).toBe('string');
     // Nobody asserted this credence by hand: the column default is 0.
     expect(listedGradedNode.belief_credence_is_fixed).toBe(0);
