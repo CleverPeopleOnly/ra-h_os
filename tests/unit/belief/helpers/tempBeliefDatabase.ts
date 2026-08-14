@@ -4,8 +4,10 @@
  * SAFETY: the real RA-H database lives under the user's home directory
  * (macOS: ~/Library/Application Support/RA-H/db/rah.sqlite). The SQLite
  * client resolves its file from process.env.SQLITE_DB_PATH before falling
- * back to that real path, and it opens the file as a MODULE-LOAD side effect
- * (getSQLiteClient() runs at import time). This module therefore:
+ * back to that real path. The client now opens lazily — the first real call
+ * through sqliteDb/getSQLiteClient() opens the file, never the import itself —
+ * but the sentinel stays as defence in depth against any regression of that
+ * laziness. This module therefore:
  *   (a) pins SQLITE_DB_PATH to a throwaway temp sentinel file the moment it
  *       is loaded, so no accidental product-module import in a belief test
  *       file can ever open the live database, and
