@@ -3,12 +3,12 @@
  * slice: the post-embed belief hook dies with the recompute surface, because
  * a hook that writes never-assessed would erase the display beliefs samai
  * writes through the remote door. Completing an embed for a node must leave
- * the node's belief columns and the belief_movements table byte-unchanged.
+ * the node's belief columns byte-unchanged.
  *
- * RED TODAY because AutoEmbedQueue.executeTask still calls
- * recomputeNodeBelief(nodeId, 'embed-grade') after a successful embed, which
- * writes the node never-assessed — the seeded credence 0.62 becomes NULL and
- * the before/after snapshot differs.
+ * Went red when AutoEmbedQueue.executeTask still ran the engine's post-embed
+ * belief hook after a successful embed, which wrote the node never-assessed —
+ * the seeded credence 0.62 became NULL and the before/after snapshot
+ * differed. Green since the hook died with the recompute surface.
  *
  * The queue is exercised for real (a fresh AutoEmbedQueue instance over a
  * temp-file database) with the REAL belief service in place — only
@@ -54,11 +54,11 @@ afterEach(() => {
   db = undefined;
 });
 
-// One node's full belief state as stored: every present display column plus
-// the node's belief_movements rows — everything an embed must leave alone.
+// One node's full belief state as stored: every present display column —
+// since the belief_movements table left the schema, the four display columns
+// are ALL the belief state there is for an embed to leave alone.
 interface NodeBeliefStateSnapshot {
   presentDisplayColumns: Record<string, unknown>;
-  beliefMovements: unknown[];
 }
 
 // Snapshot one node's belief state, tolerating both the pre- and post-slice
@@ -79,15 +79,14 @@ function snapshotNodeBeliefState(
     .get(nodeId) as Record<string, unknown>;
   return {
     presentDisplayColumns,
-    beliefMovements: context.readBeliefMovements(nodeId),
   };
 }
 
 describe('AutoEmbedQueue touches no belief state', () => {
-  // The whole pin in one pass: a graded node's belief columns and movement
-  // log are byte-identical before and after its embed task completes — no
-  // regrade, no never-assessed write, no movement.
-  it('completing an embed leaves the node\'s belief columns and movement log byte-unchanged', async () => {
+  // The whole pin in one pass: a graded node's belief columns are
+  // byte-identical before and after its embed task completes — no regrade
+  // and no never-assessed write.
+  it('completing an embed leaves the node\'s belief columns byte-unchanged', async () => {
     db = await openTempBeliefDatabase();
     // A GRADED node, so the old hook's never-assessed write is visible: a
     // credence that survives is the proof, a credence nulled is the red.
@@ -129,7 +128,7 @@ describe('AutoEmbedQueue touches no belief state', () => {
     );
 
     // The pinned behaviour: byte-unchanged belief state — the seeded
-    // credence survives and the movement log grew by nothing.
+    // credence survives.
     const beliefStateAfterEmbed = snapshotNodeBeliefState(db, gradedNodeId);
     expect(beliefStateAfterEmbed).toEqual(beliefStateBeforeEmbed);
   });

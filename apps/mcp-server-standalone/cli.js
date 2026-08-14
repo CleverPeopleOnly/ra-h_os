@@ -194,10 +194,10 @@ function renameBeliefColumnToCredence(db, tableName, legacyColumnName, credenceC
 }
 
 /**
- * Belief-engine schema (fork addition): make init-db create the same belief
- * NODE columns and tables the app expects. Edges carry no belief data —
- * belief evidence left this fork — so this path creates no edge evidence
- * column and drops any a legacy file still carries.
+ * Belief display schema (fork addition): make init-db create the same belief
+ * NODE columns the app expects. Edges carry no belief data — belief evidence
+ * left this fork — so this path creates no edge evidence column and drops any
+ * a legacy file still carries.
  */
 function ensureBeliefSchema(db) {
   // Vocabulary migration, run BEFORE the additions below so a database still
@@ -289,32 +289,15 @@ function ensureBeliefSchema(db) {
     }
   }
 
-  // The belief movement audit log. No source-credence table sits beside it: a
-  // source is just a node and its influence IS its own nodes.belief_credence,
-  // so the app-side migration drops that table and this path must never put it
-  // back. "trigger" stays double-quoted — it is a SQLite reserved word.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS belief_movements (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      node_id INTEGER NOT NULL,
-      from_credence REAL,
-      to_credence REAL NOT NULL,
-      "trigger" TEXT NOT NULL,
-      occurred_at TEXT NOT NULL
-    );
-  `);
-
-  // A movement records the same quantity as nodes.belief_credence — the
-  // node's credence before and after a recompute — so both numeric columns
-  // carry that one word. CREATE TABLE IF NOT EXISTS above is a no-op on an
-  // existing log, so an older one only gets there through these renames.
-  renameBeliefColumnToCredence(db, 'belief_movements', 'from_value', 'from_credence');
-  renameBeliefColumnToCredence(db, 'belief_movements', 'to_value', 'to_credence');
-
-  // Every movement read filters on node_id (belief model v2, spec §5), so
-  // the log carries an index on it — the same index the app-side schema
-  // creates, so a database either side creates is one the other can run over.
-  db.exec('CREATE INDEX IF NOT EXISTS idx_belief_movements_node_id ON belief_movements(node_id);');
+  // Belief-movements migration, mirroring the app's sqlite-client: the
+  // movement log audited the fork-native belief engine's recomputes, and the
+  // engine lives in samai now — nothing writes or reads a movement row any
+  // more, so the table and its index are dropped and the rows deliberately
+  // carried nowhere, the same way the app-side migration drops the source
+  // trust tables. The index goes first so an orphaned definition cannot
+  // outlive the table, and DROP ... IF EXISTS makes a rerun a no-op.
+  db.exec('DROP INDEX IF EXISTS idx_belief_movements_node_id;');
+  db.exec('DROP TABLE IF EXISTS belief_movements;');
 }
 
 function initDb(dbPath) {

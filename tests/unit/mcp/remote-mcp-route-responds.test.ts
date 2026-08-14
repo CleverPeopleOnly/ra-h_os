@@ -68,11 +68,9 @@ const toolNamesTheRemoteMcpDoorAdvertises = [
   'rah_extract_youtube',
   'rah_extract_pdf',
   'rah_get_context',
-  'rah_set_belief_fixed_credence',
-  'rah_get_belief_movements',
-  // Swapped in for rah_recompute_node_belief in the
-  // display-belief-door-writable slice: the recompute surface is dead and the
-  // door's writable belief surface is the display write.
+  // The door's one belief tool since the engine left the fork: the belief
+  // math lives in samai now, and the display write is how samai lands its
+  // grades here. The fixed-credence and movements tools died with the engine.
   'rah_write_display_belief',
 ];
 

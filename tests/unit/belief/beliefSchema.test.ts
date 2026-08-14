@@ -6,9 +6,6 @@
  *    word for the belief system's central quantity, so the column that holds
  *    it says credence and the old nodes.belief_value name is gone from fresh
  *    databases and renamed away on existing ones
- *  - belief_movements.from_credence / to_credence — the movement log records
- *    the SAME quantity before and after a recompute, so it uses the same word
- *    (the old from_value / to_value names are renamed, never re-created)
  *  - NO evidence-shaped column on edges under ANY historical name: belief
  *    evidence left this fork for samai's own store (the
  *    evidence-leaves-the-edges-table slice), so a legacy database's evidence
@@ -20,7 +17,6 @@
  *    this set has its credence ASSERTED by a human rather than derived from
  *    the graph, which is the bootstrap a derived-only graph needs before
  *    anything in it can be graded
- *  - the belief_movements table
  *  - and NO belief_source_trust table: a source is just a node and its
  *    influence IS its own nodes.belief_credence, so the separate trust table
  *    is dropped from every database that still has it and is never created
@@ -32,11 +28,15 @@
  * test — the merge migration is gone; every legacy evidence column is now
  * dropped instead, which the reshaped drop tests below pin.
  *
+ * deleted in the engine-leaves-the-fork slice: every belief_movements pin —
+ * the table is dropped from the schema (pinned in
+ * beliefMovementsTableGone.test.ts) — and the beliefService.ts text pin,
+ * because that module is deleted with the engine.
+ *
  * Every database in this file is a fresh temp file under the OS tmpdir —
  * see tempBeliefDatabase.ts for the safety seam.
  */
 
-import { spawnSync } from 'node:child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -230,10 +230,11 @@ function createDatabaseCarryingBeliefEvidenceOriginKey(dbPath: string): void {
 }
 
 // Lay down a database in the shape shipped BEFORE the credence rename: the
-// graded quantity is nodes.belief_value and the movement log records it as
-// from_value / to_value. It carries real data for the rename to preserve —
-// a graded node, an UNGRADED (NULL) node, an evidence edge, and two movement
-// rows one of which has a NULL from_value.
+// graded quantity is nodes.belief_value, with a belief_movements log in that
+// era's from_value / to_value vocabulary beside it (the drop migration
+// removes the whole log regardless of its column era). It carries real node
+// data for the rename to preserve — a graded node, an UNGRADED (NULL) node
+// and an evidence edge.
 //
 // It also creates idx_edges_from / idx_edges_to / idx_nodes_updated_at
 // explicitly (the base helper creates no indexes), so the rebuild guard below
@@ -478,30 +479,6 @@ describe('belief engine schema', () => {
     // flag comes back as an ordinary, derived node.
     const insertedNodeId = db.insertNodeFixture({ title: 'node inserted without the flag' });
     expect(db.readNodeBeliefCredenceIsFixed(insertedNodeId)).toBe(0);
-  });
-
-  // EDITED from the from_value / to_value case: a movement records the node's
-  // credence before and after the recompute, which is the same quantity as
-  // nodes.belief_credence, so both columns say credence and neither old name
-  // may survive on a fresh database.
-  it('fresh database: belief_movements table exists with from_credence / to_credence and no from_value / to_value', async () => {
-    db = await openTempBeliefDatabase();
-    const movementColumns = db.readTableColumns('belief_movements');
-    expect(movementColumns.length, 'belief_movements table should exist').toBeGreaterThan(0);
-    expect(findColumn(movementColumns, 'id')?.pk, 'id is the primary key').toBe(1);
-    expect(findColumn(movementColumns, 'node_id')?.notnull, 'node_id is NOT NULL').toBe(1);
-    expect(
-      findColumn(movementColumns, 'from_credence'),
-      'from_credence exists (nullable)'
-    ).toBeDefined();
-    expect(findColumn(movementColumns, 'from_credence')?.type.toUpperCase()).toBe('REAL');
-    expect(findColumn(movementColumns, 'to_credence')?.notnull, 'to_credence is NOT NULL').toBe(1);
-    expect(findColumn(movementColumns, 'to_credence')?.type.toUpperCase()).toBe('REAL');
-    expect(findColumn(movementColumns, 'trigger')?.notnull, 'trigger is NOT NULL').toBe(1);
-    expect(findColumn(movementColumns, 'occurred_at')?.notnull, 'occurred_at is NOT NULL').toBe(1);
-    const movementColumnNames = movementColumns.map(column => column.name);
-    expect(movementColumnNames, 'the old from_value name must be gone').not.toContain('from_value');
-    expect(movementColumnNames, 'the old to_value name must be gone').not.toContain('to_value');
   });
 
   // EDITED to nodes-only in the evidence-leaves-the-edges-table slice: edges
@@ -828,34 +805,6 @@ describe('belief engine schema', () => {
     expect(preservedEdge.explanation).toBe('supporting evidence edge');
   });
 
-  // The same migration on the movement log: from_value / to_value record the
-  // node's credence before and after a recompute, so they are renamed to
-  // from_credence / to_credence with every logged row preserved — including
-  // the first-grading row whose "before" is NULL.
-  it('a database naming the movement columns from_value / to_value comes out with from_credence / to_credence and its rows intact', async () => {
-    db = await openTempBeliefDatabase({
-      prepareExistingDbFile: createDatabaseNamingCredenceAsBeliefValue,
-    });
-
-    const movementColumnNames = db.readTableColumns('belief_movements').map(column => column.name);
-    expect(movementColumnNames).toContain('from_credence');
-    expect(movementColumnNames).toContain('to_credence');
-    expect(movementColumnNames, 'the old from_value column is renamed away').not.toContain(
-      'from_value'
-    );
-    expect(movementColumnNames, 'the old to_value column is renamed away').not.toContain('to_value');
-
-    // Read through the helper so the shared movement-row shape is exercised.
-    const migratedMovements = db.readBeliefMovements(1);
-    expect(migratedMovements).toHaveLength(2);
-    expect(migratedMovements[0].from_credence, 'a first grading has no previous credence').toBeNull();
-    expect(Number(migratedMovements[0].to_credence)).toBeCloseTo(0.31, 10);
-    expect(migratedMovements[0].trigger).toBe('belief-recompute');
-    expect(migratedMovements[0].occurred_at).toBe('2026-07-26T00:00:00.000Z');
-    expect(Number(migratedMovements[1].from_credence)).toBeCloseTo(0.31, 10);
-    expect(Number(migratedMovements[1].to_credence)).toBeCloseTo(-0.42, 10);
-  });
-
   // Table-rebuild guard for the credence rename, mirroring the origin-key
   // one. Renaming a column can be implemented either as ALTER TABLE ...
   // RENAME COLUMN or as a copy-into-a-new-table rebuild, and a rebuild
@@ -1038,20 +987,6 @@ describe('belief engine schema', () => {
     expect(db.hasTable('belief_source_trust')).toBe(false);
   });
 
-  // EDITED from "gains belief_source_trust and belief_movements": the
-  // movement log is still created, but no trust table ever is.
-  it('legacy database file gains the belief_movements table and no belief_source_trust after client init', async () => {
-    db = await openTempBeliefDatabase({
-      prepareExistingDbFile: createLegacyDatabaseWithoutBeliefColumns,
-    });
-    const tableNames = (
-      db.sqlite
-        .prepare("SELECT name FROM sqlite_master WHERE type='table'")
-        .all() as Array<{ name: string }>
-    ).map(row => row.name);
-    expect(tableNames).toContain('belief_movements');
-    expect(tableNames).not.toContain('belief_source_trust');
-  });
 });
 
 describe('sources-as-nodes schema migration', () => {
@@ -1233,101 +1168,6 @@ describe('sources-as-nodes schema migration', () => {
   });
 });
 
-// The belief_movements(node_id) index tests below moved here from
-// beliefSchemaEvidenceMassesV2.test.ts when that file was deleted in the
-// display-belief-door-writable slice (the mass columns it pinned are gone;
-// the movement-log index outlives them).
-
-// One row of "PRAGMA index_list(<table>)" as these tests read it.
-interface SqliteIndexListRow {
-  name: string;
-}
-
-// One row of "PRAGMA index_info(<index>)" as these tests read it.
-interface SqliteIndexInfoRow {
-  name: string;
-}
-
-// True when the belief_movements table carries at least one index whose
-// leading column is node_id — the shape spec §5 demands, checked through any
-// better-sqlite3 connection so the app and standalone sides share one probe.
-function hasBeliefMovementsNodeIdIndex(
-  runPragma: (pragmaSql: string) => unknown[]
-): boolean {
-  const movementIndexes = runPragma('PRAGMA index_list(belief_movements)') as SqliteIndexListRow[];
-  return movementIndexes.some(movementIndex => {
-    const indexedColumns = runPragma(
-      `PRAGMA index_info(${JSON.stringify(movementIndex.name)})`
-    ) as SqliteIndexInfoRow[];
-    return indexedColumns.length > 0 && indexedColumns[0].name === 'node_id';
-  });
-}
-
-// Absolute path of the standalone server entry point, whose "init-db"
-// subcommand drives the standalone copy of the schema in cli.js.
-const standaloneServerEntryPath = path.join(
-  process.cwd(),
-  'apps',
-  'mcp-server-standalone',
-  'index.js'
-);
-
-// Run standalone init-db against one database file, failing the test with its
-// stderr if it does not exit cleanly — same drive as the parity tests.
-function runStandaloneInitDb(targetDbPath: string): void {
-  const initDbResult = spawnSync(process.execPath, [standaloneServerEntryPath, 'init-db'], {
-    cwd: process.cwd(),
-    env: { ...process.env, RAH_DB_PATH: targetDbPath },
-    encoding: 'utf8',
-    timeout: 30000,
-  });
-  expect(initDbResult.status, `standalone init-db stderr: ${initDbResult.stderr}`).toBe(0);
-}
-
-describe('belief_movements(node_id) index', () => {
-  // Spec §5: belief_movements gains an index on node_id — every movement read
-  // filters on it. Fresh database.
-  it('fresh database: belief_movements has an index whose leading column is node_id', async () => {
-    db = await openTempBeliefDatabase();
-    const sqlite = db.sqlite;
-    expect(
-      hasBeliefMovementsNodeIdIndex(pragmaSql => sqlite.prepare(pragmaSql).all()),
-      'belief_movements needs an index led by node_id'
-    ).toBe(true);
-  });
-
-  // The same index appears when client init runs over a legacy database that
-  // never had the belief tables at all.
-  it('legacy database: client init creates the belief_movements(node_id) index', async () => {
-    db = await openTempBeliefDatabase({
-      prepareExistingDbFile: createLegacyDatabaseWithoutBeliefColumns,
-    });
-    const sqlite = db.sqlite;
-    expect(
-      hasBeliefMovementsNodeIdIndex(pragmaSql => sqlite.prepare(pragmaSql).all())
-    ).toBe(true);
-  });
-
-  // The standalone DDL also carries the movement-log index (spec §7 names
-  // both schema owners for it).
-  it('standalone init-db creates the belief_movements(node_id) index', async () => {
-    db = await openTempBeliefDatabase({
-      prepareExistingDbFile: (targetDbPath: string) => {
-        runStandaloneInitDb(targetDbPath);
-        const directDb = new Database(targetDbPath, { readonly: true, fileMustExist: true });
-        try {
-          expect(
-            hasBeliefMovementsNodeIdIndex(pragmaSql => directDb.prepare(pragmaSql).all()),
-            'standalone init-db must index belief_movements on node_id'
-          ).toBe(true);
-        } finally {
-          directDb.close();
-        }
-      },
-    });
-  });
-});
-
 describe('source trust mechanism removal', () => {
   // The module that read and wrote belief_source_trust is deleted outright,
   // not emptied or left importable: a source's influence is its own node
@@ -1346,17 +1186,5 @@ describe('source trust mechanism removal', () => {
       fs.existsSync(deletedSourceTrustServicePath),
       'the source trust service is deleted, not kept alongside the node credence it became'
     ).toBe(false);
-  });
-
-  // The belief service must not name the deleted table or the deleted
-  // metadata convention anywhere: reading a trustOriginKey out of node
-  // metadata is exactly the lookup that sources-as-nodes replaces.
-  it('the belief service source names neither belief_source_trust nor trustOriginKey', () => {
-    const beliefServiceSource = fs.readFileSync(
-      path.join(process.cwd(), 'src', 'services', 'belief', 'beliefService.ts'),
-      'utf8'
-    );
-    expect(beliefServiceSource).not.toContain('belief_source_trust');
-    expect(beliefServiceSource).not.toContain('trustOriginKey');
   });
 });

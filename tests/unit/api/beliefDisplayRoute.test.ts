@@ -16,9 +16,9 @@
  * Any mixture is refused with 400 and a message naming the two shapes. An
  * unknown node is refused with 404 naming the node. A FIXED node
  * (belief_credence_is_fixed = 1) is refused with 409 and a message naming
- * the flag — a hand-asserted credence is only changed through the
- * assert/clear tools. NEITHER legal write logs a belief_movements row:
- * movement history is samai's now.
+ * the flag — a hand-asserted credence is never overwritten by a display
+ * write. NEITHER legal write logs any history row: movement history is
+ * samai's now.
  *
  * Seam: tests/unit/belief/helpers/tempBeliefDatabase.ts, with the route
  * module imported dynamically AFTER the temp database opens. The import path
@@ -110,9 +110,11 @@ afterEach(() => {
 });
 
 describe('POST /api/belief/display — the two legal shapes', () => {
-  // The GRADE in one pass: the three columns land verbatim, the reply is the
-  // stored row, and no movement is logged.
-  it('a GRADE lands all three columns verbatim, answers the stored row, and logs no movement', async () => {
+  // The GRADE in one pass: the three columns land verbatim and the reply is
+  // the stored row. (Movement history is samai's entirely now — the
+  // belief_movements table itself left this schema, so there is nothing here
+  // a write could log into.)
+  it('a GRADE lands all three columns verbatim and answers the stored row', async () => {
     const gradedNodeId = tempBeliefDb.insertNodeFixture({ title: 'Node samai grades' });
 
     const response = await postDisplayBelief(gradeBodyForNode(gradedNodeId));
@@ -130,13 +132,10 @@ describe('POST /api/belief/display — the two legal shapes', () => {
     expect(storedRow.belief_credence).toBe(WRITTEN_BELIEF_CREDENCE);
     expect(storedRow.belief_uncertainty).toBe(WRITTEN_BELIEF_UNCERTAINTY);
     expect(storedRow.belief_computed_at).toBe(WRITTEN_BELIEF_COMPUTED_AT);
-
-    // Movement history is samai's now: a display write logs NOTHING.
-    expect(tempBeliefDb.readBeliefMovements(gradedNodeId)).toHaveLength(0);
   });
 
-  // The UNGRADE: all three columns clear together, and still no movement.
-  it('an UNGRADE nulls all three columns, answers the stored nulls, and logs no movement', async () => {
+  // The UNGRADE: all three columns clear together.
+  it('an UNGRADE nulls all three columns and answers the stored nulls', async () => {
     const gradedNodeId = tempBeliefDb.insertNodeFixture({ title: 'Node samai ungrades' });
     // Grade first through the route itself, so the ungrade has something to clear.
     await postDisplayBelief(gradeBodyForNode(gradedNodeId));
@@ -158,7 +157,6 @@ describe('POST /api/belief/display — the two legal shapes', () => {
     expect(storedRow.belief_credence).toBeNull();
     expect(storedRow.belief_uncertainty).toBeNull();
     expect(storedRow.belief_computed_at).toBeNull();
-    expect(tempBeliefDb.readBeliefMovements(gradedNodeId)).toHaveLength(0);
   });
 
   // The interval boundaries: credence lives in the CLOSED interval [-1, 1]
@@ -263,8 +261,8 @@ describe('POST /api/belief/display — refusals', () => {
     expect(refusal.error).toContain('424242');
   });
 
-  // A FIXED node's credence is hand-asserted: only the assert/clear tools may
-  // change it, so a display write is refused naming the flag — 409, because
+  // A FIXED node's credence is hand-asserted and never overwritten by a
+  // display write, so the write is refused naming the flag — 409, because
   // the request was well-formed and the stored state is what refuses it.
   it('refuses a fixed node with 409 naming belief_credence_is_fixed, writing nothing', async () => {
     const fixedNodeId = tempBeliefDb.insertFixedBeliefCredenceNodeFixture({

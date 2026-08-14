@@ -434,15 +434,6 @@ class SQLiteClient {
         FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
       );
 
-      CREATE TABLE IF NOT EXISTS belief_movements (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        node_id INTEGER NOT NULL,
-        from_credence REAL,
-        to_credence REAL NOT NULL,
-        "trigger" TEXT NOT NULL,
-        occurred_at TEXT NOT NULL
-      );
-
       CREATE TABLE IF NOT EXISTS chunks (
         id INTEGER PRIMARY KEY,
         node_id INTEGER NOT NULL,
@@ -481,20 +472,16 @@ class SQLiteClient {
 
       CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_node_id);
       CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_node_id);
-      CREATE INDEX IF NOT EXISTS idx_belief_movements_node_id ON belief_movements(node_id);
       CREATE INDEX IF NOT EXISTS idx_nodes_updated_at ON nodes(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_chunks_node_id ON chunks(node_id);
       CREATE INDEX IF NOT EXISTS idx_chats_thread ON chats(thread_id);
     `);
   }
 
-  // Belief-engine migration (MR-A): legacy databases were created before the
+  // Belief display-column migration: legacy databases were created before the
   // belief columns existed, and CREATE TABLE IF NOT EXISTS never alters an
   // existing table — so mirror the ensureNodeCol pattern and ALTER the
-  // missing columns in. CREATE TABLE IF NOT EXISTS in ensureCoreSchema brings
-  // belief_movements into being on a fresh database, but is a no-op on an
-  // existing one, so its column-level migration lives here too. Must run
-  // inside the startup write lock.
+  // missing columns in. Must run inside the startup write lock.
   private ensureBeliefSchemaLocked(): void {
     // nodes: the graded credence (NULL = ungraded) + when it was computed.
     try {
@@ -622,33 +609,6 @@ class SQLiteClient {
       console.warn('Failed to ensure nodes belief columns:', nodeErr);
     }
 
-    // belief_movements: a movement records the SAME quantity as
-    // nodes.belief_credence — the node's credence before and after a
-    // recompute — so both numeric columns carry that one word. ensureCoreSchema
-    // creates the table with CREATE TABLE IF NOT EXISTS, which is a no-op on a
-    // database that already has it, so an existing log only reaches the new
-    // names through the explicit in-place renames below.
-    try {
-      const movementCols = this.db
-        .prepare('PRAGMA table_info(belief_movements)')
-        .all() as Array<{ name: string }>;
-      const beliefMovementCredenceRenames: Array<[string, string]> = [
-        ['from_value', 'from_credence'],
-        ['to_value', 'to_credence'],
-      ];
-      for (const [legacyName, credenceName] of beliefMovementCredenceRenames) {
-        if (movementCols.some(col => col.name === legacyName)) {
-          try {
-            this.db.exec(`ALTER TABLE belief_movements RENAME COLUMN ${legacyName} TO ${credenceName};`);
-          } catch (renameErr) {
-            console.warn(`Failed to migrate belief_movements.${legacyName} to ${credenceName}:`, renameErr);
-          }
-        }
-      }
-    } catch (movementErr) {
-      console.warn('Failed to ensure belief_movements credence columns:', movementErr);
-    }
-
     // edges: belief evidence no longer lives on edges AT ALL — it moved out
     // of this fork into samai's own store, so an edge is a plain
     // knowledge-graph relationship. A legacy database still carrying an
@@ -719,6 +679,19 @@ class SQLiteClient {
       this.db.exec('DROP TABLE IF EXISTS belief_source_trust;');
     } catch (sourceTrustDropErr) {
       console.warn('Failed to drop the removed source trust tables:', sourceTrustDropErr);
+    }
+
+    // Belief-movements migration: the movement log audited the fork-native
+    // belief engine's recomputes, and the engine lives in samai now — nothing
+    // in this fork writes or reads a movement row any more, so the table and
+    // its index are dropped and the rows deliberately carried nowhere, the
+    // same way the source trust tables above went. The index is dropped
+    // explicitly first so an orphaned definition cannot outlive the table.
+    try {
+      this.db.exec('DROP INDEX IF EXISTS idx_belief_movements_node_id;');
+      this.db.exec('DROP TABLE IF EXISTS belief_movements;');
+    } catch (beliefMovementsDropErr) {
+      console.warn('Failed to drop the removed belief_movements table:', beliefMovementsDropErr);
     }
   }
 

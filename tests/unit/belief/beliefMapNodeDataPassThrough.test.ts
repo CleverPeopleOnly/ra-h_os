@@ -21,8 +21,8 @@
  * Red pattern: `beliefPresentation` is missing from RahNodeData today. A
  * static property access on the emitted data would not break tsc here —
  * RahNodeData carries a `[key: string]: unknown` index signature — but it
- * would type the field as `unknown`. So, exactly like the namespace-cast
- * precedent in beliefGradingPolicyV2SubjectiveLogic.test.ts, the pinned
+ * would type the field as `unknown`. So, following the house's namespace-cast
+ * precedent for not-yet-shipped surfaces, the pinned
  * surface lives in a LOCAL type (BeliefAwareRahNodeData) and the emitted
  * data is cast to it: `npx tsc --noEmit` stays clean while every test reds
  * at runtime on the missing field.

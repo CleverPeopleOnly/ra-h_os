@@ -1,17 +1,14 @@
 /**
  * Contract tests for the standalone MCP server's belief surface:
  *  - schema parity: the standalone init-db path must create the belief NODE
- *    columns and the belief_movements table the app's belief engine expects,
- *    and NO evidence column on edges — belief evidence left this fork in the
- *    evidence-leaves-the-edges-table slice,
+ *    columns the app reads, and NO evidence column on edges — belief
+ *    evidence left this fork in the evidence-leaves-the-edges-table slice,
  *  - schema parity part two: the standalone init-db path must create
  *    nodes.belief_credence_is_fixed and must NOT create belief_source_trust —
  *    a source is just a node and its influence IS its own belief_credence,
  *  - getNodesById exposes belief_credence / belief_computed_at /
  *    belief_credence_is_fixed,
- *  - the setBeliefFixedCredence tool asserts one node's credence by hand
- *    (the bootstrap a derived-only graph needs), and the deleted
- *    setBeliefSourceTrust / getBeliefSourceTrust tools are gone.
+ *  - the deleted setBeliefSourceTrust / getBeliefSourceTrust tools are gone.
  *
  * deleted in the evidence-leaves-the-edges-table slice: every createEdge
  * evidence test (the stores-support test, both range tests, the boundary 0
@@ -19,6 +16,11 @@
  * advertises-support test and the stores-NULL-in-both guard) — the
  * standalone edge tools shed the support parameter entirely, pinned in
  * standalone-edge-tools-shed-evidence.test.ts.
+ *
+ * deleted in the engine-leaves-the-fork slice: every setBeliefFixedCredence
+ * behaviour test and every belief_movements pin — the hand-assert tools and
+ * the movement log left the fork with the engine (their absence is pinned in
+ * standalone-fixed-credence-tools-gone.test.ts).
  *
  * SAFETY: every database in this file is a fresh temp file under os.tmpdir()
  * (HOME and RAH_DB_PATH are both pinned into the temp root before the server
@@ -104,15 +106,6 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
       metadata TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-
-    CREATE TABLE belief_movements (
-      id INTEGER PRIMARY KEY,
-      node_id INTEGER NOT NULL,
-      from_credence REAL,
-      to_credence REAL NOT NULL,
-      "trigger" TEXT NOT NULL,
-      occurred_at TEXT NOT NULL
-    );
   `);
 
   const now = new Date().toISOString();
@@ -135,7 +128,7 @@ function createStandaloneDbWithBeliefSchema(targetPath: string): void {
   insertNode.run(
     2,
     'Belief Surface Source Node',
-    'The node the setBeliefFixedCredence tests assert a credence on.',
+    'The node the fixed-credence read test seeds a hand-asserted credence on.',
     'Source node text for standalone belief-surface testing.',
     now,
     now,
@@ -177,124 +170,6 @@ function getStructured<T>(result: unknown): T {
   return (result as { structuredContent?: unknown }).structuredContent as T;
 }
 
-// One node's belief state as read back straight from the temp database file:
-// the credence itself, when it was last written, and whether a human asserted
-// it rather than the app's belief engine deriving it.
-interface NodeBeliefStateRow {
-  belief_credence: number | null;
-  belief_computed_at: string | null;
-  belief_credence_is_fixed: number;
-}
-
-// Read one node's belief state straight from the temp database file with an
-// independent better-sqlite3 connection (never through the server).
-function readNodeBeliefStateRow(nodeId: number): NodeBeliefStateRow | undefined {
-  const directDb = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return directDb
-      .prepare(
-        'SELECT belief_credence, belief_computed_at, belief_credence_is_fixed FROM nodes WHERE id = ?'
-      )
-      .get(nodeId) as NodeBeliefStateRow | undefined;
-  } finally {
-    directDb.close();
-  }
-}
-
-// One belief_movements row as read back by these tests: the node's credence
-// before and after the write, what caused it, and when.
-interface BeliefMovementRow {
-  from_credence: number | null;
-  to_credence: number;
-  trigger: string;
-  occurred_at: string;
-}
-
-// Read one node's belief movement rows straight from the temp database file,
-// oldest first.
-function readBeliefMovementRows(nodeId: number): BeliefMovementRow[] {
-  const directDb = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return directDb
-      .prepare(
-        `SELECT from_credence, to_credence, "trigger", occurred_at
-         FROM belief_movements WHERE node_id = ? ORDER BY id ASC`
-      )
-      .all(nodeId) as BeliefMovementRow[];
-  } finally {
-    directDb.close();
-  }
-}
-
-// Count all node rows in the temp database file — used to prove a rejected
-// write created nothing.
-function countNodes(): number {
-  const directDb = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return (directDb.prepare('SELECT COUNT(*) AS count FROM nodes').get() as { count: number })
-      .count;
-  } finally {
-    directDb.close();
-  }
-}
-
-// Count all belief_movements rows in the temp database file — used to prove a
-// rejected write logged nothing.
-function countBeliefMovements(): number {
-  const directDb = new Database(dbPath, { readonly: true, fileMustExist: true });
-  try {
-    return (
-      directDb.prepare('SELECT COUNT(*) AS count FROM belief_movements').get() as {
-        count: number;
-      }
-    ).count;
-  } finally {
-    directDb.close();
-  }
-}
-
-// Overwrite one node's belief_computed_at directly in the temp database file,
-// so a test can plant an obviously stale stamp and then prove the next write
-// replaced it. Uses its own writable connection with a busy timeout, because
-// the spawned server holds the same file open.
-function overwriteNodeBeliefComputedAt(nodeId: number, beliefComputedAt: string): void {
-  const directDb = new Database(dbPath, { fileMustExist: true });
-  try {
-    directDb.pragma('busy_timeout = 5000');
-    directDb
-      .prepare('UPDATE nodes SET belief_computed_at = ? WHERE id = ?')
-      .run(beliefComputedAt, nodeId);
-  } finally {
-    directDb.close();
-  }
-}
-
-// The one trigger string every human-asserted credence write is logged under,
-// so the movement log distinguishes an asserted credence from a derived one.
-const FIXED_CREDENCE_MOVEMENT_TRIGGER = 'belief-fixed-credence-set';
-
-// A credence that round-trips through SQLite REAL byte-for-byte (an exact
-// binary fraction), so the same-value tests below are about the change rule
-// and never about floating-point noise.
-const EXACTLY_REPRESENTABLE_BELIEF_CREDENCE = 0.5;
-
-// The very next double above EXACTLY_REPRESENTABLE_BELIEF_CREDENCE — one
-// step in the last representable bit. Number.EPSILON is the gap at 1.0, so
-// half of it is the gap at 0.5. It survives JSON and SQLite REAL unchanged,
-// which is what lets the boundary test below observe an EXACT comparison.
-const NEXT_REPRESENTABLE_BELIEF_CREDENCE_ABOVE =
-  EXACTLY_REPRESENTABLE_BELIEF_CREDENCE + Number.EPSILON / 2;
-
-// An obviously stale stamp planted before a re-assertion, so "the timestamp
-// was rewritten" can be proved without depending on two writes landing in
-// different milliseconds.
-const STALE_BELIEF_COMPUTED_AT = '2000-01-01T00:00:00.000Z';
-
-// The exact wording the MCP server answers a call to an UNREGISTERED tool
-// with. Tests that expect a real error from the tool assert against this, so
-// they cannot pass merely because the tool does not exist yet.
-const UNREGISTERED_TOOL_ERROR_PATTERN = /Tool\s+setBeliefFixedCredence\s+not found/i;
-
 beforeAll(() => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rah-standalone-belief-test-'));
   tempHome = path.join(tempRoot, 'home');
@@ -312,9 +187,9 @@ afterAll(() => {
 
 describe('standalone MCP server belief surface (MR-B)', () => {
   // Schema parity: a database created by the standalone init-db path must
-  // already contain the belief NODE columns and tables — and no evidence
-  // column on edges — so app and standalone agree on one schema.
-  it('init-db creates a database with belief node columns and belief tables, and no edge evidence columns', () => {
+  // already contain the belief NODE columns — and no evidence column on
+  // edges — so app and standalone agree on one schema.
+  it('init-db creates a database with belief node columns and no edge evidence columns', () => {
     const initDbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rah-standalone-initdb-test-'));
     const initDbPath = path.join(initDbDir, 'rah-init.sqlite');
     try {
@@ -359,22 +234,11 @@ describe('standalone MCP server belief surface (MR-B)', () => {
         expect(edgeColumnNames).not.toContain('belief_evidence_strength');
         expect(edgeColumnNames).not.toContain('belief_evidence_origin_key');
         // Sources are nodes: the standalone init-db path must create the
-        // fixed-credence flag the app's belief engine reads, and must NOT
-        // create the deleted trust table beside it. App and standalone have
-        // to agree on one schema or offline writes land in a shape the app
-        // cannot grade.
+        // fixed-credence flag the app reads, and must NOT create the deleted
+        // trust table beside it. App and standalone have to agree on one
+        // schema or offline writes land in a shape the app cannot read.
         expect(nodeColumnNames).toContain('belief_credence_is_fixed');
         expect(tableNames).not.toContain('belief_source_trust');
-        expect(tableNames).toContain('belief_movements');
-        // The movement log records the same quantity, so it uses the same
-        // word on both of its numeric columns.
-        const movementColumnNames = (
-          directDb.prepare('PRAGMA table_info(belief_movements)').all() as Array<{ name: string }>
-        ).map(column => column.name);
-        expect(movementColumnNames).toContain('from_credence');
-        expect(movementColumnNames).toContain('to_credence');
-        expect(movementColumnNames).not.toContain('from_value');
-        expect(movementColumnNames).not.toContain('to_value');
 
         // The flag's declaration has to match the app's, not merely exist:
         // NOT NULL DEFAULT 0 is what makes "derived" the state a node is in
@@ -401,15 +265,18 @@ describe('standalone MCP server belief surface (MR-B)', () => {
   // Belief read path part two: a credence alone does not say where it came
   // from, so the read path must expose belief_credence_is_fixed beside it —
   // an external agent has to be able to tell a human-asserted credence from
-  // one the app's belief engine derived before it decides what to do next.
+  // one samai's engine graded before it decides what to do next.
   it('getNodesById returns belief_credence_is_fixed beside belief_credence', async () => {
-    await withStandaloneClient(async (client) => {
-      // Node 1 stays ordinary; node 2 has its credence asserted by hand.
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.9 },
-      });
+    // Node 1 stays ordinary; node 2 carries a hand-asserted credence, seeded
+    // by direct SQL — the hand-assert tools left the fork with the engine,
+    // but the stored flag is a surviving display column the read must serve.
+    const directDb = new Database(dbPath);
+    directDb
+      .prepare('UPDATE nodes SET belief_credence = 0.9, belief_credence_is_fixed = 1 WHERE id = 2')
+      .run();
+    directDb.close();
 
+    await withStandaloneClient(async (client) => {
       const result = await client.callTool({
         name: 'getNodesById',
         arguments: { nodeIds: [1, 2] },
@@ -455,384 +322,6 @@ describe('standalone MCP server belief surface (MR-B)', () => {
       expect(gradedNode).toBeDefined();
       expect(gradedNode?.belief_credence).toBeCloseTo(0.42, 10);
       expect(gradedNode?.belief_computed_at).toBe(gradedAt);
-    });
-  });
-
-  // REPLACES setBeliefSourceTrust/getBeliefSourceTrust. A source is just a
-  // node, so the only thing left to write by hand is one node's own
-  // credence — asserted by a human rather than derived from the graph. The
-  // tool sets belief_credence AND raises belief_credence_is_fixed, which is
-  // what stops the belief engine regrading the node away again.
-  it('setBeliefFixedCredence writes belief_credence and sets belief_credence_is_fixed to 1', async () => {
-    await withStandaloneClient(async (client) => {
-      // Precondition: the node starts out ordinary and ungraded.
-      expect(readNodeBeliefStateRow(2)?.belief_credence).toBeNull();
-      expect(readNodeBeliefStateRow(2)?.belief_credence_is_fixed).toBe(0);
-
-      const result = await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.9 },
-      });
-
-      expect((result as { isError?: boolean }).isError ?? false).toBe(false);
-      const assertedBeliefState = readNodeBeliefStateRow(2);
-      expect(Number(assertedBeliefState?.belief_credence)).toBeCloseTo(0.9, 10);
-      expect(assertedBeliefState?.belief_credence_is_fixed).toBe(1);
-    });
-  });
-
-  // Setting it again replaces the asserted credence in place and leaves the
-  // node fixed — a human changing their mind is an ordinary edit, not a
-  // second node.
-  it('setBeliefFixedCredence called twice leaves the latest credence and keeps the node fixed', async () => {
-    await withStandaloneClient(async (client) => {
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.9 },
-      });
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: -0.25 },
-      });
-
-      const assertedBeliefState = readNodeBeliefStateRow(2);
-      expect(Number(assertedBeliefState?.belief_credence)).toBeCloseTo(-0.25, 10);
-      expect(assertedBeliefState?.belief_credence_is_fixed).toBe(1);
-    });
-  });
-
-  // A credence of 0 is inside the open interval and is a real assertion —
-  // "I have looked and I am torn" — so it must be stored as 0, never
-  // rejected and never collapsed to NULL (NULL means nobody has graded this
-  // node at all, which is a different claim).
-  it('setBeliefFixedCredence accepts a credence of exactly 0 and stores 0 rather than NULL', async () => {
-    await withStandaloneClient(async (client) => {
-      const result = await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0 },
-      });
-
-      expect((result as { isError?: boolean }).isError ?? false).toBe(false);
-      const assertedBeliefState = readNodeBeliefStateRow(2);
-      // toBe(0) rather than a coercing comparison: Number(null) is also 0.
-      expect(assertedBeliefState?.belief_credence).toBe(0);
-      expect(assertedBeliefState?.belief_credence).not.toBeNull();
-      expect(assertedBeliefState?.belief_credence_is_fixed).toBe(1);
-    });
-  });
-
-  // Credence lives in the OPEN interval (-1, +1): total certainty either way
-  // is not expressible, so both endpoints and anything beyond them must be a
-  // tool error that writes nothing.
-  it('setBeliefFixedCredence rejects -1, +1 and out-of-range credences and writes nothing', async () => {
-    await withStandaloneClient(async (client) => {
-      for (const rejectedBeliefCredence of [1, -1, 1.5, -1.5]) {
-        const result = await client.callTool({
-          name: 'setBeliefFixedCredence',
-          arguments: { node_id: 2, belief_credence: rejectedBeliefCredence },
-        });
-
-        expect(
-          (result as { isError?: boolean }).isError,
-          `a credence of ${rejectedBeliefCredence} is outside the open interval and must be rejected`
-        ).toBe(true);
-        // ...and rejected BY THE TOOL, not by there being no such tool: an
-        // unregistered name also comes back as an error, which would let this
-        // case pass for entirely the wrong reason.
-        expect(
-          JSON.stringify((result as { content?: unknown }).content),
-          'the rejection must come from the tool validating its input, not from a missing tool'
-        ).not.toMatch(UNREGISTERED_TOOL_ERROR_PATTERN);
-        // Nothing was written: the node is still ordinary and ungraded.
-        const untouchedBeliefState = readNodeBeliefStateRow(2);
-        expect(untouchedBeliefState?.belief_credence).toBeNull();
-        expect(untouchedBeliefState?.belief_credence_is_fixed).toBe(0);
-      }
-    });
-  });
-
-  // Asserting a credence by hand is the ONLY way a fixed node's credence ever
-  // changes, so without a movement row the human-asserted numbers would be the
-  // only credences in the system with no audit trail behind them. The first
-  // assertion on a never-graded node logs from_credence NULL — there was no
-  // previous credence — under the trigger that names this write path.
-  it('setBeliefFixedCredence appends a belief_movements row with NULL from_credence on a fresh node', async () => {
-    await withStandaloneClient(async (client) => {
-      // Precondition: the node has never been graded, so there is nothing to
-      // move from and nothing logged yet.
-      expect(readNodeBeliefStateRow(2)?.belief_credence).toBeNull();
-      expect(readBeliefMovementRows(2)).toHaveLength(0);
-
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.9 },
-      });
-
-      const movements = readBeliefMovementRows(2);
-      expect(movements).toHaveLength(1);
-      expect(movements[0].from_credence, 'a first assertion has no previous credence').toBeNull();
-      expect(Number(movements[0].to_credence)).toBeCloseTo(0.9, 10);
-      expect(movements[0].trigger).toBe(FIXED_CREDENCE_MOVEMENT_TRIGGER);
-      expect(movements[0].occurred_at).toBeTruthy();
-    });
-  });
-
-  // Re-asserting over an existing credence logs the change the same way: the
-  // previous asserted value is the movement's from_credence, so the log reads
-  // as a continuous history of what the human believed.
-  it('setBeliefFixedCredence appends a second movement row carrying the previous credence', async () => {
-    await withStandaloneClient(async (client) => {
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.9 },
-      });
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: -0.25 },
-      });
-
-      const movements = readBeliefMovementRows(2);
-      expect(movements).toHaveLength(2);
-      expect(Number(movements[1].from_credence), 'the previous asserted credence').toBeCloseTo(
-        0.9,
-        10
-      );
-      expect(Number(movements[1].to_credence)).toBeCloseTo(-0.25, 10);
-      expect(movements[1].trigger).toBe(FIXED_CREDENCE_MOVEMENT_TRIGGER);
-    });
-  });
-
-  // The discriminating case for the movement rule: a movement records the
-  // credence CHANGING, and re-asserting the SAME number is not a change, so
-  // it appends nothing — otherwise the log fills with rows recording nothing.
-  // The comparison is EXACT: the same number means the identical double, not
-  // one within some tolerance (see the last-representable-bit test below for
-  // why an asserted credence needs no tolerance).
-  it('setBeliefFixedCredence asserting the same credence twice appends only one movement row', async () => {
-    await withStandaloneClient(async (client) => {
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: {
-          node_id: 2,
-          belief_credence: EXACTLY_REPRESENTABLE_BELIEF_CREDENCE,
-        },
-      });
-      // Precondition: the first assertion logged the ungraded -> asserted move.
-      expect(readBeliefMovementRows(2)).toHaveLength(1);
-
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: {
-          node_id: 2,
-          belief_credence: EXACTLY_REPRESENTABLE_BELIEF_CREDENCE,
-        },
-      });
-
-      const movements = readBeliefMovementRows(2);
-      expect(movements, 're-asserting the same credence is not a movement').toHaveLength(1);
-      // The stored credence is still the asserted one, and the node is still
-      // fixed — nothing about the second write was skipped except the log.
-      expect(readNodeBeliefStateRow(2)?.belief_credence).toBe(
-        EXACTLY_REPRESENTABLE_BELIEF_CREDENCE
-      );
-      expect(readNodeBeliefStateRow(2)?.belief_credence_is_fixed).toBe(1);
-    });
-  });
-
-  // The other half of that split, copied from recomputeNodeBelief exactly:
-  // the credence and its timestamp are written UNCONDITIONALLY and only the
-  // movement row is conditional. So an unchanged re-assertion still refreshes
-  // belief_computed_at — the human did look again, and the column records
-  // when the credence was last written.
-  it('setBeliefFixedCredence rewrites belief_computed_at on an unchanged re-assertion', async () => {
-    await withStandaloneClient(async (client) => {
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: {
-          node_id: 2,
-          belief_credence: EXACTLY_REPRESENTABLE_BELIEF_CREDENCE,
-        },
-      });
-      // Plant an obviously stale stamp, so "rewritten" is provable without
-      // relying on two writes landing in different milliseconds.
-      overwriteNodeBeliefComputedAt(2, STALE_BELIEF_COMPUTED_AT);
-      const earliestAcceptableRewriteTime = Date.now();
-
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: {
-          node_id: 2,
-          belief_credence: EXACTLY_REPRESENTABLE_BELIEF_CREDENCE,
-        },
-      });
-
-      const rewrittenBeliefComputedAt = readNodeBeliefStateRow(2)?.belief_computed_at;
-      expect(
-        rewrittenBeliefComputedAt,
-        'the unconditional timestamp write happens even when the credence did not move'
-      ).not.toBe(STALE_BELIEF_COMPUTED_AT);
-      expect(Date.parse(String(rewrittenBeliefComputedAt))).toBeGreaterThanOrEqual(
-        earliestAcceptableRewriteTime - 1000
-      );
-      // ...while the conditional write, the movement row, did not happen.
-      expect(readBeliefMovementRows(2)).toHaveLength(1);
-    });
-  });
-
-  // The other side of that rule: any DIFFERENT credence is a second
-  // assertion and earns its own movement row, carrying the previous value as
-  // from_credence.
-  it('setBeliefFixedCredence appends a second movement row for any different credence', async () => {
-    await withStandaloneClient(async (client) => {
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.5 },
-      });
-
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.75 },
-      });
-
-      const movements = readBeliefMovementRows(2);
-      expect(movements, 'a different credence is a movement').toHaveLength(2);
-      expect(Number(movements[1].from_credence)).toBe(0.5);
-      expect(Number(movements[1].to_credence)).toBe(0.75);
-      expect(movements[1].trigger).toBe(FIXED_CREDENCE_MOVEMENT_TRIGGER);
-    });
-  });
-
-  // The boundary, and the test that makes EXACT comparison observable: two
-  // credences one step apart in the last representable bit are DIFFERENT, so
-  // the second assertion appends its own movement row. Any tolerance at all
-  // would swallow this difference and leave a single row.
-  //
-  // Why exact rather than tolerant, so nobody "restores consistency" later by
-  // copying recomputeNodeBelief's epsilon here: recompute compares two results
-  // of exponential arithmetic, where a difference in the fifteenth decimal is
-  // drift rather than a real movement, so it needs a tolerance. A fixed
-  // credence contains no arithmetic — a literal number arrives through the MCP
-  // tool and is compared against a literal number that was itself asserted,
-  // and doubles round-trip through JSON exactly. There is no drift to absorb,
-  // so two different values are two different assertions. Exact comparison
-  // also means no numeric constant has to be kept in step across the
-  // app/standalone boundary, which is the two-copies-must-agree pattern behind
-  // three defects in this project.
-  it('setBeliefFixedCredence treats a last-representable-bit difference as a real change', async () => {
-    await withStandaloneClient(async (client) => {
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: {
-          node_id: 2,
-          belief_credence: EXACTLY_REPRESENTABLE_BELIEF_CREDENCE,
-        },
-      });
-      expect(readBeliefMovementRows(2)).toHaveLength(1);
-
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: {
-          node_id: 2,
-          belief_credence: NEXT_REPRESENTABLE_BELIEF_CREDENCE_ABOVE,
-        },
-      });
-
-      const movements = readBeliefMovementRows(2);
-      expect(
-        movements,
-        'one step in the last bit is still a different assertion, so it is a movement'
-      ).toHaveLength(2);
-      // toBe, never toBeCloseTo: any tolerance here would defeat the point of
-      // the test by treating these two doubles as the same number.
-      expect(movements[1].from_credence).toBe(EXACTLY_REPRESENTABLE_BELIEF_CREDENCE);
-      expect(movements[1].to_credence).toBe(NEXT_REPRESENTABLE_BELIEF_CREDENCE_ABOVE);
-      expect(readNodeBeliefStateRow(2)?.belief_credence).toBe(
-        NEXT_REPRESENTABLE_BELIEF_CREDENCE_ABOVE
-      );
-    });
-  });
-
-  // belief_computed_at records when the credence was last written, whatever
-  // wrote it. For a fixed node that is the moment a human asserted it, so the
-  // tool must stamp it rather than leaving the node looking never-computed.
-  it('setBeliefFixedCredence stamps belief_computed_at with an ISO timestamp of the write', async () => {
-    await withStandaloneClient(async (client) => {
-      // Precondition: nothing has written a credence to this node yet.
-      expect(readNodeBeliefStateRow(2)?.belief_computed_at).toBeNull();
-      // Lower bound for the stamp, taken just before the write.
-      const earliestAcceptableWriteTime = Date.now();
-
-      await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 2, belief_credence: 0.9 },
-      });
-
-      const assertedAt = readNodeBeliefStateRow(2)?.belief_computed_at;
-      expect(assertedAt, 'the asserted credence carries a computed-at stamp').toBeTruthy();
-      // Parses as a real instant, and is the time of THIS write rather than
-      // some fixed placeholder string.
-      const assertedAtMilliseconds = Date.parse(String(assertedAt));
-      expect(Number.isNaN(assertedAtMilliseconds), 'the stamp parses as a timestamp').toBe(false);
-      expect(assertedAtMilliseconds).toBeGreaterThanOrEqual(earliestAcceptableWriteTime - 1000);
-      expect(assertedAtMilliseconds).toBeLessThanOrEqual(Date.now() + 1000);
-      // ISO 8601 with a UTC zone, matching every other timestamp the belief
-      // system writes.
-      expect(String(assertedAt)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
-    });
-  });
-
-  // A credence can only be asserted about a node that exists. Asserting one
-  // about an unknown id must come back as an error rather than silently
-  // succeeding, and must create nothing — a credence with no node behind it
-  // would be a belief about nothing.
-  it('setBeliefFixedCredence returns an error for a node_id that does not exist and creates nothing', async () => {
-    await withStandaloneClient(async (client) => {
-      const nodeCountBefore = countNodes();
-      const movementCountBefore = countBeliefMovements();
-
-      const result = await client.callTool({
-        name: 'setBeliefFixedCredence',
-        arguments: { node_id: 9999, belief_credence: 0.9 },
-      });
-
-      expect(
-        (result as { isError?: boolean }).isError,
-        'asserting a credence about an unknown node must fail'
-      ).toBe(true);
-      // The failure must come from the tool rejecting the unknown node, not
-      // from the tool itself being unregistered.
-      expect(
-        JSON.stringify((result as { content?: unknown }).content),
-        'the error must be about the node, not about a missing tool'
-      ).not.toMatch(UNREGISTERED_TOOL_ERROR_PATTERN);
-      // Nothing was created and nothing was logged.
-      expect(countNodes()).toBe(nodeCountBefore);
-      expect(countBeliefMovements()).toBe(movementCountBefore);
-    });
-  });
-
-  // Discoverability and vocabulary: the tool's parameters follow the column
-  // names exactly (node_id, belief_credence), and the deleted trust tools
-  // must be gone from the advertised surface — an external agent must not be
-  // able to learn a mechanism that no longer exists.
-  it('advertises setBeliefFixedCredence with node_id and belief_credence, and no source-trust tools', async () => {
-    await withStandaloneClient(async (client) => {
-      const listedTools = await client.listTools();
-      const listedToolNames = listedTools.tools.map((tool) => tool.name);
-
-      expect(listedToolNames).toContain('setBeliefFixedCredence');
-      expect(listedToolNames).not.toContain('setBeliefSourceTrust');
-      expect(listedToolNames).not.toContain('getBeliefSourceTrust');
-
-      const setBeliefFixedCredenceTool = listedTools.tools.find(
-        (tool) => tool.name === 'setBeliefFixedCredence'
-      );
-      const inputSchemaJson = JSON.stringify(setBeliefFixedCredenceTool?.inputSchema);
-      expect(inputSchemaJson).toContain('node_id');
-      expect(inputSchemaJson).toContain('belief_credence');
-      // The banned synonyms for credence must not appear on the surface.
-      expect(inputSchemaJson).not.toContain('trust_origin_key');
-      expect(inputSchemaJson).not.toContain('score');
     });
   });
 
@@ -889,9 +378,10 @@ describe('standalone MCP server belief surface (MR-B)', () => {
         return /belief|credence/i.test(advertisedProse);
       });
 
-      // Guard against the filter silently matching nothing: the credence
-      // bootstrap tool must be in the swept set, or this test proves nothing.
-      expect(beliefSurfaceTools.map((tool) => tool.name)).toContain('setBeliefFixedCredence');
+      // Guard against the filter silently matching nothing: createEdge's
+      // description states that an edge carries no belief data, so it must be
+      // in the swept set — otherwise this test proves nothing.
+      expect(beliefSurfaceTools.map((tool) => tool.name)).toContain('createEdge');
 
       for (const beliefSurfaceTool of beliefSurfaceTools) {
         const bannedSynonymMatch = bannedCredenceSynonymPattern.exec(beliefSurfaceTool.description ?? '');

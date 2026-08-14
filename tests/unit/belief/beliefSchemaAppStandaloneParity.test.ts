@@ -7,14 +7,14 @@
  * no single-sided unit test could see. So these tests run BOTH sides against
  * one database file, in both orders:
  *
- *   1. standalone init-db creates the file, then the app's belief writes run
+ *   1. standalone init-db creates the file, then the app's belief write runs
  *      in it — proving the standalone path produces every column the app
  *      reads and writes (the four display belief columns, including
  *      belief_credence_is_fixed and belief_uncertainty) and none of the
  *      deleted ones (belief_source_trust, the evidence masses). The app's
- *      writes are a human-asserted fixed credence and samai's display write —
- *      the engine left this fork in the display-belief-door-writable slice,
- *      so the engine-driven half of this test became a non-engine write,
+ *      one remaining belief write is samai's display write — the engine and
+ *      the fixed-credence machinery left this fork, so the display surface
+ *      is all there is to prove,
  *   2. the app creates the file, then standalone init-db runs over it —
  *      proving the standalone path leaves the app's belief columns, its
  *      asserted-credence rows and its indexes alone.
@@ -91,27 +91,20 @@ function readTableNamesDirectly(targetDbPath: string): string[] {
 
 describe('app and standalone agree on the belief schema', () => {
   // Direction 1, the end-to-end proof: a database the STANDALONE path
-  // created must be one the APP's belief writes can run in without touching
-  // the schema itself. Reshaped in the display-belief-door-writable slice
-  // from an engine-driven recompute to the two writes that remain: a fixed
-  // credence asserted through the app reads back intact, and samai's display
-  // write lands all four display belief columns on a non-fixed claim.
-  it('the app belief writes run in a database created by standalone init-db', async () => {
+  // created must be one the APP's belief write can run in without touching
+  // the schema itself. Reshaped in the engine-leaves-the-fork slice down to
+  // the one write that remains: samai's display write lands all four display
+  // belief columns on a non-fixed claim.
+  it('the app display-belief write runs in a database created by standalone init-db', async () => {
     db = await openTempBeliefDatabase({
       prepareExistingDbFile: runStandaloneInitDb,
     });
 
-    const expertNodeId = db.insertNodeFixture({
-      title: 'human expert asserted through the standalone-created database',
+    const relatedNodeId = db.insertNodeFixture({
+      title: 'node related to the claim in the standalone-created database',
     });
-    const claimNodeId = db.insertNodeFixture({ title: 'claim related to the expert' });
-    db.insertNonEvidenceEdgeFixture({ fromNodeId: claimNodeId, toNodeId: expertNodeId });
-
-    // The app's fixed-credence door writes into the standalone-created file.
-    const { setBeliefFixedCredence } = await import('@/services/belief/beliefFixedCredence');
-    setBeliefFixedCredence(expertNodeId, 0.9);
-    expect(Number(db.readNodeBelief(expertNodeId).belief_credence)).toBeCloseTo(0.9, 10);
-    expect(db.readNodeBeliefCredenceIsFixed(expertNodeId)).toBe(1);
+    const claimNodeId = db.insertNodeFixture({ title: 'claim related to the node' });
+    db.insertNonEvidenceEdgeFixture({ fromNodeId: claimNodeId, toNodeId: relatedNodeId });
 
     // The app's display write grades the non-fixed claim: a plain column
     // write of the four-column display surface, no engine anywhere.

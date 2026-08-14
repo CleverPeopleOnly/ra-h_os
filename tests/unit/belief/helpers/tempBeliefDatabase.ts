@@ -1,5 +1,5 @@
 /**
- * Temp-database harness for the belief-engine tests.
+ * Temp-database harness for the belief tests.
  *
  * SAFETY: the real RA-H database lives under the user's home directory
  * (macOS: ~/Library/Application Support/RA-H/db/rah.sqlite). The SQLite
@@ -52,23 +52,8 @@ export interface SqliteTableColumn {
   pk: number;
 }
 
-// Row shape of the belief_movements audit table as read by the tests. The
-// two numeric columns record the SAME quantity as nodes.belief_credence —
-// the node's credence before and after a recompute — so they carry the
-// vocabulary's one word for it.
-export interface BeliefMovementRow {
-  // Credence before the recompute; NULL when the node was previously ungraded.
-  from_credence: number | null;
-  // Credence after the recompute.
-  to_credence: number;
-  // What caused the recompute.
-  trigger: string;
-  // When the recompute happened.
-  occurred_at: string;
-}
-
 // Timestamp stamped on a fixture node that is seeded with a credence, so a
-// seeded source looks like a node the engine (or a human) has already graded.
+// seeded source looks like a node somebody has already graded.
 const SEEDED_BELIEF_COMPUTED_AT = '2026-07-01T00:00:00.000Z';
 
 // Throws unless the given path resolves (symlinks included — macOS tmpdir is
@@ -117,8 +102,6 @@ export interface TempBeliefDatabase {
     belief_credence: number | null;
     belief_computed_at: string | null;
   };
-  // Read a node's belief movement rows, oldest first.
-  readBeliefMovements(nodeId: number): BeliefMovementRow[];
   // Read the column list of a table via PRAGMA table_info.
   readTableColumns(tableName: string): SqliteTableColumn[];
   // True when the named table exists in this database.
@@ -127,13 +110,6 @@ export interface TempBeliefDatabase {
   // generation, so the schema migration runs a second time over its own
   // output. This is how the idempotence tests prove a rerun is safe.
   reopenBeliefDatabase(): Promise<void>;
-  // Import the belief service bound to this database generation.
-  importBeliefService(): Promise<typeof import('@/services/belief/beliefService')>;
-  // Import the grading-policy module from the SAME module-registry generation
-  // the belief service binds to, so a test can spy on
-  // beliefGradingPolicyV1.gradeBelief and inspect the contribution objects
-  // recomputeNodeBelief actually hands the policy.
-  importBeliefGradingPolicyModule(): Promise<typeof import('@/services/belief/beliefGradingPolicy')>;
   // Import the edge service bound to this database generation.
   importEdgeService(): Promise<typeof import('@/services/database/edges')>;
   // Import the auto-embed queue module bound to this database generation.
@@ -255,15 +231,6 @@ export async function openTempBeliefDatabase(
         .get(nodeId) as { belief_credence: number | null; belief_computed_at: string | null };
     },
 
-    readBeliefMovements(nodeId) {
-      return activeSqliteClient
-        .prepare(
-          `SELECT from_credence, to_credence, "trigger", occurred_at
-           FROM belief_movements WHERE node_id = ? ORDER BY id ASC`
-        )
-        .all(nodeId) as BeliefMovementRow[];
-    },
-
     readTableColumns(tableName) {
       return activeSqliteClient
         .prepare(`PRAGMA table_info(${tableName})`)
@@ -282,8 +249,6 @@ export async function openTempBeliefDatabase(
       activeSqliteClient = await openSqliteClientOnTempFile();
     },
 
-    importBeliefService: () => import('@/services/belief/beliefService'),
-    importBeliefGradingPolicyModule: () => import('@/services/belief/beliefGradingPolicy'),
     importEdgeService: () => import('@/services/database/edges'),
     importAutoEmbedQueueModule: () => import('@/services/embedding/autoEmbedQueue'),
     importIngestionModule: () => import('@/services/embedding/ingestion'),

@@ -4,13 +4,13 @@
  * split; the fork's node belief is a pure DISPLAY surface samai writes
  * through the remote MCP door, so this write lands (or clears) the three
  * display columns verbatim and does nothing else: no engine, no derivation,
- * and NO belief_movements row — movement history is samai's now.
+ * no history log — movement history is samai's now.
  *
  * Exactly two legal shapes exist, and the CALLER validates them before this
  * write runs: a GRADE (credence, uncertainty and computed_at all non-null) or
  * an UNGRADE (all three null). This module only enforces what the stored row
  * itself decides: an unknown node is a refusal, and so is a FIXED node — a
- * hand-asserted credence is only changed through the assert/clear tools.
+ * hand-asserted credence is never overwritten by a display write.
  */
 
 import { getSQLiteClient } from '@/services/database/sqlite-client';

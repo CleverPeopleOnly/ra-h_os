@@ -1,29 +1,28 @@
 /**
- * THE TWO APP-BACKED MCP DOORS SAY THE SAME THING ABOUT THE NEW BELIEF
- * SURFACE: the node-read belief columns on rah_get_nodes, and the new
- * belief tools (rah_set_belief_fixed_credence, rah_get_belief_movements).
+ * THE TWO APP-BACKED MCP DOORS SAY THE SAME THING ABOUT THE BELIEF SURFACE
+ * THAT REMAINS: the node-read belief columns on rah_get_nodes.
  *
- * deleted in the display-belief-door-writable slice:
- * rah_recompute_node_belief in newBeliefToolNames — the recompute surface is
- * dead on both doors. rah_write_display_belief is deliberately NOT added
- * here: it is remote-only, so there is no cross-door agreement to pin
- * (pinned in remote-mcp-route-display-belief-tool.test.ts and
+ * deleted in the engine-leaves-the-fork slice: the identical-schema and
+ * banned-synonym describes over rah_set_belief_fixed_credence and
+ * rah_get_belief_movements — those tools are gone from both doors (the
+ * absences are pinned per door in
+ * remote-mcp-route-belief-surface-reduced-to-display.test.ts and
+ * stdio-server-belief-surface-reduced-to-node-reads.test.ts).
+ * rah_write_display_belief is deliberately NOT compared here: it is
+ * remote-only, so there is no cross-door agreement to pin (pinned in
+ * remote-mcp-route-display-belief-tool.test.ts and
  * stdio-server-display-belief-surface.test.ts).
  *
- * Same thesis as tests/unit/mcp/mcp-doors-agree-on-belief.test.ts, extended
- * to the surface this MR adds: RA-H serves the same rah_* tools from the
- * local door (apps/mcp-server/stdio-server.js) and the remote door
- * (app/api/mcp/route.ts), and a contract declared twice is a contract that
- * drifts. Both doors take these pieces from the one shared module
+ * Same thesis as tests/unit/mcp/mcp-doors-agree-on-belief.test.ts: RA-H
+ * serves the same rah_* tools from the local door
+ * (apps/mcp-server/stdio-server.js) and the remote door (app/api/mcp/route.ts),
+ * and a contract declared twice is a contract that drifts. Both doors take
+ * the node-read belief fragment from the one shared module
  * src/services/belief/beliefMcpToolContract.js, so agreement is structural —
  * and this file is what notices if either door stops using it.
  *
  * The comparison is of ADVERTISED contracts, because the contract is what an
- * external agent (samai-diagnostic's BeliefSystem adapter) actually reads.
- * For the three NEW tools the whole input and output schema is compared —
- * they are wholly belief-owned, so there is no upstream half to exempt. The
- * STANDALONE door is deliberately absent: it never grades and gains none of
- * these tools; its setBeliefFixedCredence was only the semantics reference.
+ * external agent (samai-diagnostic's adapters) actually reads.
  *
  * Seam: the remote door through tests/unit/mcp/helpers/remoteMcpDoorHarness.ts,
  * the local door spawned as a real child process — both pointed at the SAME
@@ -48,12 +47,6 @@ let remoteMcpDoorHarness: RemoteMcpDoorHarness;
 let localDoorTools: Tool[] = [];
 // Every tool the remote door advertises, read once and reused.
 let remoteDoorTools: Tool[] = [];
-
-// The new belief tools, whose WHOLE schemas must agree across doors.
-const newBeliefToolNames = [
-  'rah_set_belief_fixed_credence',
-  'rah_get_belief_movements',
-];
 
 // The three belief columns a node read reports, compared field by field on
 // rah_get_nodes because that tool has an upstream half the doors may
@@ -113,50 +106,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await remoteMcpDoorHarness.stop();
-});
-
-describe('both MCP doors advertise identical schemas for the new belief tools', () => {
-  for (const beliefToolName of newBeliefToolNames) {
-    // An agent that learns a belief tool from one door must be able to call
-    // it identically through the other: same arguments, same ranges, same
-    // reply shape. Deep equality, because both doors take the schemas from
-    // the one shared contract — any difference means drift has restarted.
-    it(`advertises an identical input and output schema for ${beliefToolName}`, () => {
-      const localBeliefTool = findAdvertisedTool(localDoorTools, beliefToolName, 'local');
-      const remoteBeliefTool = findAdvertisedTool(remoteDoorTools, beliefToolName, 'remote');
-
-      expect(remoteBeliefTool.inputSchema).toEqual(localBeliefTool.inputSchema);
-      expect(
-        localBeliefTool.outputSchema,
-        `the local door must declare an output schema for ${beliefToolName}`
-      ).toBeDefined();
-      expect(remoteBeliefTool.outputSchema).toEqual(localBeliefTool.outputSchema);
-    });
-  }
-
-  // The vocabulary holds at the advertised surface: trust, standing, score
-  // and weight are banned as synonyms for credence, and the wholly
-  // belief-owned tools are where a relapse would mislead an agent directly.
-  it('GUARD: neither door advertises a banned credence synonym on any new belief tool', () => {
-    // The banned synonyms, checked against each tool's whole advertised JSON.
-    const bannedCredenceSynonyms = ['trust', 'standing', 'score', 'weight'];
-
-    for (const [doorName, tools] of [
-      ['local', localDoorTools],
-      ['remote', remoteDoorTools],
-    ] as const) {
-      for (const beliefToolName of newBeliefToolNames) {
-        const advertisedBeliefTool = findAdvertisedTool(tools, beliefToolName, doorName);
-        const advertisedToolJson = JSON.stringify(advertisedBeliefTool).toLowerCase();
-        for (const bannedSynonym of bannedCredenceSynonyms) {
-          expect(
-            advertisedToolJson,
-            `the ${doorName} door must not say "${bannedSynonym}" anywhere on ${beliefToolName}`
-          ).not.toContain(bannedSynonym);
-        }
-      }
-    }
-  });
 });
 
 describe('both MCP doors advertise the same belief columns on the node read', () => {

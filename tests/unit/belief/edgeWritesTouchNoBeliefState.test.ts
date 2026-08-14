@@ -9,18 +9,19 @@
  *
  *  - createEdge from a LEGACY caller still passing belief_evidence_support is
  *    not an error — the key is simply not part of the contract any more: no
- *    belief column changes on any node, no belief_movements row appears, and
- *    the answer row carries neither evidence field,
+ *    belief column changes on any node and the answer row carries neither
+ *    evidence field,
  *  - deleting that same edge also touches no belief state,
  *  - a plain createEdge's answer row carries neither evidence field,
  *  - an explanation-only updateEdge touches no belief state and answers a row
  *    without either evidence field.
  *
  * The belief snapshot is the WHOLE surviving belief surface: every node's
- * belief_credence, belief_computed_at, belief_credence_is_fixed and both
- * evidence masses, plus every belief_movements row — compared before/after
- * each write, so "no belief read or write" is pinned structurally rather
- * than one column at a time.
+ * belief_credence, belief_uncertainty, belief_computed_at and
+ * belief_credence_is_fixed — compared before/after each write, so "no belief
+ * read or write" is pinned structurally rather than one column at a time.
+ * (The belief_movements rows the snapshot used to carry died with the table
+ * in the engine-leaves-the-fork slice.)
  *
  * All edges are created with skip_inference: true and explicit explanations
  * so no LLM path is ever exercised. Runs against a fresh temp-file database
@@ -60,11 +61,10 @@ interface NodeBeliefSnapshotRow {
   belief_credence_is_fixed: number;
 }
 
-// Every node's belief columns plus every movement row: the full belief state
-// an edge write must leave byte-untouched.
+// Every node's belief columns: the full belief state an edge write must
+// leave byte-untouched.
 interface BeliefStateSnapshot {
   nodeBeliefRows: NodeBeliefSnapshotRow[];
-  beliefMovementRows: unknown[];
 }
 
 // Snapshot the whole database's belief state through the open client.
@@ -76,10 +76,7 @@ function snapshotBeliefState(context: TempBeliefDatabase): BeliefStateSnapshot {
        FROM nodes ORDER BY id ASC`
     )
     .all() as NodeBeliefSnapshotRow[];
-  const beliefMovementRows = context.sqlite
-    .prepare('SELECT * FROM belief_movements ORDER BY id ASC')
-    .all();
-  return { nodeBeliefRows, beliefMovementRows };
+  return { nodeBeliefRows };
 }
 
 // Assert an edge answer object carries NEITHER evidence field — not even as
@@ -128,8 +125,8 @@ describe('edge writes touch no belief state (post-slice EdgeService)', () => {
     };
     const createdEdgeAnswer = await edgeService.createEdge(legacyEvidenceCarryingInput);
 
-    // No belief write of any kind happened: every node's belief columns and
-    // the whole movement table are byte-identical to before the create.
+    // No belief write of any kind happened: every node's belief columns are
+    // byte-identical to before the create.
     expect(snapshotBeliefState(tempDb)).toEqual(beliefStateBeforeAnyEdgeWrite);
 
     // The answer row carries neither evidence field, and neither does the

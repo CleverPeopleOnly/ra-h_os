@@ -3,20 +3,26 @@
 ## What This Is
 Open-source, local-first knowledge graph app with MCP integration.
 
-This fork (CleverPeopleOnly/ra-h_os) adds a native belief engine on top of upstream RA-OS.
+This fork (CleverPeopleOnly/ra-h_os) adds a belief DISPLAY surface on top of upstream RA-OS. The belief engine itself lives in the samai-diagnostic repo: samai computes beliefs there and writes the results into this store through the remote MCP door. What this fork owns is belief-adjacent plumbing:
+
+- **the four display columns on `nodes`** — `belief_credence`, `belief_uncertainty`, `belief_computed_at`, `belief_credence_is_fixed` — written by samai through the door and read everywhere (node reads, edge answers, the map UI),
+- **the display-belief write surface** — `src/services/belief/beliefDisplayWrite.ts`, `app/api/belief/display`, and the `rah_write_display_belief` door tool (which refuses a fixed node),
+- **the graph-event journal** — how an external consumer mirrors deaths and re-orientations in this graph,
+- **bearer door auth** — every MCP door fails closed without its token.
+
+Edges carry no belief data: an edge is a plain relationship with an explanation. No engine, no evidence, no recompute lives here.
 
 ## Fork rule: belief-system naming (mandatory)
 
-Everything the belief system adds to this codebase must be recognisable as belief-system code on sight, wherever it appears:
+Everything the belief surface adds to this codebase must be recognisable as belief code on sight, wherever it appears:
 
-- **Every database table or column we add carries the `belief_` prefix** — e.g. `nodes.belief_credence`, `edges.belief_evidence_support`, `belief_movements`. This matters most on upstream-owned tables (`nodes`, `edges`), where our columns sit beside Brad's.
-- **Every identifier we add to an upstream-owned file says belief** — e.g. `edgeIsGradeableBeliefEvidence` in `edges.ts`, `recomputeNodeBelief` in `autoEmbedQueue.ts`.
-- **Every exported symbol of a belief module contains `belief`/`Belief`** — e.g. `BeliefEvidenceContribution`, `beliefGradingPolicyV1`. Module-internal locals inside `src/services/belief/` are already scoped by their path.
-- **MCP tool parameters and API fields follow the column names exactly** (`belief_credence`, `belief_evidence_support`, `belief_evidence_contribution`, …).
+- **Every database column we add carries the `belief_` prefix** — e.g. `nodes.belief_credence`, `nodes.belief_uncertainty`. This matters most on upstream-owned tables (`nodes`), where our columns sit beside Brad's.
+- **Every exported symbol of a belief module contains `belief`/`Belief`** — e.g. `writeDisplayBelief` in `beliefDisplayWrite.ts`, `beliefFieldsForNodeRead` in the shared MCP tool contract. Module-internal locals inside `src/services/belief/` are already scoped by their path.
+- **MCP tool parameters and API fields follow the column names exactly** (`belief_credence`, `belief_uncertainty`, `belief_computed_at`, `belief_credence_is_fixed`).
 
 Rationale: our columns are guests in upstream territory — the prefix flags ours in any diff or merge conflict, and no future upstream name can collide with it. Renaming after the MCP surface ships would break callers, so names must be right before a surface goes live.
 
-Note that `belief_` is a NAMESPACE marker, not a description. Strip it and what remains must still name the quantity: `belief_evidence_support` → *support*, `belief_computed_at` → *a timestamp*. A column whose remainder is `value`, `score`, `data` or `grade` is not named — those words describe nothing on their own.
+Note that `belief_` is a NAMESPACE marker, not a description. Strip it and what remains must still name the quantity: `belief_credence` → *credence*, `belief_computed_at` → *a timestamp*. A column whose remainder is `value`, `score`, `data` or `grade` is not named — those words describe nothing on their own.
 
 ## Fork rule: belief vocabulary (mandatory)
 
@@ -24,34 +30,16 @@ One word per concept, and no synonyms. This exists because the belief system's c
 
 | The thing | The word | Where it lives |
 |---|---|---|
-| How much we believe a node | **credence** | `nodes.belief_credence` |
-| A source node's influence over evidence it supplies | **credence** | the same number — deliberately the same word |
-| What one edge adds to its target | **contribution** | `edges.belief_evidence_contribution` |
-| How strongly a source node talks about the neighbour — one unsigned number | **support** | `edges.belief_evidence_support` |
-| A credence a human asserts by hand instead of the engine deriving it | **fixed credence** | `nodes.belief_credence_is_fixed` |
-| The log of a node's credence changing | **movement** | `belief_movements` |
-| Accumulated evidence for/against a node (v2, not yet implemented) | **evidence mass** | `nodes.belief_evidence_for_mass`, `nodes.belief_evidence_against_mass` |
-| How little evidence a credence rests on (v2, not yet implemented) | **uncertainty** | derived W/(r+s+W); never stored |
-| Future: learning a source's credence from confirmed outcomes | **calibration** | produces credence; not a new quantity |
+| How much samai believes a node | **credence** | `nodes.belief_credence` |
+| How little evidence a credence rests on | **uncertainty** | `nodes.belief_uncertainty` |
+| A credence a human asserted by hand | **fixed credence** | `nodes.belief_credence_is_fixed` |
+| When the credence was stamped | — | `nodes.belief_computed_at` |
 
-The load-bearing row is the second. A source's influence and a node's belief are THE SAME NUMBER, so they must never acquire two names. **`trust`, `standing`, `score`, `weight` and `value` are therefore banned as synonyms for credence** anywhere in belief code, comments, or tool descriptions.
+**`trust`, `standing`, `score`, `weight` and `value` are banned as synonyms for credence** anywhere in belief code, comments, or tool descriptions.
 
-The vocabulary in one sentence: an edge's **contribution** is its **support** × the source node's **credence**; a node's **credence** is the graded sum of its incoming contributions; a node nobody has grounded has no credence (NULL).
+**Sign invariant: `nodes.belief_credence` is the only signed quantity in the system.** And NULL is never 0: a NULL credence means nobody has grounded the node, while 0 means it was assessed and believed neither way — two states that must never collapse into each other.
 
-**Belief model v2 is approved and designed, not yet implemented** — see
-`docs/belief-model-subjective-logic.md`. It replaces the `e^(−C) − e^(−S)` aggregation
-with Subjective Logic evidence masses (credence becomes the derived projection
-`(r − s)/(r + s + W)`, uncertainty becomes readable), and adds propagation, an un-fix
-door, and per-cause movement triggers. Every rule in this file — naming, vocabulary,
-the sign invariant, NULL-vs-0 — carries over unchanged; the doc is written under them.
-
-**Sign invariant: `nodes.belief_credence` is the only signed quantity in the system.** Support runs 0..1, unsigned — it says how strongly the source node talks about the neighbour, never which way. An edge's contribution is negative exactly when its source's credence is negative: a disbelieved source's evidence counts against what it talks about, feeding the C side of the grading formula.
-
-Support distinguishes two states exactly as credence does on a node. **NULL means the edge is not evidence at all** — a plain relationship edge, never assessed. **0 means it was assessed and carries nothing** — inert in the grading sum, but a recorded judgement rather than an absence of one. Never reject a support of 0: a classifier that genuinely finds no bearing would otherwise have to invent one, manufacturing signal that isn't there.
-
-This invariant is structural, not a convention to remember: there is exactly one field in the schema that can carry a minus sign. A separate direction field alongside a magnitude field would let the two disagree — which is how an edge could once be written with a strength and no direction, storable but impossible to grade.
-
-CI (.github/workflows/ci.yml) gates every push/PR on the full test suite, full typecheck, and `npm run lint:belief-surface` — everything the belief system owns must lint clean. Upstream's pre-existing lint debt is out of scope and not gated; new belief-owned files must be added to the `lint:belief-surface` script.
+CI (.github/workflows/ci.yml) gates every push/PR on the full test suite, full typecheck, and `npm run lint:belief-surface` — everything the belief surface owns must lint clean. Upstream's pre-existing lint debt is out of scope and not gated; new belief-owned files must be added to the `lint:belief-surface` script.
 
 ## Core Stack
 - Next.js 15 + TypeScript + Tailwind

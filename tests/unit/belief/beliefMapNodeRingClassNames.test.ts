@@ -35,7 +35,7 @@
  * Import style: the presentation module exists but the class-name export
  * does not yet, so a static named import would fail `tsc --noEmit` (TS2305).
  * The module is imported as a namespace and cast to the pinned surface — the
- * namespace-cast red pattern of beliefGradingPolicyV2SubjectiveLogic.test.ts
+ * house's namespace-cast red pattern for not-yet-shipped exports
  * — so today every test that calls the function reds with a readable
  * TypeError. The one test marked PREMISE below pins only already-shipped
  * behaviour and is green today.
