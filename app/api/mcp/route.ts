@@ -747,6 +747,128 @@ function createServer(request: NextRequest): McpServer {
     }
   );
 
+  // The fixed-credence pair is REMOTE-DOOR-ONLY for the same reason as the
+  // display write: samai drives belief through the remote door, so the stdio
+  // and standalone doors gain neither tool. Each is a validate-and-forward
+  // proxy onto its app endpoint, and NEITHER accepts belief_uncertainty or
+  // belief_credence_is_fixed as input — the app route owns those figures
+  // (uncertainty 0, the dogmatic opinion, and flag 1 on an assertion), so an
+  // illegal combination cannot even be requested.
+  server.registerTool(
+    'rah_assert_fixed_credence',
+    {
+      title: 'Assert RA-H fixed credence',
+      description: 'Assert one node\'s credence by hand: the credence lands verbatim with belief_uncertainty 0 and belief_credence_is_fixed 1, all in one act. Credence lives in the OPEN interval -1 < c < 1 — the endpoints belong to derivation, not decree. An already-fixed node is refused; clear the standing assertion first with rah_clear_fixed_credence.',
+      inputSchema: {
+        node_id: z
+          .number()
+          .int()
+          .positive()
+          .describe('ID of the node whose credence is being asserted by hand'),
+        // OPEN interval, unlike the display write's closed one: a hand
+        // assertion never decrees the endpoints.
+        belief_credence: z
+          .number()
+          .gt(-1)
+          .lt(1)
+          .describe('The hand-asserted credence: a number strictly between -1 and 1.'),
+        // Required — samai stamps the instant, so a stampless decree is
+        // incomplete.
+        belief_computed_at: z
+          .string()
+          .describe('When samai stamped the assertion (ISO-8601), stored verbatim.'),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        node_id: z.number().describe('ID of the node whose credence was asserted'),
+        // The STORED row's four belief columns as the app answered them —
+        // read back, never an echo of the request.
+        belief_credence: z.number().nullable(),
+        belief_uncertainty: z.number().nullable(),
+        belief_computed_at: z.string().nullable(),
+        belief_credence_is_fixed: z.union([z.literal(0), z.literal(1)]),
+        message: z.string(),
+      },
+    },
+    async ({ node_id, belief_credence, belief_computed_at }) => {
+      // The three fields forward verbatim to the ONE app endpoint; the app's
+      // refusals (unknown node, already-fixed node) pass through naming what
+      // refused them.
+      const payload = await callRaHApi(request, '/api/belief/fixed', {
+        method: 'POST',
+        body: JSON.stringify({ node_id, belief_credence, belief_computed_at }),
+      });
+
+      const summary = payload.message || `Asserted the fixed credence of node #${node_id}.`;
+      return {
+        content: [{ type: 'text', text: summary }],
+        // The stored row the app answered, passed through field for field —
+        // nulls included, never coerced.
+        structuredContent: {
+          success: true,
+          node_id: payload.node_id,
+          belief_credence: payload.belief_credence ?? null,
+          belief_uncertainty: payload.belief_uncertainty ?? null,
+          belief_computed_at: payload.belief_computed_at ?? null,
+          belief_credence_is_fixed: payload.belief_credence_is_fixed,
+          message: summary,
+        },
+      };
+    }
+  );
+
+  server.registerTool(
+    'rah_clear_fixed_credence',
+    {
+      title: 'Clear RA-H fixed credence',
+      description: 'Withdraw one node\'s hand-asserted credence: belief_credence_is_fixed drops and NOTHING else — the other three belief columns keep the stale hand-asserted figures until samai regrades the node through rah_write_display_belief. Clearing a node nobody asserted is refused.',
+      inputSchema: {
+        // The node alone: the other columns keep their standing figures, so
+        // there is nothing else a caller could legitimately say.
+        node_id: z
+          .number()
+          .int()
+          .positive()
+          .describe('ID of the node whose hand-asserted credence is being withdrawn'),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        node_id: z.number().describe('ID of the node whose assertion was withdrawn'),
+        // The STORED row's four belief columns as the app answered them —
+        // flag down, the stale figures still standing.
+        belief_credence: z.number().nullable(),
+        belief_uncertainty: z.number().nullable(),
+        belief_computed_at: z.string().nullable(),
+        belief_credence_is_fixed: z.union([z.literal(0), z.literal(1)]),
+        message: z.string(),
+      },
+    },
+    async ({ node_id }) => {
+      // The node alone forwards to the clear endpoint; the app's refusals
+      // (unknown node, not-fixed node) pass through naming what refused them.
+      const payload = await callRaHApi(request, '/api/belief/fixed/clear', {
+        method: 'POST',
+        body: JSON.stringify({ node_id }),
+      });
+
+      const summary = payload.message || `Cleared the fixed credence of node #${node_id}.`;
+      return {
+        content: [{ type: 'text', text: summary }],
+        // The stored row the app answered, passed through field for field —
+        // nulls included, never coerced.
+        structuredContent: {
+          success: true,
+          node_id: payload.node_id,
+          belief_credence: payload.belief_credence ?? null,
+          belief_uncertainty: payload.belief_uncertainty ?? null,
+          belief_computed_at: payload.belief_computed_at ?? null,
+          belief_credence_is_fixed: payload.belief_credence_is_fixed,
+          message: summary,
+        },
+      };
+    }
+  );
+
   // ========== GRAPH-EVENT JOURNAL TOOLS (fork addition) ==========
   // The database journals graph deaths and re-orientations into graph_events
   // (trigger-written, with a single-row ack cursor in graph_events_ack).
@@ -1187,6 +1309,8 @@ export async function GET(request: NextRequest) {
     'rah_extract_pdf',
     'rah_get_context',
     'rah_write_display_belief',
+    'rah_assert_fixed_credence',
+    'rah_clear_fixed_credence',
   ];
 
   return NextResponse.json(

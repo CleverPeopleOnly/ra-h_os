@@ -68,10 +68,15 @@ const toolNamesTheRemoteMcpDoorAdvertises = [
   'rah_extract_youtube',
   'rah_extract_pdf',
   'rah_get_context',
-  // The door's one belief tool since the engine left the fork: the belief
-  // math lives in samai now, and the display write is how samai lands its
-  // grades here. The fixed-credence and movements tools died with the engine.
+  // The door's belief tools since the engine left the fork: the belief math
+  // lives in samai now, and the display write is how samai lands its grades
+  // here. The engine-era fixed-credence and movements tools died with the
+  // engine; the hand-assertion pair below came back under NEW names with the
+  // forward-to-the-app contract, one tool to raise belief_credence_is_fixed
+  // and one to drop it.
   'rah_write_display_belief',
+  'rah_assert_fixed_credence',
+  'rah_clear_fixed_credence',
 ];
 
 // The bearer token this suite installs as RAH_MCP_DOOR_TOKEN: the door fails

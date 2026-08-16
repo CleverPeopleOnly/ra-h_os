@@ -225,6 +225,14 @@ describe('standalone MCP server after the engine leaves the fork', () => {
           `${deletedStandaloneToolName} must leave the standalone server with the engine`
         ).not.toContain(deletedStandaloneToolName);
       }
+      // Nor does the NEW remote-door fixed-credence pair arrive here: samai
+      // asserts and clears a hand-decreed credence through the remote door
+      // only, so the standalone server gains the tools under neither the
+      // remote naming nor its own camelCase convention.
+      expect(advertisedToolNames).not.toContain('rah_assert_fixed_credence');
+      expect(advertisedToolNames).not.toContain('rah_clear_fixed_credence');
+      expect(advertisedToolNames).not.toContain('assertFixedCredence');
+      expect(advertisedToolNames).not.toContain('clearFixedCredence');
       // Sanity survivor: the node read is untouched by this slice.
       expect(advertisedToolNames).toContain('getNodesById');
     });
