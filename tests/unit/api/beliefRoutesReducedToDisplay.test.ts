@@ -32,14 +32,17 @@ const deletedBeliefRouteDirectoryRelativePaths = [
 ];
 
 describe('the belief REST surface is reduced to the display route', () => {
-  // The headline pin: app/api/belief holds EXACTLY the display route. An
-  // exact listing stops any renamed belief route sneaking back in beside it.
-  it('app/api/belief contains only the display route directory', () => {
+  // The headline pin: app/api/belief holds EXACTLY the display route and the
+  // fixed route (the hand-assertion pair, added by the fixed-credence slice
+  // under NEW paths — fixed/ and fixed/clear/ — while the engine-era
+  // fixed-credence/ directories above stay dead). An exact listing stops any
+  // renamed belief route sneaking back in beside them.
+  it('app/api/belief contains only the display and fixed route directories', () => {
     const actualBeliefRouteEntries = fs.readdirSync(beliefApiDirectoryPath).sort();
     expect(
       actualBeliefRouteEntries,
-      'app/api/belief must hold only display/ — the other belief doors die with the engine'
-    ).toEqual(['display']);
+      'app/api/belief must hold only display/ and fixed/ — the other belief doors die with the engine'
+    ).toEqual(['display', 'fixed']);
   });
 
   // Per-directory absence pins: when the listing above fails, these say WHICH

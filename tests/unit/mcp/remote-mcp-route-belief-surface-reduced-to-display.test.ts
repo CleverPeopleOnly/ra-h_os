@@ -40,11 +40,16 @@ const deletedBeliefToolNames = [
 ];
 
 // The tools this slice must leave standing: samai's display write and the
-// graph-event journal pair.
+// graph-event journal pair — joined, since the fixed-credence slice, by the
+// NEW hand-assertion pair (rah_assert_fixed_credence and
+// rah_clear_fixed_credence: registered under NEW names with the new
+// contract, while the OLD engine-era names above stay dead).
 const survivingRemoteDoorToolNames = [
   'rah_write_display_belief',
   'rah_read_graph_events',
   'rah_acknowledge_graph_events',
+  'rah_assert_fixed_credence',
+  'rah_clear_fixed_credence',
 ];
 
 // Plausible arguments for each dead tool, so a call that still reaches a

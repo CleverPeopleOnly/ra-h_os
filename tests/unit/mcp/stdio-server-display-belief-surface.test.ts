@@ -85,6 +85,11 @@ describe('local MCP door belief surface after the display-belief slice', () => {
       expect(advertisedToolNames).not.toContain('rah_recompute_node_belief');
       // The display write is the remote door's alone.
       expect(advertisedToolNames).not.toContain('rah_write_display_belief');
+      // And so is the fixed-credence pair the belief-storage split added:
+      // samai asserts and clears a hand-decreed credence through the remote
+      // door only, so the local door gains neither tool.
+      expect(advertisedToolNames).not.toContain('rah_assert_fixed_credence');
+      expect(advertisedToolNames).not.toContain('rah_clear_fixed_credence');
       // Sanity survivor: the plain node read keeps the absences honest.
       expect(advertisedToolNames).toContain('rah_get_nodes');
     });
